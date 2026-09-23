@@ -35,9 +35,17 @@ src/
 ## Roadmap
 
 - [x] Fase 0 — proyecto Vite + TS + Phaser, primera escena
-- [ ] Fase 1 — proyección isométrica, panorama de sala y cámara
-- [ ] Fase 2 — avatar con animaciones + colisiones con tilemap (Tiled)
+- [x] Fase 1 — proyección isométrica, panorama de sala y cámara
+- [x] Fase 2 — avatar con animaciones + colisiones con tilemap (Tiled)
 - [ ] Fase 3 — sala real con mobiliario y límites
 - [ ] Fase 4 — interacciones (sentarse, burbuja de chat, personalización)
 - [ ] Fase 5 — guardado (localStorage) y arquitectura lista para online
 - [ ] Futuro — múltiples salas, inventario, multijugador (Node + Socket.io)
+
+## Assets y mapas
+
+- `tools/genassets.mjs` regenera el tileset y `room1.json`:
+  `node tools/genassets.mjs`
+- `public/assets/room1.json` es un mapa de **Tiled** (isométrico 12×12):
+  ábrelo con el editor Tiled para modificarlo. La capa `colisiones`
+  (oculta) marca las celdas bloqueadas.

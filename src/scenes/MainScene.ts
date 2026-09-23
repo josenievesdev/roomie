@@ -1,36 +1,60 @@
 import Phaser from "phaser";
-import { TILE_W, TILE_H, toScreen, toGrid } from "../utils/iso";
+import { toScreen, toGrid } from "../utils/iso";
+import { createAvatarTexture } from "../entities/avatar";
 
-// Fase 1 (proyección isométrica 2:1): piso de rombos, placeholder del avatar
-// con orden por profundidad y límites de la sala.
-// En Fase 2 el piso pasa a tilemap de Tiled y el placeholder a sprite animado.
+type TiledLayer = {
+  name: string;
+  type: string;
+  data?: number[];
+  visible?: boolean;
+};
+
+type TiledMap = {
+  width: number;
+  height: number;
+  layers: TiledLayer[];
+};
+
+// Fase 2: sala desde JSON de Tiled + avatar placeholder con animaciones y colisiones.
 export class MainScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Rectangle;
+  private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
 
-  private readonly room = 12; // sala de prueba 12x12 celdas
+  private blocked: boolean[][] = [];
+  private cols = 0;
+  private rows = 0;
+  private facing: "down" | "up" | "side" = "down";
 
   constructor() {
     super("main");
   }
 
-  create(): void {
-    this.createDiamondTexture();
-    this.drawFloor();
+  preload(): void {
+    this.load.json("room1", "assets/room1.json");
+    this.load.spritesheet("tileset", "assets/tileset.png", {
+      frameWidth: 64,
+      frameHeight: 32,
+    });
+  }
 
-    // Placeholder del personaje (Fase 2: sprite con animaciones)
-    const start = toScreen(2, 2);
+  create(): void {
+    createAvatarTexture(this);
+    this.buildRoom();
+
+    const start = this.firstFreeCell();
+    const pos = toScreen(start.col, start.row);
     this.player = this.add
-      .rectangle(start.x, start.y, 14, 26, 0x6c5ce7)
+      .sprite(pos.x, pos.y, "avatar", "down-0")
       .setOrigin(0.5, 1)
-      .setDepth(start.y);
+      .setDepth(pos.y);
+    this.player.play("idle-down");
 
     this.cameras.main.setBounds(...this.roomBounds());
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 1 isométrica\nWASD / flechas para mover", {
+      .text(8, 8, "Roomie — Fase 2\nWASD / flechas · sala room1", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -55,68 +79,97 @@ export class MainScene extends Phaser.Scene {
     if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
     if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
 
-    // Normalizar diagonal para que no vaya más rápido
     if (dx !== 0 && dy !== 0) {
       dx *= Math.SQRT1_2;
       dy *= Math.SQRT1_2;
     }
 
-    // Mover en pantalla y recuadrar a la cuadrícula para no salir de la sala
-    const grid = toGrid(
-      this.player.x + dx * speed * dt,
-      this.player.y + dy * speed * dt,
+    // Ejepar por ejes por separado: así se desliza por el muro en vez de quedarse pegado
+    if (dx !== 0) {
+      const nx = this.player.x + dx * speed * dt;
+      if (this.canStand(nx, this.player.y)) this.player.x = nx;
+    }
+    if (dy !== 0) {
+      const ny = this.player.y + dy * speed * dt;
+      if (this.canStand(this.player.x, ny)) this.player.y = ny;
+    }
+
+    this.player.setDepth(this.player.y); // orden isométrico
+
+    // Dirección mirada: horizontal tiene prioridad
+    const moving = dx !== 0 || dy !== 0;
+    if (dx !== 0) {
+      this.facing = "side";
+      this.player.setFlipX(dx > 0); // el sprite "side" está dibujado mirando a la izquierda
+    } else if (dy !== 0) {
+      this.facing = dy < 0 ? "up" : "down";
+      this.player.setFlipX(false);
+    }
+    this.player.play(moving ? `walk-${this.facing}` : `idle-${this.facing}`, true);
+  }
+
+  /** Construye la sala (piso + colisiones) desde el JSON de Tiled */
+  private buildRoom(): void {
+    const data = this.cache.json.get("room1") as TiledMap;
+    this.cols = data.width;
+    this.rows = data.height;
+
+    const floor = data.layers.find((l) => l.name === "suelo");
+    const colsLayer = data.layers.find((l) => l.name === "colisiones");
+    this.blocked = Array.from({ length: this.rows }, () =>
+      Array<boolean>(this.cols).fill(false),
     );
-    const col = Phaser.Math.Clamp(grid.col, 0, this.room - 1);
-    const row = Phaser.Math.Clamp(grid.row, 0, this.room - 1);
-    const pos = toScreen(col, row);
 
-    this.player.setPosition(pos.x, pos.y);
-    this.player.setDepth(pos.y); // orden isométrico: lo más abajo se pinta encima
-  }
-
-  private createDiamondTexture(): void {
-    const g = this.make.graphics({}, false);
-    const pts = [
-      { x: TILE_W / 2, y: 0 },
-      { x: TILE_W, y: TILE_H / 2 },
-      { x: TILE_W / 2, y: TILE_H },
-      { x: 0, y: TILE_H / 2 },
-    ];
-    g.fillStyle(0xffffff, 1);
-    g.fillPoints(pts, true);
-    g.lineStyle(1, 0x000000, 0.35);
-    g.strokePoints(pts, true);
-    g.generateTexture("diamond", TILE_W, TILE_H);
-    g.destroy();
-  }
-
-  private drawFloor(): void {
-    for (let row = 0; row < this.room; row++) {
-      for (let col = 0; col < this.room; col++) {
-        const pos = toScreen(col, row);
-        this.add
-          .image(pos.x, pos.y, "diamond")
-          .setTint((col + row) % 2 === 0 ? 0x3a3a52 : 0x31314a)
-          .setDepth(pos.y);
+    for (let row = 0; row < this.rows; row++) {
+      for (let col = 0; col < this.cols; col++) {
+        const i = row * this.cols + col;
+        const gid = floor?.data?.[i] ?? 0;
+        if (gid !== 0) {
+          const pos = toScreen(col, row);
+          this.add.image(pos.x, pos.y, "tileset", gid - 1).setDepth(pos.y);
+        }
+        this.blocked[row][col] = (colsLayer?.data?.[i] ?? 0) !== 0;
       }
     }
   }
 
-  /** Extremos exactos de la losa de diamantes para los límites de cámara */
+  /** ¿Puede el avatar estar con los pies en esta posición de pantalla? */
+  private canStand(x: number, y: number): boolean {
+    const g = toGrid(x, y);
+    const col = Math.round(g.col);
+    const row = Math.round(g.row);
+    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return false;
+    return !this.blocked[row][col];
+  }
+
+  /** Celda libre más cercana al centro de la sala */
+  private firstFreeCell(): { col: number; row: number } {
+    const cx = Math.floor(this.cols / 2);
+    const cy = Math.floor(this.rows / 2);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const col = (cx + c) % this.cols;
+        const row = (cy + r) % this.rows;
+        if (!this.blocked[row][col]) return { col, row };
+      }
+    }
+    return { col: cx, row: cy };
+  }
+
+  /** Extremos de la losa de diamantes para los límites de cámara */
   private roomBounds(): [number, number, number, number] {
-    const last = this.room - 1;
     const corners = [
       toScreen(0, 0),
-      toScreen(last, 0),
-      toScreen(0, last),
-      toScreen(last, last),
+      toScreen(this.cols - 1, 0),
+      toScreen(0, this.rows - 1),
+      toScreen(this.cols - 1, this.rows - 1),
     ];
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
-    const minX = Math.min(...xs) - TILE_W / 2;
-    const minY = Math.min(...ys) - TILE_H / 2;
-    const maxX = Math.max(...xs) + TILE_W / 2;
-    const maxY = Math.max(...ys) + TILE_H / 2;
+    const minX = Math.min(...xs) - 32;
+    const minY = Math.min(...ys) - 16;
+    const maxX = Math.max(...xs) + 32;
+    const maxY = Math.max(...ys) + 16;
     return [minX, minY, maxX - minX, maxY - minY];
   }
 }
