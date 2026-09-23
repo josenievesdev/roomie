@@ -131,10 +131,15 @@ export class MainScene extends Phaser.Scene {
     this.player = this.add
       .sprite(p.x, p.y, "avatar", `${this.avatar.facing}-0`)
       .setOrigin(0.5, 1)
+      .setScale(2) // 24px -> 48px de alto: proporción Habbo frente a los tiles
       .setDepth(p.depth);
     this.player.play(`idle-${this.avatar.facing}`);
 
-    this.cameras.main.setBounds(...this.roomBounds());
+    const [bx, by, bw, bh] = this.roomBounds();
+    this.cameras.main.setBounds(bx, by, bw, bh);
+    // Centrar al cargar: con límites más pequeños que la ventana, Phaser
+    // ancla el scroll al borde mínimo y la sala queda pegada arriba.
+    this.cameras.main.centerOn(bx + bw / 2, by + bh / 2);
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
     this.cameras.main.fadeIn(250, 0, 0, 0);
 
@@ -265,8 +270,8 @@ export class MainScene extends Phaser.Scene {
     this.player.setPosition(p.x, p.y);
     this.player.setDepth(p.depth); // orden isométrico
 
-    // La burbuja de chat sigue al avatar
-    if (this.bubble) this.bubble.setPosition(p.x, p.y - 30);
+    // La burbuja de chat sigue al avatar (48px de alto con la escala x2)
+    if (this.bubble) this.bubble.setPosition(p.x, p.y - 54);
   }
 
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
@@ -333,12 +338,19 @@ export class MainScene extends Phaser.Scene {
   private transitionTo(d: Door): void {
     if (this.transitioning) return;
     if (!(ROOMS as readonly string[]).includes(d.target)) return;
-    this.transitioning = true;
+    // Guardar el destino ANTES de marcar la transición: a partir de aquí
+    // saveGame() ignora los guardados automáticos para que no sobrescriban
+    // la sala destino con la posición vieja de la sala actual.
     this.saveGame({ room: d.target, col: d.targetCol, row: d.targetRow });
+    this.transitioning = true;
     this.cameras.main.fadeOut(250, 0, 0, 0);
-    this.cameras.main.once("fadeoutcomplete", () => {
-      this.scene.restart();
-    });
+    // El nombre real del evento en Phaser 3 es "camerafadeoutcomplete"
+    this.cameras.main.once(
+      Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
+      () => {
+        this.scene.restart();
+      },
+    );
   }
 
   /** Puerta dibujada sobre la pared trasera de su celda */
@@ -483,6 +495,8 @@ export class MainScene extends Phaser.Scene {
   // ---------- Guardado ----------
 
   private saveGame(overrides: Partial<Omit<SaveData, "version">> = {}): void {
+    // Durante el cruce de puerta solo se guarda el destino (con overrides)
+    if (this.transitioning) return;
     writeSave({
       room: this.roomId,
       col: Math.round(this.avatar.col),
@@ -569,7 +583,7 @@ export class MainScene extends Phaser.Scene {
       .rectangle(0, -txt.height / 2 - 1, txt.width + 12, txt.height + 6, 0xffffff, 0.95)
       .setStrokeStyle(1, 0x1a1a24, 1);
 
-    const container = this.add.container(this.player.x, this.player.y - 30, [bg, txt]);
+    const container = this.add.container(this.player.x, this.player.y - 54, [bg, txt]);
     container.setDepth(1e6);
     container.setScale(0.4);
     this.bubble = container;
@@ -759,6 +773,14 @@ export class MainScene extends Phaser.Scene {
     const minY = Math.min(...ys) - 16;
     const maxX = Math.max(...xs) + 32;
     const maxY = Math.max(...ys) + 16;
-    return [minX, minY, maxX - minX, maxY - minY];
+    // Al menos el tamaño de la vista, centrado en la sala: si los límites
+    // quedan por debajo de la ventana, la cámara no puede centrar y la sala
+    // se queda clavada en una esquina con negro alrededor.
+    const cam = this.cameras.main;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const w = Math.max(maxX - minX, this.scale.width / cam.zoom);
+    const h = Math.max(maxY - minY, this.scale.height / cam.zoom);
+    return [cx - w / 2, cy - h / 2, w, h];
   }
 }

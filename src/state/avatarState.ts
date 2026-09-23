@@ -114,10 +114,16 @@ export class AvatarState {
   /** Posición de render (con ajuste si está sentado) y profundidad isométrica */
   screen(): { x: number; y: number; depth: number } {
     const base = toScreen(this.col, this.row);
+    // La profundidad sale de la celda que CONTIENE los pies (redondeo), nunca
+    // de la posición fraccionaria: si no, al parar a mitad de celda (teclas o
+    // clic que cancela el camino) el suelo de la celda contenedora se dibuja
+    // encima del cuerpo y solo asoma la cabeza. Empates con el suelo de esa
+    // celda los gana el sprite por orden de inserción.
+    const cell = toScreen(Math.round(this.col), Math.round(this.row));
     if (this.sitting) {
-      return { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth: base.y };
+      return { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth: cell.y };
     }
-    return { x: base.x, y: base.y, depth: base.y };
+    return { x: base.x, y: base.y, depth: cell.y };
   }
 
   /** Orientación según el desplazamiento de pantalla de este frame */
