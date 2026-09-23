@@ -60,13 +60,14 @@ export function findPath(
   cols: number,
   rows: number,
   isBlocked: (col: number, row: number) => boolean,
+  allowBlockedGoal = false,
 ): Cell[] | null {
   if (
-    goal.col < 0 || goal.row < 0 || goal.col >= cols || goal.row >= rows ||
-    isBlocked(goal.col, goal.row)
+    goal.col < 0 || goal.row < 0 || goal.col >= cols || goal.row >= rows
   ) {
     return null;
   }
+  if (isBlocked(goal.col, goal.row) && !allowBlockedGoal) return null;
 
   const total = cols * rows;
   const gScore = new Float64Array(total).fill(Infinity);
@@ -104,7 +105,7 @@ export function findPath(
         const nc = col + dc;
         const nr = row + dr;
         if (nc < 0 || nr < 0 || nc >= cols || nr >= rows) continue;
-        if (isBlocked(nc, nr)) continue;
+        if (isBlocked(nc, nr) && !(allowBlockedGoal && nc === goal.col && nr === goal.row)) continue;
         // Sin cortar esquinas: los dos vecinos ortogonales deben estar libres
         if (dc !== 0 && dr !== 0 && (isBlocked(col + dc, row) || isBlocked(col, row + dr))) {
           continue;

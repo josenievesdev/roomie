@@ -27,11 +27,15 @@ type TiledMap = {
   layers: TiledLayer[];
 };
 
+type PlacedFurniture = { kind: FurnitureKind; col: number; row: number };
+
 const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
 const PATH_SPEED = 4.5; // celdas/s (clic + A*)
+const SIT_OFFSET = 10; // px que sube el avatar al sentarse
+const SIT_SHIFT = 4; // px que se adelanta hacia la delantera del sofá
 
-// Fase 2b: sala desde JSON de Tiled + avatar con animaciones, colisiones,
-// movimiento con WASD y con clic (pathfinding A*).
+// Fase 4: sala desde Tiled + avatar, colisiones, clic con A*, sentarse en el
+// sofá y burbuja de chat local (Enter para escribir).
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -41,7 +45,18 @@ export class MainScene extends Phaser.Scene {
   private cols = 0;
   private rows = 0;
   private facing: "down" | "up" | "side" = "down";
-  private furniture: { kind: FurnitureKind; col: number; row: number }[] = [];
+  private furniture: PlacedFurniture[] = [];
+
+  // Sentarse
+  private sitting: PlacedFurniture | null = null;
+  private pendingSit: PlacedFurniture | null = null;
+
+  // Chat
+  private chatOpen = false;
+  private chatText = "";
+  private chatBg!: Phaser.GameObjects.Rectangle;
+  private chatLabel!: Phaser.GameObjects.Text;
+  private bubble: Phaser.GameObjects.Container | null = null;
 
   // Posición autoritativa del avatar en cuadrícula (valores continuos)
   private gc = 0;
@@ -78,17 +93,51 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 3\nWASD / flechas o clic para caminar", {
+      .text(8, 8, "Roomie — Fase 4\nClic: caminar/sofá · WASD · Enter: chat", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
       })
       .setScrollFactor(0);
 
+    // Barra de chat (interfaz fija en pantalla)
+    this.chatBg = this.add
+      .rectangle(480, 512, 420, 26, 0x000000, 0.65)
+      .setScrollFactor(0)
+      .setDepth(1e6)
+      .setVisible(false);
+    this.chatLabel = this.add
+      .text(280, 512, "", {
+        fontFamily: "monospace",
+        fontSize: "13px",
+        color: "#ffffff",
+      })
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(1e6 + 1)
+      .setVisible(false);
+
     const kb = this.input.keyboard;
     if (kb) {
       this.cursors = kb.createCursorKeys();
       this.wasd = kb.addKeys("W,A,S,D") as MainScene["wasd"];
+
+      kb.on("keydown", (e: { key?: string }) => {
+        const key = e.key ?? "";
+        if (!this.chatOpen) {
+          if (key === "Enter") this.openChat();
+          return;
+        }
+        if (key === "Enter") this.sendChat();
+        else if (key === "Escape") this.closeChat();
+        else if (key === "Backspace") {
+          this.chatText = this.chatText.slice(0, -1);
+          this.renderChatBar();
+        } else if (key.length === 1 && this.chatText.length < 40) {
+          this.chatText += key;
+          this.renderChatBar();
+        }
+      });
     }
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
@@ -99,18 +148,30 @@ export class MainScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.1); // tope por si la pestaña estuvo en segundo plano
-    const old = toScreen(this.gc, this.gr);
+    const old = { x: this.player.x, y: this.player.y };
 
     let dx = 0;
     let dy = 0;
-    if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
-    if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
-    if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
-    if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
+    if (!this.chatOpen) {
+      if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
+      if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
+      if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
+      if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
+    }
+
+    // Una orden de movimiento levanta del sofá
+    if (this.sitting && (dx !== 0 || dy !== 0)) this.sitting = null;
+    if (this.sitting) {
+      dx = 0;
+      dy = 0;
+      this.path = [];
+      this.pendingSit = null;
+    }
 
     if (dx !== 0 || dy !== 0) {
       // El teclado cancela el camino activado con clic
       this.path = [];
+      this.pendingSit = null;
       if (dx !== 0 && dy !== 0) {
         dx *= Math.SQRT1_2;
         dy *= Math.SQRT1_2;
@@ -120,25 +181,36 @@ export class MainScene extends Phaser.Scene {
       this.followPath(dt);
     }
 
-    // Convertir cuadrícula -> pantalla y actualizarrender/animación
-    const p = toScreen(this.gc, this.gr);
+    // Cuadrícula -> pantalla (con ajuste si está sentado)
+    const base = toScreen(this.gc, this.gr);
+    const p = this.sitting
+      ? { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET }
+      : base;
     const moveX = p.x - old.x;
     const moveY = p.y - old.y;
     const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
 
-    if (moving) {
-      if (Math.abs(moveX) > Math.abs(moveY)) {
-        this.facing = "side";
-        this.player.setFlipX(moveX > 0); // "side" está dibujado mirando a la izquierda
-      } else {
-        this.facing = moveY < 0 ? "up" : "down";
-        this.player.setFlipX(false);
+    if (this.sitting) {
+      this.player.setFlipX(false);
+      this.player.play("idle-sit", true);
+    } else {
+      if (moving) {
+        if (Math.abs(moveX) > Math.abs(moveY)) {
+          this.facing = "side";
+          this.player.setFlipX(moveX > 0); // "side" está dibujado mirando a la izquierda
+        } else {
+          this.facing = moveY < 0 ? "up" : "down";
+          this.player.setFlipX(false);
+        }
       }
+      this.player.play(moving ? `walk-${this.facing}` : `idle-${this.facing}`, true);
     }
 
     this.player.setPosition(p.x, p.y);
-    this.player.setDepth(p.y); // orden isométrico
-    this.player.play(moving ? `walk-${this.facing}` : `idle-${this.facing}`, true);
+    this.player.setDepth(base.y); // orden isométrico
+
+    // La burbuja de chat sigue al avatar
+    if (this.bubble) this.bubble.setPosition(p.x, p.y - 30);
   }
 
   /**
@@ -188,27 +260,123 @@ export class MainScene extends Phaser.Scene {
         move = 0;
       }
     }
+    // Al llegar al final de un camino con destino "sofá": sentarse
+    if (this.path.length === 0 && this.pendingSit) {
+      this.sitting = this.pendingSit;
+      this.pendingSit = null;
+    }
   }
 
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
+    if (this.chatOpen) {
+      this.closeChat(); // un clic en el mundo cierra el chat
+      return;
+    }
+
     const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     const g = toGrid(world.x, world.y);
     const goal: Cell = { col: Math.round(g.col), row: Math.round(g.row) };
 
     if (goal.col < 0 || goal.row < 0 || goal.col >= this.cols || goal.row >= this.rows) return;
-    if (this.blocked[goal.row][goal.col]) return;
+
+    const furn = this.furnitureAt(goal.col, goal.row);
+    const sitTarget = furn?.kind === "sofa" ? furn : null;
+    if (!sitTarget && this.blocked[goal.row][goal.col]) return;
 
     const start: Cell = { col: Math.round(this.gc), row: Math.round(this.gr) };
     if (start.col === goal.col && start.row === goal.row) {
       this.path = [];
+      this.pendingSit = null;
+      if (this.sitting) this.sitting = null; // segundo clic en el sofá: levantarse
       return;
     }
 
-    const path = findPath(start, goal, this.cols, this.rows, (c, r) => this.blocked[r][c]);
+    const path = findPath(
+      start,
+      goal,
+      this.cols,
+      this.rows,
+      (c, r) => this.blocked[r][c],
+      sitTarget !== null, // el sofá es meta válida aunque su celda esté bloqueada
+    );
     if (!path || path.length === 0) return;
 
+    this.sitting = null; // levantarse al empezar a caminar
+    this.pendingSit = sitTarget;
     this.path = path;
     this.showClickMarker(world.x, world.y);
+  }
+
+  private furnitureAt(col: number, row: number): PlacedFurniture | undefined {
+    return this.furniture.find((f) => f.col === col && f.row === row);
+  }
+
+  // ---------- Chat ----------
+
+  private openChat(): void {
+    this.chatOpen = true;
+    this.chatText = "";
+    this.path = [];
+    this.pendingSit = null;
+    this.chatBg.setVisible(true);
+    this.chatLabel.setVisible(true);
+    this.renderChatBar();
+  }
+
+  private closeChat(): void {
+    this.chatOpen = false;
+    this.chatText = "";
+    this.chatBg.setVisible(false);
+    this.chatLabel.setVisible(false);
+  }
+
+  private sendChat(): void {
+    const msg = this.chatText.trim();
+    this.closeChat();
+    if (msg) this.showBubble(msg);
+  }
+
+  private renderChatBar(): void {
+    this.chatLabel.setText(
+      this.chatText
+        ? `> ${this.chatText}▌`
+        : "Escribe un mensaje... (Enter envía, Esc cancela)",
+    );
+  }
+
+  /** Burbuja blanca sobre la cabeza que dura 4 segundos */
+  private showBubble(message: string): void {
+    this.bubble?.destroy();
+
+    const txt = this.add
+      .text(0, 0, message, {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#1a1a24",
+      })
+      .setOrigin(0.5, 1);
+    const bg = this.add
+      .rectangle(0, -txt.height / 2 - 1, txt.width + 12, txt.height + 6, 0xffffff, 0.95)
+      .setStrokeStyle(1, 0x1a1a24, 1);
+
+    const container = this.add.container(this.player.x, this.player.y - 30, [bg, txt]);
+    container.setDepth(1e6);
+    container.setScale(0.4);
+    this.bubble = container;
+
+    this.tweens.add({ targets: container, scale: 1, duration: 220, ease: "Back.easeOut" });
+    this.time.delayedCall(4000, () => {
+      if (this.bubble !== container) return; // ya se sustituyó por otra
+      this.tweens.add({
+        targets: container,
+        alpha: 0,
+        duration: 250,
+        onComplete: () => {
+          if (this.bubble === container) this.bubble = null;
+          container.destroy();
+        },
+      });
+    });
   }
 
   /** Destello isométrico en la celda de destino */

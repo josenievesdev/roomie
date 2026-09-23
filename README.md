@@ -38,7 +38,7 @@ src/
 - [x] Fase 1 — proyección isométrica, panorama de sala y cámara
 - [x] Fase 2 — avatar con animaciones, colisiones y clic para caminar (A*)
 - [x] Fase 3 — sala real con paredes y mobiliario
-- [ ] Fase 4 — interacciones (sentarse, burbuja de chat, personalización)
+- [x] Fase 4 — sentarse en el sofá y burbuja de chat (Enter)
 - [ ] Fase 5 — guardado (localStorage) y arquitectura lista para online
 - [ ] Futuro — múltiples salas, inventario, multijugador (Node + Socket.io)
 

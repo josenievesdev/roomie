@@ -106,6 +106,23 @@ function drawFrame(
   }
 }
 
+/** Pose sentada (de perfil, mirando a la izquierda): para el sofá */
+function drawSit(g: Phaser.GameObjects.Graphics, ox: number, oy: number): void {
+  // Piernas: muslo horizontal, espinilla colgando y pie
+  rect(g, ox, oy, 4, 17, 7, 4, C.pants); // muslo + cadera
+  rect(g, ox, oy, 4, 20, 3, 4, C.pants); // espinilla
+  rect(g, ox, oy, 1, 21, 3, 3, C.shoes); // pie
+  // Torso
+  rect(g, ox, oy, 6, 10, 6, 7, C.shirt);
+  rect(g, ox, oy, 7, 10, 2, 5, C.shirtDark); // brazo
+  rect(g, ox, oy, 7, 15, 2, 2, C.skin); // mano
+  // Cabeza de perfil
+  rect(g, ox, oy, 5, 1, 8, 3, C.hair);
+  rect(g, ox, oy, 5, 4, 5, 6, C.skin);
+  rect(g, ox, oy, 10, 4, 3, 6, C.hair);
+  rect(g, ox, oy, 6, 6, 1, 2, C.eye);
+}
+
 /** Crea la textura del avatar y sus animaciones (idle/walk por dirección). */
 export function createAvatarTexture(scene: Phaser.Scene): void {
   if (scene.textures.exists("avatar")) return;
@@ -116,7 +133,8 @@ export function createAvatarTexture(scene: Phaser.Scene): void {
       drawFrame(g, dir, frame, frame * FRAME_W, row * FRAME_H);
     }
   });
-  g.generateTexture("avatar", FRAME_W * 4, FRAME_H * DIRS.length);
+  drawSit(g, 0, DIRS.length * FRAME_H); // fila extra: sentado
+  g.generateTexture("avatar", FRAME_W * 4, FRAME_H * (DIRS.length + 1));
   g.destroy();
 
   const tex = scene.textures.get("avatar");
@@ -125,6 +143,7 @@ export function createAvatarTexture(scene: Phaser.Scene): void {
       tex.add(`${dir}-${frame}`, 0, frame * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H);
     }
   });
+  tex.add("sit-0", 0, 0, DIRS.length * FRAME_H, FRAME_W, FRAME_H);
 
   for (const dir of DIRS) {
     if (!scene.anims.exists(`idle-${dir}`)) {
@@ -142,5 +161,13 @@ export function createAvatarTexture(scene: Phaser.Scene): void {
         repeat: -1,
       });
     }
+  }
+
+  if (!scene.anims.exists("idle-sit")) {
+    scene.anims.create({
+      key: "idle-sit",
+      frames: [{ key: "avatar", frame: "sit-0" }],
+      frameRate: 1,
+    });
   }
 }
