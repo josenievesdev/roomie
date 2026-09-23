@@ -322,7 +322,56 @@
       "draworder": "topdown",
       "id": 3,
       "name": "objetos",
-      "objects": [],
+      "objects": [
+        {
+          "id": 1,
+          "name": "sofa-1",
+          "type": "sofa",
+          "class": "sofa",
+          "x": 448,
+          "y": 112,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "mesa-1",
+          "type": "mesa",
+          "class": "mesa",
+          "x": 448,
+          "y": 208,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 7
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 5
+            }
+          ]
+        }
+      ],
       "opacity": 1,
       "type": "objectgroup",
       "visible": true,
@@ -331,7 +380,7 @@
     }
   ],
   "nextlayerid": 4,
-  "nextobjectid": 1,
+  "nextobjectid": 3,
   "orientation": "isometric",
   "renderorder": "right-down",
   "tiledversion": "1.11.2",

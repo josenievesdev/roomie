@@ -1,13 +1,24 @@
 import Phaser from "phaser";
 import { TILE_W, TILE_H, toScreen, toGrid } from "../utils/iso";
 import { createAvatarTexture } from "../entities/avatar";
+import { createFurniture, type FurnitureKind } from "../entities/furniture";
 import { findPath, type Cell } from "../utils/pathfinding";
+
+type TiledObject = {
+  name?: string;
+  type?: string;
+  class?: string;
+  x?: number;
+  y?: number;
+  properties?: { name: string; value: unknown }[];
+};
 
 type TiledLayer = {
   name: string;
   type: string;
   data?: number[];
   visible?: boolean;
+  objects?: TiledObject[];
 };
 
 type TiledMap = {
@@ -30,6 +41,7 @@ export class MainScene extends Phaser.Scene {
   private cols = 0;
   private rows = 0;
   private facing: "down" | "up" | "side" = "down";
+  private furniture: { kind: FurnitureKind; col: number; row: number }[] = [];
 
   // Posición autoritativa del avatar en cuadrícula (valores continuos)
   private gc = 0;
@@ -66,7 +78,7 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 2\nWASD / flechas o clic para caminar", {
+      .text(8, 8, "Roomie — Fase 3\nWASD / flechas o clic para caminar", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -239,6 +251,81 @@ export class MainScene extends Phaser.Scene {
         this.blocked[row][col] = (colsLayer?.data?.[i] ?? 0) !== 0;
       }
     }
+
+    // Paredes traseras y luego mobiliario (la capa "objetos" de Tiled)
+    this.buildWalls();
+
+    const objs = data.layers.find((l) => l.name === "objetos");
+    for (const o of objs?.objects ?? []) {
+      const kind = (o.type || o.class) as FurnitureKind | undefined;
+      const col = this.intProp(o.properties, "col");
+      const row = this.intProp(o.properties, "row");
+      if (kind !== "sofa" && kind !== "mesa") continue;
+      if (col === undefined || row === undefined) continue;
+      if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) continue;
+      createFurniture(this, kind, col, row);
+      this.blocked[row][col] = true;
+      this.furniture.push({ kind, col, row });
+    }
+  }
+
+  /**
+   * Paredes isométricas sobre los dos bordes traseros (fila 0 y columna 0),
+   * una pieza por celda con su propia profundidad.
+   */
+  private buildWalls(): void {
+    const h = 48; // altura de pared en px
+    for (let col = 0; col < this.cols; col++) {
+      const { x, y } = toScreen(col, 0);
+      this.paintWallFace(
+        this.add.graphics().setDepth(y),
+        [
+          { x, y: y - 16 - h }, // arriba-izq
+          { x: x + 32, y: y - h }, // arriba-der
+          { x: x + 32, y }, // abajo-der
+          { x, y: y - 16 }, // abajo-izq
+        ],
+      );
+    }
+    for (let row = 0; row < this.rows; row++) {
+      const { x, y } = toScreen(0, row);
+      this.paintWallFace(
+        this.add.graphics().setDepth(y),
+        [
+          { x: x - 32, y: y - h },
+          { x, y: y - 16 - h },
+          { x, y: y - 16 },
+          { x: x - 32, y },
+        ],
+      );
+    }
+  }
+
+  /** Cara de pared + zócalo + remate superior. pts en orden horario desde arriba */
+  private paintWallFace(g: Phaser.GameObjects.Graphics, pts: { x: number; y: number }[]): void {
+    const [p0, p1, p2, p3] = pts;
+    g.fillStyle(0x6d6d94, 1);
+    g.fillPoints(pts, true);
+    g.lineStyle(1, 0x3a3a55, 1);
+    g.strokePoints(pts, true);
+    // Zócalo: franja oscura de 5px pegada al suelo
+    g.fillStyle(0x4e4e70, 1);
+    g.fillPoints(
+      [p3, p2, { x: p2.x, y: p2.y - 5 }, { x: p3.x, y: p3.y - 5 }],
+      true,
+    );
+    // Remate superior claro
+    g.lineStyle(2, 0x9a9ad0, 1);
+    g.lineBetween(p0.x, p0.y, p1.x, p1.y);
+  }
+
+  /** Lee una propiedad entera de un objeto de Tiled */
+  private intProp(
+    props: { name: string; value: unknown }[] | undefined,
+    name: string,
+  ): number | undefined {
+    const p = props?.find((x) => x.name === name);
+    return typeof p?.value === "number" ? p.value : undefined;
   }
 
   /** ¿Puede el avatar estar con los pies en esta celda (valores continuos)? */

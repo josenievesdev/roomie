@@ -37,7 +37,7 @@ src/
 - [x] Fase 0 — proyecto Vite + TS + Phaser, primera escena
 - [x] Fase 1 — proyección isométrica, panorama de sala y cámara
 - [x] Fase 2 — avatar con animaciones, colisiones y clic para caminar (A*)
-- [ ] Fase 3 — sala real con mobiliario y límites
+- [x] Fase 3 — sala real con paredes y mobiliario
 - [ ] Fase 4 — interacciones (sentarse, burbuja de chat, personalización)
 - [ ] Fase 5 — guardado (localStorage) y arquitectura lista para online
 - [ ] Futuro — múltiples salas, inventario, multijugador (Node + Socket.io)
@@ -48,4 +48,7 @@ src/
   `node tools/genassets.mjs`
 - `public/assets/room1.json` es un mapa de **Tiled** (isométrico 12×12):
   ábrelo con el editor Tiled para modificarlo. La capa `colisiones`
-  (oculta) marca las celdas bloqueadas.
+  (oculta) marca las celdas bloqueadas y la capa `objetos` coloca el
+  mobiliario mediante las propiedades enteras `col` y `row` de cada objeto
+  (tipo `sofa` o `mesa`).
+- Las paredes traseras se generan en código sobre la fila 0 y la columna 0.
