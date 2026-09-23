@@ -1,6 +1,7 @@
 import Phaser from "phaser";
-import { toScreen, toGrid } from "../utils/iso";
+import { TILE_W, TILE_H, toScreen, toGrid } from "../utils/iso";
 import { createAvatarTexture } from "../entities/avatar";
+import { findPath, type Cell } from "../utils/pathfinding";
 
 type TiledLayer = {
   name: string;
@@ -15,7 +16,11 @@ type TiledMap = {
   layers: TiledLayer[];
 };
 
-// Fase 2: sala desde JSON de Tiled + avatar placeholder con animaciones y colisiones.
+const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
+const PATH_SPEED = 4.5; // celdas/s (clic + A*)
+
+// Fase 2b: sala desde JSON de Tiled + avatar con animaciones, colisiones,
+// movimiento con WASD y con clic (pathfinding A*).
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -25,6 +30,11 @@ export class MainScene extends Phaser.Scene {
   private cols = 0;
   private rows = 0;
   private facing: "down" | "up" | "side" = "down";
+
+  // Posición autoritativa del avatar en cuadrícula (valores continuos)
+  private gc = 0;
+  private gr = 0;
+  private path: Cell[] = [];
 
   constructor() {
     super("main");
@@ -43,7 +53,9 @@ export class MainScene extends Phaser.Scene {
     this.buildRoom();
 
     const start = this.firstFreeCell();
-    const pos = toScreen(start.col, start.row);
+    this.gc = start.col;
+    this.gr = start.row;
+    const pos = toScreen(this.gc, this.gr);
     this.player = this.add
       .sprite(pos.x, pos.y, "avatar", "down-0")
       .setOrigin(0.5, 1)
@@ -54,7 +66,7 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 2\nWASD / flechas · sala room1", {
+      .text(8, 8, "Roomie — Fase 2\nWASD / flechas o clic para caminar", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -66,46 +78,142 @@ export class MainScene extends Phaser.Scene {
       this.cursors = kb.createCursorKeys();
       this.wasd = kb.addKeys("W,A,S,D") as MainScene["wasd"];
     }
+
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      if (pointer.button !== 0) return; // solo clic izquierdo
+      this.handleWorldClick(pointer);
+    });
   }
 
   update(_time: number, delta: number): void {
-    const speed = 150; // px/s en pantalla
-    const dt = delta / 1000;
+    const dt = Math.min(delta / 1000, 0.1); // tope por si la pestaña estuvo en segundo plano
+    const old = toScreen(this.gc, this.gr);
+
     let dx = 0;
     let dy = 0;
-
     if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
     if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
     if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
     if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
 
-    if (dx !== 0 && dy !== 0) {
-      dx *= Math.SQRT1_2;
-      dy *= Math.SQRT1_2;
+    if (dx !== 0 || dy !== 0) {
+      // El teclado cancela el camino activado con clic
+      this.path = [];
+      if (dx !== 0 && dy !== 0) {
+        dx *= Math.SQRT1_2;
+        dy *= Math.SQRT1_2;
+      }
+      this.moveKeyboard(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
+    } else if (this.path.length > 0) {
+      this.followPath(dt);
     }
 
-    // Ejepar por ejes por separado: así se desliza por el muro en vez de quedarse pegado
-    if (dx !== 0) {
-      const nx = this.player.x + dx * speed * dt;
-      if (this.canStand(nx, this.player.y)) this.player.x = nx;
-    }
-    if (dy !== 0) {
-      const ny = this.player.y + dy * speed * dt;
-      if (this.canStand(this.player.x, ny)) this.player.y = ny;
+    // Convertir cuadrícula -> pantalla y actualizarrender/animación
+    const p = toScreen(this.gc, this.gr);
+    const moveX = p.x - old.x;
+    const moveY = p.y - old.y;
+    const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
+
+    if (moving) {
+      if (Math.abs(moveX) > Math.abs(moveY)) {
+        this.facing = "side";
+        this.player.setFlipX(moveX > 0); // "side" está dibujado mirando a la izquierda
+      } else {
+        this.facing = moveY < 0 ? "up" : "down";
+        this.player.setFlipX(false);
+      }
     }
 
-    this.player.setDepth(this.player.y); // orden isométrico
-
-    // Dirección mirada: horizontal tiene prioridad
-    const moving = dx !== 0 || dy !== 0;
-    if (dx !== 0) {
-      this.facing = "side";
-      this.player.setFlipX(dx > 0); // el sprite "side" está dibujado mirando a la izquierda
-    } else if (dy !== 0) {
-      this.facing = dy < 0 ? "up" : "down";
-      this.player.setFlipX(false);
-    }
+    this.player.setPosition(p.x, p.y);
+    this.player.setDepth(p.y); // orden isométrico
     this.player.play(moving ? `walk-${this.facing}` : `idle-${this.facing}`, true);
+  }
+
+  /**
+   * Movimiento por teclado en dos pasos (eje X de pantalla y luego Y)
+   * para deslizar por los muros en vez de quedarse pegado.
+   * Fórmulas: col = x/TILE_W + y/TILE_H · row = y/TILE_H - x/TILE_W
+   */
+  private moveKeyboard(sx: number, sy: number): void {
+    if (sx !== 0) {
+      const col = this.gc + sx / TILE_W;
+      const row = this.gr - sx / TILE_W;
+      if (this.canStand(col, row)) {
+        this.gc = col;
+        this.gr = row;
+      }
+    }
+    if (sy !== 0) {
+      const col = this.gc + sy / TILE_H;
+      const row = this.gr + sy / TILE_H;
+      if (this.canStand(col, row)) {
+        this.gc = col;
+        this.gr = row;
+      }
+    }
+  }
+
+  /** Avanza por el camino A* a velocidad constante en unidades de celda */
+  private followPath(dt: number): void {
+    let move = PATH_SPEED * dt;
+    while (move > 0 && this.path.length > 0) {
+      const target = this.path[0];
+      const dCol = target.col - this.gc;
+      const dRow = target.row - this.gr;
+      const segLen = Math.hypot(dCol, dRow);
+      if (segLen < 1e-9) {
+        this.path.shift();
+        continue;
+      }
+      if (move >= segLen) {
+        this.gc = target.col;
+        this.gr = target.row;
+        this.path.shift();
+        move -= segLen;
+      } else {
+        this.gc += (dCol / segLen) * move;
+        this.gr += (dRow / segLen) * move;
+        move = 0;
+      }
+    }
+  }
+
+  private handleWorldClick(pointer: Phaser.Input.Pointer): void {
+    const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const g = toGrid(world.x, world.y);
+    const goal: Cell = { col: Math.round(g.col), row: Math.round(g.row) };
+
+    if (goal.col < 0 || goal.row < 0 || goal.col >= this.cols || goal.row >= this.rows) return;
+    if (this.blocked[goal.row][goal.col]) return;
+
+    const start: Cell = { col: Math.round(this.gc), row: Math.round(this.gr) };
+    if (start.col === goal.col && start.row === goal.row) {
+      this.path = [];
+      return;
+    }
+
+    const path = findPath(start, goal, this.cols, this.rows, (c, r) => this.blocked[r][c]);
+    if (!path || path.length === 0) return;
+
+    this.path = path;
+    this.showClickMarker(world.x, world.y);
+  }
+
+  /** Destello isométrico en la celda de destino */
+  private showClickMarker(x: number, y: number): void {
+    const marker = this.add
+      .image(x, y, "tileset", 0)
+      .setDepth(1e6)
+      .setAlpha(0.75)
+      .setScale(0.6);
+    this.tweens.add({
+      targets: marker,
+      alpha: 0,
+      scale: 0.15,
+      duration: 400,
+      ease: "Quad.easeOut",
+      onComplete: () => marker.destroy(),
+    });
   }
 
   /** Construye la sala (piso + colisiones) desde el JSON de Tiled */
@@ -133,17 +241,16 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  /** ¿Puede el avatar estar con los pies en esta posición de pantalla? */
-  private canStand(x: number, y: number): boolean {
-    const g = toGrid(x, y);
-    const col = Math.round(g.col);
-    const row = Math.round(g.row);
-    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return false;
-    return !this.blocked[row][col];
+  /** ¿Puede el avatar estar con los pies en esta celda (valores continuos)? */
+  private canStand(col: number, row: number): boolean {
+    const c = Math.round(col);
+    const r = Math.round(row);
+    if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) return false;
+    return !this.blocked[r][c];
   }
 
   /** Celda libre más cercana al centro de la sala */
-  private firstFreeCell(): { col: number; row: number } {
+  private firstFreeCell(): Cell {
     const cx = Math.floor(this.cols / 2);
     const cy = Math.floor(this.rows / 2);
     for (let r = 0; r < this.rows; r++) {
@@ -166,10 +273,10 @@ export class MainScene extends Phaser.Scene {
     ];
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
-    const minX = Math.min(...xs) - 32;
-    const minY = Math.min(...ys) - 16;
-    const maxX = Math.max(...xs) + 32;
-    const maxY = Math.max(...ys) + 16;
+    const minX = Math.min(...xs) - TILE_W / 2;
+    const minY = Math.min(...ys) - TILE_H / 2;
+    const maxX = Math.max(...xs) + TILE_W / 2;
+    const maxY = Math.max(...ys) + TILE_H / 2;
     return [minX, minY, maxX - minX, maxY - minY];
   }
 }

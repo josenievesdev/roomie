@@ -36,7 +36,7 @@ src/
 
 - [x] Fase 0 — proyecto Vite + TS + Phaser, primera escena
 - [x] Fase 1 — proyección isométrica, panorama de sala y cámara
-- [x] Fase 2 — avatar con animaciones + colisiones con tilemap (Tiled)
+- [x] Fase 2 — avatar con animaciones, colisiones y clic para caminar (A*)
 - [ ] Fase 3 — sala real con mobiliario y límites
 - [ ] Fase 4 — interacciones (sentarse, burbuja de chat, personalización)
 - [ ] Fase 5 — guardado (localStorage) y arquitectura lista para online
