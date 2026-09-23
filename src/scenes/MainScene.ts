@@ -38,14 +38,24 @@ type TiledMap = {
 
 type PlacedFurniture = { kind: FurnitureKind; col: number; row: number };
 
+type Door = {
+  col: number;
+  row: number;
+  target: string;
+  targetCol: number;
+  targetRow: number;
+};
+
+const ROOMS = ["room1", "room2"] as const;
+type RoomId = (typeof ROOMS)[number];
+
 const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
-const ROOM_ID = "room1";
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
-// Fase 5+: render + entrada + chat + guardado + personalización.
-// La lógica del avatar vive en AvatarState (módulo puro, preparado para el
-// futuro servidor) y la paleta en state/palette.
+// Fase 6: múltiples salas con puertas. Render + entrada + chat + guardado +
+// personalización; la lógica del avatar vive en AvatarState (módulo puro).
 export class MainScene extends Phaser.Scene {
+  private roomId: RoomId = "room1";
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
@@ -55,6 +65,9 @@ export class MainScene extends Phaser.Scene {
   private cols = 0;
   private rows = 0;
   private furniture: PlacedFurniture[] = [];
+  private doors: Door[] = [];
+  private pendingDoor: Door | null = null;
+  private transitioning = false;
 
   // Personalización
   private palette: Palette = DEFAULT_PALETTE;
@@ -76,7 +89,8 @@ export class MainScene extends Phaser.Scene {
   }
 
   preload(): void {
-    this.load.json(ROOM_ID, `assets/${ROOM_ID}.json`);
+    this.roomId = this.resolveRoom();
+    this.load.json(this.roomId, `assets/${this.roomId}.json`);
     this.load.spritesheet("tileset", "assets/tileset.png", {
       frameWidth: 64,
       frameHeight: 32,
@@ -84,6 +98,19 @@ export class MainScene extends Phaser.Scene {
   }
 
   create(): void {
+    // Reinicio limpio (la escena se reinicia al cruzar puertas)
+    this.transitioning = false;
+    this.chatOpen = false;
+    this.chatText = "";
+    this.customOpen = false;
+    this.bubble = null;
+    this.furniture = [];
+    this.doors = [];
+    this.pendingDoor = null;
+    this.customUI = [];
+    this.shirtSwatches = [];
+    this.hairSwatches = [];
+
     const save = loadSave();
     this.palette = paletteFrom(save);
 
@@ -109,9 +136,10 @@ export class MainScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(...this.roomBounds());
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+    this.cameras.main.fadeIn(250, 0, 0, 0);
 
     this.add
-      .text(8, 8, "Roomie\nClic/WASD · Enter: chat · C: personalizar", {
+      .text(8, 8, `Roomie — ${this.roomId}\nClic/WASD · Enter: chat · C: personalizar`, {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -175,7 +203,7 @@ export class MainScene extends Phaser.Scene {
     const onSave = () => this.saveGame();
     window.addEventListener("beforeunload", onSave);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      this.saveGame();
+      if (!this.transitioning) this.saveGame(); // al cruzar puerta ya se guardó el destino
       window.removeEventListener("beforeunload", onSave);
     });
   }
@@ -195,6 +223,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     if (dx !== 0 || dy !== 0) {
+      this.pendingDoor = null; // moverse cancela el camino de la puerta
       if (dx !== 0 && dy !== 0) {
         dx *= Math.SQRT1_2;
         dy *= Math.SQRT1_2;
@@ -202,6 +231,18 @@ export class MainScene extends Phaser.Scene {
       this.avatar.keyboardMove(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
     } else {
       this.avatar.tick(dt);
+    }
+
+    // ¿Llegó a una puerta? → cruzar
+    if (this.pendingDoor && this.avatar.path.length === 0) {
+      const d = this.pendingDoor;
+      this.pendingDoor = null;
+      if (
+        Math.round(this.avatar.col) === d.col &&
+        Math.round(this.avatar.row) === d.row
+      ) {
+        this.transitionTo(d);
+      }
     }
 
     // Estado -> render
@@ -242,13 +283,15 @@ export class MainScene extends Phaser.Scene {
 
     if (!this.inBounds(goal.col, goal.row)) return;
 
+    const door = this.doorAt(goal.col, goal.row);
     const furn = this.furnitureAt(goal.col, goal.row);
     const sitTarget = furn?.kind === "sofa" ? furn : null;
-    if (!sitTarget && this.blocked[goal.row][goal.col]) return;
+    if (!door && !sitTarget && this.blocked[goal.row][goal.col]) return;
 
     const start: Cell = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
     if (start.col === goal.col && start.row === goal.row) {
       this.avatar.cancelPath();
+      this.pendingDoor = null;
       if (this.avatar.sitting) this.avatar.stand(); // segundo clic en el sofá: levantarse
       return;
     }
@@ -259,16 +302,84 @@ export class MainScene extends Phaser.Scene {
       this.cols,
       this.rows,
       (c, r) => this.blocked[r][c],
-      sitTarget !== null, // el sofá es meta válida aunque su celda esté bloqueada
+      door !== null || sitTarget !== null, // meta válida aunque bloqueada
     );
     if (!path || path.length === 0) return;
 
+    this.pendingDoor = door ?? null;
     this.avatar.startPath(path, sitTarget);
     this.showClickMarker(world.x, world.y);
   }
 
   private furnitureAt(col: number, row: number): PlacedFurniture | undefined {
     return this.furniture.find((f) => f.col === col && f.row === row);
+  }
+
+  private doorAt(col: number, row: number): Door | undefined {
+    return this.doors.find((d) => d.col === col && d.row === row);
+  }
+
+  // ---------- Salas ----------
+
+  private resolveRoom(): RoomId {
+    const save = loadSave();
+    if (save && (ROOMS as readonly string[]).includes(save.room)) {
+      return save.room as RoomId;
+    }
+    return "room1";
+  }
+
+  /** Guarda la partida y reinicia la escena en la sala destino */
+  private transitionTo(d: Door): void {
+    if (this.transitioning) return;
+    if (!(ROOMS as readonly string[]).includes(d.target)) return;
+    this.transitioning = true;
+    this.saveGame({ room: d.target, col: d.targetCol, row: d.targetRow });
+    this.cameras.main.fadeOut(250, 0, 0, 0);
+    this.cameras.main.once("fadeoutcomplete", () => {
+      this.scene.restart();
+    });
+  }
+
+  /** Puerta dibujada sobre la pared trasera de su celda */
+  private drawDoor(col: number, row: number): void {
+    const { x: cx, y: cy } = toScreen(col, row);
+    let a: { x: number; y: number };
+    let b: { x: number; y: number };
+    if (row === 0) {
+      a = { x: cx, y: cy - 16 }; // borde inferior de la pared (izq)
+      b = { x: cx + 32, y: cy };
+    } else if (col === 0) {
+      a = { x: cx - 32, y: cy };
+      b = { x: cx, y: cy - 16 };
+    } else {
+      return; // sin pared trasera no hay puerta visual
+    }
+
+    const h = 40;
+    const lerp = (
+      p: { x: number; y: number },
+      q: { x: number; y: number },
+      t: number,
+    ) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+    const p0 = lerp(a, b, 0.25);
+    const p1 = lerp(a, b, 0.75);
+    const quad = [
+      { x: p0.x, y: p0.y - h },
+      { x: p1.x, y: p1.y - h },
+      p1,
+      p0,
+    ];
+
+    const g = this.add.graphics().setDepth(cy); // misma profundidad que su pared
+    g.fillStyle(0x8b5a2b, 1);
+    g.fillPoints(quad, true);
+    g.lineStyle(1, 0x4a2f18, 1);
+    g.strokePoints(quad, true);
+    // Pomo
+    const knob = lerp(p0, p1, 0.72);
+    g.fillStyle(0xf1c40f, 1);
+    g.fillCircle(knob.x, knob.y - h * 0.5, 2);
   }
 
   // ---------- Personalización ----------
@@ -371,21 +482,22 @@ export class MainScene extends Phaser.Scene {
 
   // ---------- Guardado ----------
 
-  private saveGame(): void {
+  private saveGame(overrides: Partial<Omit<SaveData, "version">> = {}): void {
     writeSave({
-      room: ROOM_ID,
+      room: this.roomId,
       col: Math.round(this.avatar.col),
       row: Math.round(this.avatar.row),
       facing: this.avatar.facing,
       shirt: this.palette.shirt,
       hair: this.palette.hair,
+      ...overrides,
     });
   }
 
   /** Celda de inicio: la guardada si sigue siendo válida, o el centro */
   private resolveStartCell(save: SaveData | null): Cell {
     const fallback = this.firstFreeCell();
-    if (!save || save.room !== ROOM_ID) return fallback;
+    if (!save || save.room !== this.roomId) return fallback;
 
     const col = Math.round(save.col);
     const row = Math.round(save.row);
@@ -415,6 +527,7 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = true;
     this.chatText = "";
     this.avatar.cancelPath();
+    this.pendingDoor = null;
     this.chatBg.setVisible(true);
     this.chatLabel.setVisible(true);
     this.renderChatBar();
@@ -495,7 +608,7 @@ export class MainScene extends Phaser.Scene {
 
   /** Construye la sala (piso + colisiones) desde el JSON de Tiled */
   private buildRoom(): void {
-    const data = this.cache.json.get(ROOM_ID) as TiledMap;
+    const data = this.cache.json.get(this.roomId) as TiledMap;
     this.cols = data.width;
     this.rows = data.height;
 
@@ -522,12 +635,24 @@ export class MainScene extends Phaser.Scene {
 
     const objs = data.layers.find((l) => l.name === "objetos");
     for (const o of objs?.objects ?? []) {
-      const kind = (o.type || o.class) as FurnitureKind | undefined;
+      const kind = (o.type || o.class) as FurnitureKind | "puerta" | undefined;
       const col = this.intProp(o.properties, "col");
       const row = this.intProp(o.properties, "row");
-      if (kind !== "sofa" && kind !== "mesa") continue;
       if (col === undefined || row === undefined) continue;
       if (!this.inBounds(col, row)) continue;
+
+      if (kind === "puerta") {
+        const target = this.strProp(o.properties, "target");
+        const targetCol = this.intProp(o.properties, "targetCol");
+        const targetRow = this.intProp(o.properties, "targetRow");
+        if (!target || targetCol === undefined || targetRow === undefined) continue;
+        const door: Door = { col, row, target, targetCol, targetRow };
+        this.doors.push(door);
+        this.drawDoor(col, row);
+        continue; // el anillo de colisiones ya bloquea la celda
+      }
+
+      if (kind !== "sofa" && kind !== "mesa") continue;
       createFurniture(this, kind, col, row);
       this.blocked[row][col] = true;
       this.furniture.push({ kind, col, row });
@@ -591,6 +716,15 @@ export class MainScene extends Phaser.Scene {
   ): number | undefined {
     const p = props?.find((x) => x.name === name);
     return typeof p?.value === "number" ? p.value : undefined;
+  }
+
+  /** Lee una propiedad de texto de un objeto de Tiled */
+  private strProp(
+    props: { name: string; value: unknown }[] | undefined,
+    name: string,
+  ): string | undefined {
+    const p = props?.find((x) => x.name === name);
+    return typeof p?.value === "string" ? p.value : undefined;
   }
 
   private inBounds(col: number, row: number): boolean {

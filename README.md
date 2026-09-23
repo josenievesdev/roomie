@@ -34,6 +34,7 @@ Ver sección **Arquitectura** más abajo.
 - [x] Fase 4 — sentarse en el sofá y burbuja de chat (Enter)
 - [x] Fase 5 — guardado (localStorage) + estado aislado para el online
 - [x] Personalización del avatar (tecla **C**: ropa y pelo, se guarda)
+- [x] Múltiples salas: room1 ↔ room2 con puertas (clic en la puerta)
 - [ ] Futuro — multijugador (Node + Socket.io), salas múltiples, inventario
 
 ## Arquitectura
