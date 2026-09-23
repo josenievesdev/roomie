@@ -14,7 +14,7 @@ export interface World {
   isBlocked(col: number, row: number): boolean;
 }
 
-export const PATH_SPEED = 4.5; // celdas/s (clic + A*)
+export const PATH_SPEED = 3; // celdas/s (clic + A*); con walk a 12fps las patas van sincronizadas
 export const SIT_OFFSET = 10; // px que sube el avatar al sentarse
 export const SIT_SHIFT = 4; // px que se adelanta hacia la delantera del sofá
 
@@ -120,10 +120,14 @@ export class AvatarState {
     // encima del cuerpo y solo asoma la cabeza. Empates con el suelo de esa
     // celda los gana el sprite por orden de inserción.
     const cell = toScreen(Math.round(this.col), Math.round(this.row));
+    // +0.5 de sesgo: el sprite queda SIEMPRE por encima del suelo y del
+    // mobiliario de su misma celda (empates exactos los perderían si algo
+    // reordena la lista), pero por debajo de lo que está al frente (+16).
+    const depth = cell.y + 0.5;
     if (this.sitting) {
-      return { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth: cell.y };
+      return { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth };
     }
-    return { x: base.x, y: base.y, depth: cell.y };
+    return { x: base.x, y: base.y, depth };
   }
 
   /** Orientación según el desplazamiento de pantalla de este frame */

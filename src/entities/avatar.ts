@@ -157,6 +157,17 @@ export function createAvatarTexture(
   scene: Phaser.Scene,
   palette: Palette = DEFAULT_PALETTE,
 ): void {
+  // Las animaciones guardan referencias DIRECTAS a los Frame de la textura.
+  // Si solo se destruye la textura, esas referencias quedan con texture/source
+  // a null y el primer play() tras reiniciar la escena rompe el render
+  // (pantalla negra al cruzar una puerta). Se destruyen y recrean SIEMPRE
+  // junto con la textura, para que apunten a los frames vigentes.
+  const animKeys: string[] = DIRS.flatMap((d) => [`idle-${d}`, `walk-${d}`]);
+  animKeys.push("idle-sit");
+  for (const key of animKeys) {
+    if (scene.anims.exists(key)) scene.anims.remove(key);
+  }
+
   if (scene.textures.exists("avatar")) scene.textures.remove("avatar");
   const C = colorsFrom(palette);
 
@@ -171,6 +182,9 @@ export function createAvatarTexture(
   g.destroy();
 
   const tex = scene.textures.get("avatar");
+  // Vecino más cercano: sin esto, al escalar el sprite ×2 los colores se
+  // mezclan (muestreo lineal) y el muñeco se ve borroso.
+  tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
   DIRS.forEach((dir, row) => {
     for (let frame = 0; frame < 4; frame++) {
       tex.add(`${dir}-${frame}`, 0, frame * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H);
@@ -179,28 +193,24 @@ export function createAvatarTexture(
   tex.add("sit-0", 0, 0, DIRS.length * FRAME_H, FRAME_W, FRAME_H);
 
   for (const dir of DIRS) {
-    if (!scene.anims.exists(`idle-${dir}`)) {
-      scene.anims.create({
-        key: `idle-${dir}`,
-        frames: [{ key: "avatar", frame: `${dir}-0` }],
-        frameRate: 1,
-      });
-    }
-    if (!scene.anims.exists(`walk-${dir}`)) {
-      scene.anims.create({
-        key: `walk-${dir}`,
-        frames: [0, 1, 2, 3].map((f) => ({ key: "avatar", frame: `${dir}-${f}` })),
-        frameRate: 8,
-        repeat: -1,
-      });
-    }
-  }
-
-  if (!scene.anims.exists("idle-sit")) {
     scene.anims.create({
-      key: "idle-sit",
-      frames: [{ key: "avatar", frame: "sit-0" }],
+      key: `idle-${dir}`,
+      frames: [{ key: "avatar", frame: `${dir}-0` }],
       frameRate: 1,
     });
+    // 4 frames por ciclo y 3 celdas/s -> 12 fps sincroniza las patas con el
+    // movimiento (a 8 deslizaban y se veía raro al caminar)
+    scene.anims.create({
+      key: `walk-${dir}`,
+      frames: [0, 1, 2, 3].map((f) => ({ key: "avatar", frame: `${dir}-${f}` })),
+      frameRate: 12,
+      repeat: -1,
+    });
   }
+
+  scene.anims.create({
+    key: "idle-sit",
+    frames: [{ key: "avatar", frame: "sit-0" }],
+    frameRate: 1,
+  });
 }

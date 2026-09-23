@@ -49,7 +49,7 @@ type Door = {
 const ROOMS = ["room1", "room2"] as const;
 type RoomId = (typeof ROOMS)[number];
 
-const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
+const KEYBOARD_SPEED = 105; // px/s en pantalla (WASD); en paridad con PATH_SPEED
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
 // Fase 6: múltiples salas con puertas. Render + entrada + chat + guardado +
@@ -115,6 +115,8 @@ export class MainScene extends Phaser.Scene {
     this.palette = paletteFrom(save);
 
     createAvatarTexture(this, this.palette);
+    // Vecino más cercano también para el tileset (nítido al escalar)
+    this.textures.get("tileset").setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.buildRoom();
 
     this.avatar = new AvatarState(
@@ -347,10 +349,16 @@ export class MainScene extends Phaser.Scene {
     // El nombre real del evento en Phaser 3 es "camerafadeoutcomplete"
     this.cameras.main.once(
       Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE,
-      () => {
-        this.scene.restart();
-      },
+      () => this.finishTransition(),
     );
+    // Respaldo: si el evento de la cámara no llegara, se cruza igual
+    this.time.delayedCall(500, () => this.finishTransition());
+  }
+
+  /** Cruza a la sala destino (idempotente por si lo llaman dos vías) */
+  private finishTransition(): void {
+    if (!this.transitioning) return;
+    this.scene.restart();
   }
 
   /** Puerta dibujada sobre la pared trasera de su celda */

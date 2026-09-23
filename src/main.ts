@@ -11,6 +11,9 @@ const game = new Phaser.Game({
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
+    // Tamaño CSS entero: con tamaños fraccionarios el navegador suaviza los
+    // bordes del canvas y el píxel de art sale borroso.
+    autoRound: true,
   },
   scene: [MainScene],
 });
