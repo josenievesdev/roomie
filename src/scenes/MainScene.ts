@@ -1,8 +1,10 @@
 import Phaser from "phaser";
-import { TILE_W, TILE_H, toScreen, toGrid } from "../utils/iso";
+import { toScreen, toGrid } from "../utils/iso";
 import { createAvatarTexture } from "../entities/avatar";
 import { createFurniture, type FurnitureKind } from "../entities/furniture";
 import { findPath, type Cell } from "../utils/pathfinding";
+import { AvatarState, type Facing } from "../state/avatarState";
+import { loadSave, writeSave } from "../utils/storage";
 
 type TiledObject = {
   name?: string;
@@ -30,26 +32,21 @@ type TiledMap = {
 type PlacedFurniture = { kind: FurnitureKind; col: number; row: number };
 
 const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
-const PATH_SPEED = 4.5; // celdas/s (clic + A*)
-const SIT_OFFSET = 10; // px que sube el avatar al sentarse
-const SIT_SHIFT = 4; // px que se adelanta hacia la delantera del sofá
+const ROOM_ID = "room1";
+const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
-// Fase 4: sala desde Tiled + avatar, colisiones, clic con A*, sentarse en el
-// sofá y burbuja de chat local (Enter para escribir).
+// Fase 5: la lógica del avatar vive en AvatarState (módulo puro, preparado
+// para el futuro servidor). Esta escena es render + entrada + chat + guardado.
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
 
+  private avatar!: AvatarState;
   private blocked: boolean[][] = [];
   private cols = 0;
   private rows = 0;
-  private facing: "down" | "up" | "side" = "down";
   private furniture: PlacedFurniture[] = [];
-
-  // Sentarse
-  private sitting: PlacedFurniture | null = null;
-  private pendingSit: PlacedFurniture | null = null;
 
   // Chat
   private chatOpen = false;
@@ -58,17 +55,12 @@ export class MainScene extends Phaser.Scene {
   private chatLabel!: Phaser.GameObjects.Text;
   private bubble: Phaser.GameObjects.Container | null = null;
 
-  // Posición autoritativa del avatar en cuadrícula (valores continuos)
-  private gc = 0;
-  private gr = 0;
-  private path: Cell[] = [];
-
   constructor() {
     super("main");
   }
 
   preload(): void {
-    this.load.json("room1", "assets/room1.json");
+    this.load.json(ROOM_ID, `assets/${ROOM_ID}.json`);
     this.load.spritesheet("tileset", "assets/tileset.png", {
       frameWidth: 64,
       frameHeight: 32,
@@ -79,21 +71,28 @@ export class MainScene extends Phaser.Scene {
     createAvatarTexture(this);
     this.buildRoom();
 
-    const start = this.firstFreeCell();
-    this.gc = start.col;
-    this.gr = start.row;
-    const pos = toScreen(this.gc, this.gr);
+    this.avatar = new AvatarState(
+      {
+        cols: this.cols,
+        rows: this.rows,
+        isBlocked: (c, r) => this.blocked[r][c],
+      },
+      this.resolveStartCell(),
+      this.resolveStartFacing(),
+    );
+
+    const p = this.avatar.screen();
     this.player = this.add
-      .sprite(pos.x, pos.y, "avatar", "down-0")
+      .sprite(p.x, p.y, "avatar", "down-0")
       .setOrigin(0.5, 1)
-      .setDepth(pos.y);
-    this.player.play("idle-down");
+      .setDepth(p.depth);
+    this.player.play(`idle-${this.avatar.facing}`);
 
     this.cameras.main.setBounds(...this.roomBounds());
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 4\nClic: caminar/sofá · WASD · Enter: chat", {
+      .text(8, 8, "Roomie — Fase 5\nClic: caminar/sofá · WASD · Enter: chat", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -144,12 +143,26 @@ export class MainScene extends Phaser.Scene {
       if (pointer.button !== 0) return; // solo clic izquierdo
       this.handleWorldClick(pointer);
     });
+
+    // Guardado: periódico + al cerrar la pestaña/escena
+    this.time.addEvent({
+      delay: SAVE_INTERVAL,
+      loop: true,
+      callback: () => this.saveGame(),
+    });
+    const onSave = () => this.saveGame();
+    window.addEventListener("beforeunload", onSave);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.saveGame();
+      window.removeEventListener("beforeunload", onSave);
+    });
   }
 
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.1); // tope por si la pestaña estuvo en segundo plano
     const old = { x: this.player.x, y: this.player.y };
 
+    // Entrada -> estado (el estado decide qué hacer)
     let dx = 0;
     let dy = 0;
     if (!this.chatOpen) {
@@ -159,112 +172,38 @@ export class MainScene extends Phaser.Scene {
       if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
     }
 
-    // Una orden de movimiento levanta del sofá
-    if (this.sitting && (dx !== 0 || dy !== 0)) this.sitting = null;
-    if (this.sitting) {
-      dx = 0;
-      dy = 0;
-      this.path = [];
-      this.pendingSit = null;
-    }
-
     if (dx !== 0 || dy !== 0) {
-      // El teclado cancela el camino activado con clic
-      this.path = [];
-      this.pendingSit = null;
       if (dx !== 0 && dy !== 0) {
         dx *= Math.SQRT1_2;
         dy *= Math.SQRT1_2;
       }
-      this.moveKeyboard(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
-    } else if (this.path.length > 0) {
-      this.followPath(dt);
+      this.avatar.keyboardMove(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
+    } else {
+      this.avatar.tick(dt);
     }
 
-    // Cuadrícula -> pantalla (con ajuste si está sentado)
-    const base = toScreen(this.gc, this.gr);
-    const p = this.sitting
-      ? { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET }
-      : base;
+    // Estado -> render
+    const p = this.avatar.screen();
     const moveX = p.x - old.x;
     const moveY = p.y - old.y;
     const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
 
-    if (this.sitting) {
-      this.player.setFlipX(false);
+    if (this.avatar.sitting) {
       this.player.play("idle-sit", true);
     } else {
-      if (moving) {
-        if (Math.abs(moveX) > Math.abs(moveY)) {
-          this.facing = "side";
-          this.player.setFlipX(moveX > 0); // "side" está dibujado mirando a la izquierda
-        } else {
-          this.facing = moveY < 0 ? "up" : "down";
-          this.player.setFlipX(false);
-        }
-      }
-      this.player.play(moving ? `walk-${this.facing}` : `idle-${this.facing}`, true);
+      if (moving) this.avatar.updateFacing(moveX, moveY);
+      this.player.play(
+        moving ? `walk-${this.avatar.facing}` : `idle-${this.avatar.facing}`,
+        true,
+      );
     }
+    this.player.setFlipX(this.avatar.flipX);
 
     this.player.setPosition(p.x, p.y);
-    this.player.setDepth(base.y); // orden isométrico
+    this.player.setDepth(p.depth); // orden isométrico
 
     // La burbuja de chat sigue al avatar
     if (this.bubble) this.bubble.setPosition(p.x, p.y - 30);
-  }
-
-  /**
-   * Movimiento por teclado en dos pasos (eje X de pantalla y luego Y)
-   * para deslizar por los muros en vez de quedarse pegado.
-   * Fórmulas: col = x/TILE_W + y/TILE_H · row = y/TILE_H - x/TILE_W
-   */
-  private moveKeyboard(sx: number, sy: number): void {
-    if (sx !== 0) {
-      const col = this.gc + sx / TILE_W;
-      const row = this.gr - sx / TILE_W;
-      if (this.canStand(col, row)) {
-        this.gc = col;
-        this.gr = row;
-      }
-    }
-    if (sy !== 0) {
-      const col = this.gc + sy / TILE_H;
-      const row = this.gr + sy / TILE_H;
-      if (this.canStand(col, row)) {
-        this.gc = col;
-        this.gr = row;
-      }
-    }
-  }
-
-  /** Avanza por el camino A* a velocidad constante en unidades de celda */
-  private followPath(dt: number): void {
-    let move = PATH_SPEED * dt;
-    while (move > 0 && this.path.length > 0) {
-      const target = this.path[0];
-      const dCol = target.col - this.gc;
-      const dRow = target.row - this.gr;
-      const segLen = Math.hypot(dCol, dRow);
-      if (segLen < 1e-9) {
-        this.path.shift();
-        continue;
-      }
-      if (move >= segLen) {
-        this.gc = target.col;
-        this.gr = target.row;
-        this.path.shift();
-        move -= segLen;
-      } else {
-        this.gc += (dCol / segLen) * move;
-        this.gr += (dRow / segLen) * move;
-        move = 0;
-      }
-    }
-    // Al llegar al final de un camino con destino "sofá": sentarse
-    if (this.path.length === 0 && this.pendingSit) {
-      this.sitting = this.pendingSit;
-      this.pendingSit = null;
-    }
   }
 
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
@@ -277,17 +216,16 @@ export class MainScene extends Phaser.Scene {
     const g = toGrid(world.x, world.y);
     const goal: Cell = { col: Math.round(g.col), row: Math.round(g.row) };
 
-    if (goal.col < 0 || goal.row < 0 || goal.col >= this.cols || goal.row >= this.rows) return;
+    if (!this.inBounds(goal.col, goal.row)) return;
 
     const furn = this.furnitureAt(goal.col, goal.row);
     const sitTarget = furn?.kind === "sofa" ? furn : null;
     if (!sitTarget && this.blocked[goal.row][goal.col]) return;
 
-    const start: Cell = { col: Math.round(this.gc), row: Math.round(this.gr) };
+    const start: Cell = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
     if (start.col === goal.col && start.row === goal.row) {
-      this.path = [];
-      this.pendingSit = null;
-      if (this.sitting) this.sitting = null; // segundo clic en el sofá: levantarse
+      this.avatar.cancelPath();
+      if (this.avatar.sitting) this.avatar.stand(); // segundo clic en el sofá: levantarse
       return;
     }
 
@@ -301,9 +239,7 @@ export class MainScene extends Phaser.Scene {
     );
     if (!path || path.length === 0) return;
 
-    this.sitting = null; // levantarse al empezar a caminar
-    this.pendingSit = sitTarget;
-    this.path = path;
+    this.avatar.startPath(path, sitTarget);
     this.showClickMarker(world.x, world.y);
   }
 
@@ -311,13 +247,54 @@ export class MainScene extends Phaser.Scene {
     return this.furniture.find((f) => f.col === col && f.row === row);
   }
 
+  // ---------- Guardado ----------
+
+  private saveGame(): void {
+    writeSave({
+      room: ROOM_ID,
+      col: Math.round(this.avatar.col),
+      row: Math.round(this.avatar.row),
+      facing: this.avatar.facing,
+    });
+  }
+
+  /** Celda de inicio: la guardada si sigue siendo válida, o el centro */
+  private resolveStartCell(): Cell {
+    const fallback = this.firstFreeCell();
+    const save = loadSave();
+    if (!save || save.room !== ROOM_ID) return fallback;
+
+    const col = Math.round(save.col);
+    const row = Math.round(save.row);
+    if (!this.inBounds(col, row)) return fallback;
+    if (!this.blocked[row][col]) return { col, row };
+
+    // Si la celda guardada está bloqueada (p. ej. el sofá al sentarse),
+    // busca la celda libre más cercana
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const c = col + dc;
+        const r = row + dr;
+        if (this.inBounds(c, r) && !this.blocked[r][c]) return { col: c, row: r };
+      }
+    }
+    return fallback;
+  }
+
+  private resolveStartFacing(): Facing {
+    const save = loadSave();
+    if (save && (save.facing === "down" || save.facing === "up" || save.facing === "side")) {
+      return save.facing;
+    }
+    return "down";
+  }
+
   // ---------- Chat ----------
 
   private openChat(): void {
     this.chatOpen = true;
     this.chatText = "";
-    this.path = [];
-    this.pendingSit = null;
+    this.avatar.cancelPath();
     this.chatBg.setVisible(true);
     this.chatLabel.setVisible(true);
     this.renderChatBar();
@@ -398,7 +375,7 @@ export class MainScene extends Phaser.Scene {
 
   /** Construye la sala (piso + colisiones) desde el JSON de Tiled */
   private buildRoom(): void {
-    const data = this.cache.json.get("room1") as TiledMap;
+    const data = this.cache.json.get(ROOM_ID) as TiledMap;
     this.cols = data.width;
     this.rows = data.height;
 
@@ -430,7 +407,7 @@ export class MainScene extends Phaser.Scene {
       const row = this.intProp(o.properties, "row");
       if (kind !== "sofa" && kind !== "mesa") continue;
       if (col === undefined || row === undefined) continue;
-      if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) continue;
+      if (!this.inBounds(col, row)) continue;
       createFurniture(this, kind, col, row);
       this.blocked[row][col] = true;
       this.furniture.push({ kind, col, row });
@@ -496,12 +473,8 @@ export class MainScene extends Phaser.Scene {
     return typeof p?.value === "number" ? p.value : undefined;
   }
 
-  /** ¿Puede el avatar estar con los pies en esta celda (valores continuos)? */
-  private canStand(col: number, row: number): boolean {
-    const c = Math.round(col);
-    const r = Math.round(row);
-    if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) return false;
-    return !this.blocked[r][c];
+  private inBounds(col: number, row: number): boolean {
+    return col >= 0 && row >= 0 && col < this.cols && row < this.rows;
   }
 
   /** Celda libre más cercana al centro de la sala */
@@ -528,10 +501,10 @@ export class MainScene extends Phaser.Scene {
     ];
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
-    const minX = Math.min(...xs) - TILE_W / 2;
-    const minY = Math.min(...ys) - TILE_H / 2;
-    const maxX = Math.max(...xs) + TILE_W / 2;
-    const maxY = Math.max(...ys) + TILE_H / 2;
+    const minX = Math.min(...xs) - 32;
+    const minY = Math.min(...ys) - 16;
+    const maxX = Math.max(...xs) + 32;
+    const maxY = Math.max(...ys) + 16;
     return [minX, minY, maxX - minX, maxY - minY];
   }
 }
