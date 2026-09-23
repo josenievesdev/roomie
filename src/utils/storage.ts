@@ -1,4 +1,5 @@
 import type { Facing } from "../state/avatarState";
+import { DEFAULT_PALETTE } from "../state/palette";
 
 // Guardado persistente del juego en localStorage.
 // Cuando exista servidor, este módulo será el que haga sync con la API.
@@ -8,6 +9,8 @@ export type SaveData = {
   col: number;
   row: number;
   facing: Facing;
+  shirt: number;
+  hair: number;
 };
 
 const KEY = "roomie:save";
@@ -24,7 +27,22 @@ export function loadSave(): SaveData | null {
     if (typeof data.col !== "number" || !Number.isFinite(data.col)) return null;
     if (typeof data.row !== "number" || !Number.isFinite(data.row)) return null;
     if (data.facing !== "down" && data.facing !== "up" && data.facing !== "side") return null;
-    return data as SaveData;
+    return {
+      version: VERSION,
+      room: data.room,
+      col: data.col,
+      row: data.row,
+      facing: data.facing,
+      // Paleta: con defaults para guardados antiguos que no la traían
+      shirt:
+        typeof data.shirt === "number" && Number.isFinite(data.shirt)
+          ? data.shirt
+          : DEFAULT_PALETTE.shirt,
+      hair:
+        typeof data.hair === "number" && Number.isFinite(data.hair)
+          ? data.hair
+          : DEFAULT_PALETTE.hair,
+    };
   } catch {
     return null; // localStorage no disponible o dato corrupto
   }

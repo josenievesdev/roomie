@@ -4,7 +4,14 @@ import { createAvatarTexture } from "../entities/avatar";
 import { createFurniture, type FurnitureKind } from "../entities/furniture";
 import { findPath, type Cell } from "../utils/pathfinding";
 import { AvatarState, type Facing } from "../state/avatarState";
-import { loadSave, writeSave } from "../utils/storage";
+import {
+  DEFAULT_PALETTE,
+  HAIR_COLORS,
+  SHIRT_COLORS,
+  paletteFrom,
+  type Palette,
+} from "../state/palette";
+import { loadSave, writeSave, type SaveData } from "../utils/storage";
 
 type TiledObject = {
   name?: string;
@@ -35,8 +42,9 @@ const KEYBOARD_SPEED = 150; // px/s en pantalla (WASD)
 const ROOM_ID = "room1";
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
-// Fase 5: la lógica del avatar vive en AvatarState (módulo puro, preparado
-// para el futuro servidor). Esta escena es render + entrada + chat + guardado.
+// Fase 5+: render + entrada + chat + guardado + personalización.
+// La lógica del avatar vive en AvatarState (módulo puro, preparado para el
+// futuro servidor) y la paleta en state/palette.
 export class MainScene extends Phaser.Scene {
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -47,6 +55,14 @@ export class MainScene extends Phaser.Scene {
   private cols = 0;
   private rows = 0;
   private furniture: PlacedFurniture[] = [];
+
+  // Personalización
+  private palette: Palette = DEFAULT_PALETTE;
+  private customOpen = false;
+  private customUI: Array<Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text> = [];
+  private shirtSwatches: Phaser.GameObjects.Rectangle[] = [];
+  private hairSwatches: Phaser.GameObjects.Rectangle[] = [];
+  private readonly PANEL = { x: 736, y: 40, w: 216, h: 168 };
 
   // Chat
   private chatOpen = false;
@@ -68,7 +84,10 @@ export class MainScene extends Phaser.Scene {
   }
 
   create(): void {
-    createAvatarTexture(this);
+    const save = loadSave();
+    this.palette = paletteFrom(save);
+
+    createAvatarTexture(this, this.palette);
     this.buildRoom();
 
     this.avatar = new AvatarState(
@@ -77,13 +96,13 @@ export class MainScene extends Phaser.Scene {
         rows: this.rows,
         isBlocked: (c, r) => this.blocked[r][c],
       },
-      this.resolveStartCell(),
-      this.resolveStartFacing(),
+      this.resolveStartCell(save),
+      this.resolveStartFacing(save),
     );
 
     const p = this.avatar.screen();
     this.player = this.add
-      .sprite(p.x, p.y, "avatar", "down-0")
+      .sprite(p.x, p.y, "avatar", `${this.avatar.facing}-0`)
       .setOrigin(0.5, 1)
       .setDepth(p.depth);
     this.player.play(`idle-${this.avatar.facing}`);
@@ -92,7 +111,7 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
 
     this.add
-      .text(8, 8, "Roomie — Fase 5\nClic: caminar/sofá · WASD · Enter: chat", {
+      .text(8, 8, "Roomie\nClic/WASD · Enter: chat · C: personalizar", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -116,6 +135,8 @@ export class MainScene extends Phaser.Scene {
       .setDepth(1e6 + 1)
       .setVisible(false);
 
+    this.buildCustomPanel();
+
     const kb = this.input.keyboard;
     if (kb) {
       this.cursors = kb.createCursorKeys();
@@ -125,6 +146,7 @@ export class MainScene extends Phaser.Scene {
         const key = e.key ?? "";
         if (!this.chatOpen) {
           if (key === "Enter") this.openChat();
+          else if (key === "c" || key === "C") this.toggleCustomPanel();
           return;
         }
         if (key === "Enter") this.sendChat();
@@ -207,6 +229,8 @@ export class MainScene extends Phaser.Scene {
   }
 
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
+    // Los clics sobre el panel de personalización no mueven al avatar
+    if (this.isOverCustomUI(pointer)) return;
     if (this.chatOpen) {
       this.closeChat(); // un clic en el mundo cierra el chat
       return;
@@ -247,6 +271,104 @@ export class MainScene extends Phaser.Scene {
     return this.furniture.find((f) => f.col === col && f.row === row);
   }
 
+  // ---------- Personalización ----------
+
+  private buildCustomPanel(): void {
+    const { x, y, w, h } = this.PANEL;
+    const title = (tx: number, ty: number, label: string) =>
+      this.add
+        .text(tx, ty, label, {
+          fontFamily: "monospace",
+          fontSize: "12px",
+          color: "#ffffff",
+        })
+        .setScrollFactor(0)
+        .setDepth(1e6 + 3);
+
+    const ui: Array<Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text> = [];
+    ui.push(
+      this.add
+        .rectangle(x + w / 2, y + h / 2, w, h, 0x12121a, 0.94)
+        .setScrollFactor(0)
+        .setDepth(1e6 + 2)
+        .setStrokeStyle(1, 0x6d6d94, 1),
+    );
+    ui.push(title(x + 12, y + 10, "Personaliza tu look"));
+    ui.push(title(x + 12, y + 40, "Ropa"));
+
+    SHIRT_COLORS.forEach((c, i) => {
+      const s = this.add
+        .rectangle(x + 22 + i * 30, y + 68, 20, 20, c.value)
+        .setScrollFactor(0)
+        .setDepth(1e6 + 3)
+        .setStrokeStyle(1, 0x000000, 1)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => this.applyPalette({ ...this.palette, shirt: c.value }));
+      this.shirtSwatches.push(s);
+      ui.push(s);
+    });
+
+    ui.push(title(x + 12, y + 92, "Pelo"));
+    HAIR_COLORS.forEach((c, i) => {
+      const s = this.add
+        .rectangle(x + 22 + i * 30, y + 120, 20, 20, c.value)
+        .setScrollFactor(0)
+        .setDepth(1e6 + 3)
+        .setStrokeStyle(1, 0x000000, 1)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => this.applyPalette({ ...this.palette, hair: c.value }));
+      this.hairSwatches.push(s);
+      ui.push(s);
+    });
+
+    ui.push(title(x + 12, y + 146, "(C para cerrar)"));
+
+    this.customUI = ui;
+    this.refreshSwatches();
+    for (const o of ui) o.setVisible(false);
+  }
+
+  private toggleCustomPanel(): void {
+    this.customOpen = !this.customOpen;
+    for (const o of this.customUI) o.setVisible(this.customOpen);
+    if (this.customOpen) this.refreshSwatches();
+  }
+
+  /** Regenera la textura con la nueva paleta y guarda */
+  private applyPalette(next: Palette): void {
+    this.palette = next;
+    createAvatarTexture(this, next);
+
+    // El sprite necesita reengancharse a la textura nueva
+    const frame = this.avatar.sitting ? "sit-0" : `${this.avatar.facing}-0`;
+    this.player.setTexture("avatar", frame);
+    this.player.play(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`, true);
+
+    this.refreshSwatches();
+    this.saveGame();
+  }
+
+  /** Resalta con borde blanco el color seleccionado en cada fila */
+  private refreshSwatches(): void {
+    SHIRT_COLORS.forEach((c, i) => {
+      const sel = c.value === this.palette.shirt;
+      this.shirtSwatches[i]?.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 1);
+    });
+    HAIR_COLORS.forEach((c, i) => {
+      const sel = c.value === this.palette.hair;
+      this.hairSwatches[i]?.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 1);
+    });
+  }
+
+  /** ¿El clic cayó sobre el panel? (coords de cámara = scrollFactor 0) */
+  private isOverCustomUI(pointer: Phaser.Input.Pointer): boolean {
+    if (!this.customOpen) return false;
+    const { x, y, w, h } = this.PANEL;
+    return (
+      pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h
+    );
+  }
+
   // ---------- Guardado ----------
 
   private saveGame(): void {
@@ -255,13 +377,14 @@ export class MainScene extends Phaser.Scene {
       col: Math.round(this.avatar.col),
       row: Math.round(this.avatar.row),
       facing: this.avatar.facing,
+      shirt: this.palette.shirt,
+      hair: this.palette.hair,
     });
   }
 
   /** Celda de inicio: la guardada si sigue siendo válida, o el centro */
-  private resolveStartCell(): Cell {
+  private resolveStartCell(save: SaveData | null): Cell {
     const fallback = this.firstFreeCell();
-    const save = loadSave();
     if (!save || save.room !== ROOM_ID) return fallback;
 
     const col = Math.round(save.col);
@@ -281,11 +404,8 @@ export class MainScene extends Phaser.Scene {
     return fallback;
   }
 
-  private resolveStartFacing(): Facing {
-    const save = loadSave();
-    if (save && (save.facing === "down" || save.facing === "up" || save.facing === "side")) {
-      return save.facing;
-    }
+  private resolveStartFacing(save: SaveData | null): Facing {
+    if (save) return save.facing;
     return "down";
   }
 

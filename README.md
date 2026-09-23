@@ -33,6 +33,7 @@ Ver sección **Arquitectura** más abajo.
 - [x] Fase 3 — sala real con paredes y mobiliario
 - [x] Fase 4 — sentarse en el sofá y burbuja de chat (Enter)
 - [x] Fase 5 — guardado (localStorage) + estado aislado para el online
+- [x] Personalización del avatar (tecla **C**: ropa y pelo, se guarda)
 - [ ] Futuro — multijugador (Node + Socket.io), salas múltiples, inventario
 
 ## Arquitectura
@@ -43,7 +44,8 @@ src/
 ├── scenes/
 │   └── MainScene.ts     # render + entrada + chat + guardado
 ├── state/
-│   └── avatarState.ts   # LÓGICA PURA del avatar (sin Phaser)
+│   ├── avatarState.ts   # LÓGICA PURA del avatar (sin Phaser)
+│   └── palette.ts       # paleta del avatar: colores de ropa y pelo
 ├── entities/
 │   ├── avatar.ts        # spritesheet y animaciones del personaje
 │   └── furniture.ts     # sofá, mesa...

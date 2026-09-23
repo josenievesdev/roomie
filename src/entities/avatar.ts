@@ -1,24 +1,47 @@
 import Phaser from "phaser";
+import { DEFAULT_PALETTE, type Palette } from "../state/palette.ts";
 
-// Avatar placeholder generado por código: spritesheet 4 frames × 3 direcciones.
-// Dirección "side" dibujada mirando a la izquierda; usar flipX para la derecha.
-// Se reemplazará por arte definitivo sin tocar el resto del juego.
+// Avatar placeholder generado por código: spritesheet 4 frames × 3 direcciones
+// + pose sentada. Los colores de ropa y pelo vienen de la paleta, así que se
+// puede regenerar en caliente (botón C en el juego).
+// La dirección "side" está dibujada mirando a la izquierda; usar flipX para
+// la derecha.
 export const FRAME_W = 16;
 export const FRAME_H = 24;
 
-const C = {
-  skin: 0xf2c9a5,
-  hair: 0x4a3226,
-  shirt: 0x6c5ce7,
-  shirtDark: 0x5a4bd0,
-  pants: 0x2e3a59,
-  pantsDark: 0x242c44,
-  shoes: 0x14141c,
-  eye: 0x1a1a24,
-};
-
 const DIRS = ["down", "up", "side"] as const;
 type Dir = (typeof DIRS)[number];
+
+type Colors = {
+  skin: number;
+  hair: number;
+  shirt: number;
+  shirtDark: number;
+  pants: number;
+  pantsDark: number;
+  shoes: number;
+  eye: number;
+};
+
+function darken(hex: number, f = 0.75): number {
+  const r = Math.floor(((hex >> 16) & 0xff) * f);
+  const g = Math.floor(((hex >> 8) & 0xff) * f);
+  const b = Math.floor((hex & 0xff) * f);
+  return (r << 16) | (g << 8) | b;
+}
+
+function colorsFrom(palette: Palette): Colors {
+  return {
+    skin: 0xf2c9a5,
+    hair: palette.hair,
+    shirt: palette.shirt,
+    shirtDark: darken(palette.shirt),
+    pants: 0x2e3a59,
+    pantsDark: 0x242c44,
+    shoes: 0x14141c,
+    eye: 0x1a1a24,
+  };
+}
 
 function rect(
   g: Phaser.GameObjects.Graphics,
@@ -37,6 +60,7 @@ function rect(
 /** Pierna de 3px: pantalón + zapato. Si lifted, la pierna queda 1px más corta. */
 function leg(
   g: Phaser.GameObjects.Graphics,
+  C: Colors,
   ox: number,
   oy: number,
   x: number,
@@ -55,6 +79,7 @@ function leg(
 
 function drawFrame(
   g: Phaser.GameObjects.Graphics,
+  C: Colors,
   dir: Dir,
   frame: number,
   ox: number,
@@ -67,14 +92,14 @@ function drawFrame(
   if (dir === "side") {
     // Perfil: patas separadas horizontalmente (tijera)
     if (frame === 0 || frame === 2) {
-      leg(g, ox, oy, 6, false, C.pants);
+      leg(g, C, ox, oy, 6, false, C.pants);
     } else {
-      leg(g, ox, oy, 3, false, C.pantsDark); // pierna trasera
-      leg(g, ox, oy, 9, false, C.pants); // pierna delantera
+      leg(g, C, ox, oy, 3, false, C.pantsDark); // pierna trasera
+      leg(g, C, ox, oy, 9, false, C.pants); // pierna delantera
     }
   } else {
-    leg(g, ox, oy, 5, liftL, C.pants);
-    leg(g, ox, oy, 9, liftR, C.pants);
+    leg(g, C, ox, oy, 5, liftL, C.pants);
+    leg(g, C, ox, oy, 9, liftR, C.pants);
   }
 
   // Torso
@@ -107,7 +132,7 @@ function drawFrame(
 }
 
 /** Pose sentada (de perfil, mirando a la izquierda): para el sofá */
-function drawSit(g: Phaser.GameObjects.Graphics, ox: number, oy: number): void {
+function drawSit(g: Phaser.GameObjects.Graphics, C: Colors, ox: number, oy: number): void {
   // Piernas: muslo horizontal, espinilla colgando y pie
   rect(g, ox, oy, 4, 17, 7, 4, C.pants); // muslo + cadera
   rect(g, ox, oy, 4, 20, 3, 4, C.pants); // espinilla
@@ -123,17 +148,25 @@ function drawSit(g: Phaser.GameObjects.Graphics, ox: number, oy: number): void {
   rect(g, ox, oy, 6, 6, 1, 2, C.eye);
 }
 
-/** Crea la textura del avatar y sus animaciones (idle/walk por dirección). */
-export function createAvatarTexture(scene: Phaser.Scene): void {
-  if (scene.textures.exists("avatar")) return;
+/**
+ * (Re)genera la textura del avatar con la paleta dada y sus animaciones.
+ * Si la textura ya existía se destruye (así se aplican los cambios de color
+ * en caliente); los sprites que la usen deben volver a llamarse setTexture.
+ */
+export function createAvatarTexture(
+  scene: Phaser.Scene,
+  palette: Palette = DEFAULT_PALETTE,
+): void {
+  if (scene.textures.exists("avatar")) scene.textures.remove("avatar");
+  const C = colorsFrom(palette);
 
   const g = scene.make.graphics({}, false);
   DIRS.forEach((dir, row) => {
     for (let frame = 0; frame < 4; frame++) {
-      drawFrame(g, dir, frame, frame * FRAME_W, row * FRAME_H);
+      drawFrame(g, C, dir, frame, frame * FRAME_W, row * FRAME_H);
     }
   });
-  drawSit(g, 0, DIRS.length * FRAME_H); // fila extra: sentado
+  drawSit(g, C, 0, DIRS.length * FRAME_H); // fila extra: sentado
   g.generateTexture("avatar", FRAME_W * 4, FRAME_H * (DIRS.length + 1));
   g.destroy();
 
