@@ -904,7 +904,10 @@ export class MainScene extends Phaser.Scene {
       this.statusText.setColor("#8a8aa8");
       return;
     }
-    const here = 1 + this.netPlayers.filter((p) => p.room === this.roomId).length;
+    // "netPlayers" es el snapshot de la sala que manda el servidor y YA me
+    // incluye a mí. El "1 +" que había aquí me sumaba una segunda vez: estando
+    // solo, el HUD mostraba "2 en room1".
+    const here = this.netPlayers.filter((p) => p.room === this.roomId).length;
     this.statusText.setText(`● En línea — ${here} en ${this.roomId}`);
     this.statusText.setColor("#7bed9f");
   }
@@ -975,9 +978,13 @@ export class MainScene extends Phaser.Scene {
     // DETRÁS del modal, y además el avatar camina con WASD mientras escribes.
     this.setGameKeyboard(false);
 
-    // Fondo semitransparente
     const overlay = this.add
-      .rectangle(480, 270, 960, 540, 0x000000, 0.86)
+      // Velo OPACO a propósito. Translúcido, el mundo se veía al 14% fuera del
+      // panel y al 4% detrás de él: un avatar que cruzara el borde del panel
+      // cambiaba de brillo 3,5x de golpe y se leía como "cortado". Mientras el
+      // panel sea más opaco que el velo eso es aritmética de alfas, no un
+      // defecto que se pueda pulir; la única solución es no dejar ver el mundo.
+      .rectangle(480, 270, 960, 540, 0x000000, 1)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_MODAL)
       .setInteractive();

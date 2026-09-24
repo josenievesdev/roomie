@@ -96,6 +96,11 @@ través del modal y los avatares parecían estar "encima" aunque estuvieran
 detrás. Es la única decisión de gusto de esta fase; si prefieres el velo más
 claro, es un número.
 
+> **Corregido después.** 0.86 no fue suficiente: el mundo seguía viéndose al
+> 14% fuera del panel y al 4% detrás de él, y un avatar que cruzara el borde
+> del panel cambiaba de brillo 3,5× de golpe, leyéndose como "cortado". El velo
+> está ahora en `alpha 1`. Ver `docs/fase2-6-hud-velo.md`.
+
 ## Verificación
 
 | | Resultado |
