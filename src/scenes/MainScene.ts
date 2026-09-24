@@ -13,8 +13,10 @@ import {
 } from "../state/palette";
 import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
+import { createTextInput, textInputFocused, type TextInput } from "../ui/textInput";
 import { net, playerName } from "../net/client";
 import {
+  CHAT_MAX,
   KEYBOARD_SPEED,
   NAME_MAX,
   ROOMS,
@@ -175,6 +177,10 @@ export class MainScene extends Phaser.Scene {
   private loginNick = "";
   /** Listener de teclado del modal. Se guarda para poder QUITARLO al cerrar. */
   private loginKeys: ((e: KeyboardEvent) => void) | null = null;
+  /** <input> real del nickname: sin él no hay teclado en el móvil */
+  private loginInput: TextInput | null = null;
+  /** <input> real del chat: mismo motivo */
+  private chatInput: TextInput | null = null;
   /** Texto de error del modal (referencia directa, no búsqueda por contenido) */
   private loginError: Phaser.GameObjects.Text | null = null;
   /** Paleta al abrir el modal, para poder descartar los cambios al cancelar */
@@ -202,6 +208,8 @@ export class MainScene extends Phaser.Scene {
     this.loginModalOpen = false;
     this.loginNick = "";
     this.loginKeys = null;
+    this.loginInput = null;
+    this.chatInput = null;
     this.loginError = null;
     this.loginPaletteOnOpen = null;
     this.alive = true;
@@ -304,6 +312,7 @@ export class MainScene extends Phaser.Scene {
 
     this.buildCustomPanel();
     this.buildProfileButton();
+    this.buildChatButton();
 
     // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
     this.setupNet();
@@ -322,6 +331,9 @@ export class MainScene extends Phaser.Scene {
       this.wasd = kb.addKeys("W,A,S,D") as MainScene["wasd"];
 
       kb.on("keydown", (e: { key?: string }) => {
+        // Si el foco está en un <input> real, las teclas son suyas: si no, cada
+        // letra se escribiría dos veces.
+        if (textInputFocused(this.loginInput, this.chatInput)) return;
         const key = e.key ?? "";
         if (!this.chatOpen) {
           if (key === "Enter") this.openChat();
@@ -333,7 +345,7 @@ export class MainScene extends Phaser.Scene {
         else if (key === "Backspace") {
           this.chatText = this.chatText.slice(0, -1);
           this.renderChatBar();
-        } else if (key.length === 1 && this.chatText.length < 40) {
+        } else if (key.length === 1 && this.chatText.length < CHAT_MAX) {
           this.chatText += key;
           this.renderChatBar();
         }
@@ -366,6 +378,12 @@ export class MainScene extends Phaser.Scene {
         window.removeEventListener("keydown", this.loginKeys);
         this.loginKeys = null;
       }
+      // Los <input> viven en el DOM, fuera de Phaser: hay que quitarlos a mano
+      // o se acumularían uno por cada cruce de puerta.
+      this.loginInput?.destroy();
+      this.loginInput = null;
+      this.chatInput?.destroy();
+      this.chatInput = null;
     });
   }
 
@@ -724,6 +742,7 @@ export class MainScene extends Phaser.Scene {
   // ---------- Chat ----------
 
   private openChat(): void {
+    if (this.loginModalOpen) return; // el modal se lleva la entrada
     this.chatOpen = true;
     this.chatText = "";
     this.avatar.cancelPath();
@@ -731,6 +750,19 @@ export class MainScene extends Phaser.Scene {
     this.chatBg.setVisible(true);
     this.chatLabel.setVisible(true);
     this.renderChatBar();
+
+    // <input> real: en el móvil no hay tecla Enter ni teclado físico, así que
+    // sin esto el chat era inaccesible desde un teléfono.
+    this.chatInput = createTextInput({
+      maxLength: CHAT_MAX,
+      onChange: (v) => {
+        this.chatText = v;
+        this.renderChatBar();
+      },
+      onSubmit: () => this.sendChat(),
+      onCancel: () => this.closeChat(),
+    });
+    this.chatInput.focus();
   }
 
   private closeChat(): void {
@@ -738,6 +770,8 @@ export class MainScene extends Phaser.Scene {
     this.chatText = "";
     this.chatBg.setVisible(false);
     this.chatLabel.setVisible(false);
+    this.chatInput?.destroy();
+    this.chatInput = null;
   }
 
   private sendChat(): void {
@@ -965,6 +999,32 @@ export class MainScene extends Phaser.Scene {
     // Vive lo que viva la escena; Phaser lo destruye en el SHUTDOWN.
   }
 
+  /**
+   * Botón "Chat" del HUD. En un móvil no hay tecla Enter, así que sin él no
+   * habría forma de abrir la barra de chat.
+   */
+  private buildChatButton(): void {
+    const btn = this.add
+      .rectangle(820, 20, 80, 28, 0x1a1a2e, 0.9)
+      .setScrollFactor(0)
+      .setDepth(LAYER.UI_HUD)
+      .setStrokeStyle(1, 0x6d6d94, 1)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
+      .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
+      .on("pointerdown", () => (this.chatOpen ? this.closeChat() : this.openChat()));
+
+    this.add
+      .text(820, 20, "Chat", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#ffe9a8",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(LAYER.UI_HUD + 1);
+  }
+
   /** Modal de login / edición de perfil */
   private showLoginModal(isEdit = false): void {
     // Ya abierto: no se apila otro encima. Antes, con isEdit, cada pulsación
@@ -1059,6 +1119,23 @@ export class MainScene extends Phaser.Scene {
       nickText.setText(this.loginNick + "▌");
     };
     drawNick();
+
+    // <input> real e invisible: es lo que hace salir el teclado en un móvil.
+    this.loginInput = createTextInput({
+      maxLength: NAME_MAX,
+      initial: this.loginNick,
+      onChange: (v) => {
+        this.loginNick = v;
+        drawNick();
+      },
+      onSubmit: () => this.submitLogin(this.loginNick, isEdit),
+      onCancel: () => this.closeLoginModal(),
+    });
+    this.loginInput.focus();
+    // En el móvil el teclado sólo se abre dentro de un gesto del usuario, así
+    // que tocar el campo (o el panel) vuelve a pedir el foco.
+    nickBg.on("pointerdown", () => this.loginInput?.focus());
+    panel.setInteractive().on("pointerdown", () => this.loginInput?.focus());
 
     // Mensaje de error
     const errorText = this.add
@@ -1216,6 +1293,9 @@ export class MainScene extends Phaser.Scene {
     // Captura de teclado para el nickname
     const onKeyDown = (e: KeyboardEvent): void => {
       if (!this.loginModalOpen) return;
+      // Respaldo para escritorio si el <input> perdiera el foco; con el foco
+      // puesto, quien manda es él.
+      if (textInputFocused(this.loginInput)) return;
 
       if (e.key === "Enter") {
         this.submitLogin(this.loginNick, isEdit);
@@ -1330,6 +1410,9 @@ export class MainScene extends Phaser.Scene {
       window.removeEventListener("keydown", this.loginKeys);
       this.loginKeys = null;
     }
+
+    this.loginInput?.destroy(); // cierra también el teclado del móvil
+    this.loginInput = null;
 
     for (const o of this.loginUI) {
       if (o.active) o.destroy();
