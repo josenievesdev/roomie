@@ -48,7 +48,39 @@ desconexión: el contador coincide siempre con los jugadores reales.
 
 ---
 
-## 2. Avatar "parcialmente visible / cortado" al abrir Perfil
+## 2. La VISTA PREVIA del modal salía cortada por el borde de la pantalla
+
+**Archivo:** `src/scenes/MainScene.ts` · **Función:** `showLoginModal()`
+
+El `preview` era el **único** de los 14 objetos del modal que no fijaba
+`setScrollFactor(0)`. Sin eso vivía en coordenadas del **mundo**, así que la
+cámara se lo llevaba — y el desplazamiento de cámara **sí** depende del tamaño
+de la sala, porque `roomBounds()` centra los límites en ella:
+
+| Sala | Centro | Scroll de cámara | Preview acaba en | Resultado |
+|---|---|---|---|---|
+| room1 (12×12) | x = 0 | −480 | **x = 960** | borde derecho del lienzo → **50% visible, cortada** |
+| room2 (14×10) | x = 64 | −416 | x = 896 | dentro → 100% visible |
+
+Esos 64 px de diferencia entre los centros de las dos salas son justo los que
+dejaban la preview dentro o fuera. El modal usa coordenadas universales del
+lienzo (480, 270…), pero a este objeto se le sumaba encima el desplazamiento de
+cámara de la sala.
+
+### Corrección
+
+```ts
+.setScrollFactor(0)
+```
+
+Con eso la preview se queda en (480, panelY+170) — centrada en el panel y 100%
+visible — en cualquier sala, y sea cual sea el tamaño que tengan las futuras.
+
+Auditados los demás objetos de interfaz de la escena: no hay más fugas.
+
+---
+
+## 3. Avatares del MUNDO visibles a través del modal
 
 **Archivo:** `src/scenes/MainScene.ts` · **Función:** `showLoginModal()`
 

@@ -1076,6 +1076,14 @@ export class MainScene extends Phaser.Scene {
       .sprite(480, panelY + 170, PREVIEW_KEY, "down-0")
       .setOrigin(0.5)
       .setScale(3)
+      // Sin esto la preview era el ÚNICO elemento del modal en coordenadas del
+      // MUNDO: la cámara se la llevaba. Y el desplazamiento de cámara depende
+      // del tamaño de la sala (roomBounds la centra), así que en room1
+      // (12x12, centro x=0 -> scroll -480) acababa en x=960, justo el borde
+      // derecho del lienzo, cortada por la mitad; en room2 (14x10, centro
+      // x=64 -> scroll -416) caía en x=896 y se veía entera. Mismo código,
+      // resultado distinto según la sala.
+      .setScrollFactor(0)
       .setDepth(LAYER.UI_MODAL + 2);
     preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
 
