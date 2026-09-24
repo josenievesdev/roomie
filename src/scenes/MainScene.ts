@@ -12,6 +12,7 @@ import {
   type Palette,
 } from "../state/palette";
 import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
+import { LAYER, worldDepth } from "../render/layers";
 import { net, playerName } from "../net/client";
 import {
   KEYBOARD_SPEED,
@@ -240,7 +241,7 @@ export class MainScene extends Phaser.Scene {
       .sprite(p.x, p.y, "avatar", `${this.avatar.facing}-0`)
       .setOrigin(0.5, 1)
       .setScale(2) // 24px -> 48px de alto: proporción Habbo frente a los tiles
-      .setDepth(p.depth);
+      .setDepth(worldDepth(p.depth));
     this.player.play(this.anim(`idle-${this.avatar.facing}`));
 
     const [bx, by, bw, bh] = this.roomBounds();
@@ -257,7 +258,11 @@ export class MainScene extends Phaser.Scene {
         fontSize: "14px",
         color: "#ffffff",
       })
-      .setScrollFactor(0);
+      .setScrollFactor(0)
+      // Sin esta línea se quedaba en profundidad 0 y el SUELO de la sala
+      // (que llega a ~352) lo tapaba en cuanto la cámara ponía baldosas
+      // detrás de esa esquina.
+      .setDepth(LAYER.UI_HUD);
 
     // Estado de la conexión (multijugador)
     const statusStyle: Phaser.Types.GameObjects.Text.TextStyle = {
@@ -268,7 +273,7 @@ export class MainScene extends Phaser.Scene {
     this.statusText = this.add
       .text(8, 46, "", statusStyle)
       .setScrollFactor(0)
-      .setDepth(1e6);
+      .setDepth(LAYER.UI_HUD);
     // Log de avisos del servidor (entró/salió), 3 líneas máx.
     this.logLabel = this.add
       .text(8, 452, "", {
@@ -278,13 +283,13 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0, 1)
       .setScrollFactor(0)
-      .setDepth(1e6);
+      .setDepth(LAYER.UI_HUD);
 
     // Barra de chat (interfaz fija en pantalla)
     this.chatBg = this.add
       .rectangle(480, 512, 420, 26, 0x000000, 0.65)
       .setScrollFactor(0)
-      .setDepth(1e6)
+      .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
     this.chatLabel = this.add
       .text(280, 512, "", {
@@ -294,7 +299,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5)
       .setScrollFactor(0)
-      .setDepth(1e6 + 1)
+      .setDepth(LAYER.UI_PANEL + 1)
       .setVisible(false);
 
     this.buildCustomPanel();
@@ -426,7 +431,7 @@ export class MainScene extends Phaser.Scene {
     this.player.setFlipX(this.avatar.flipX);
 
     this.player.setPosition(p.x, p.y);
-    this.player.setDepth(p.depth); // orden isométrico
+    this.player.setDepth(worldDepth(p.depth)); // orden isométrico
 
     // Multijugador: dibujo a los demás (interpolados) y muevo las burbujas de
     // chat (la mía y las ajenas). Mi corrección ya se aplicó al principio.
@@ -553,7 +558,7 @@ export class MainScene extends Phaser.Scene {
       p0,
     ];
 
-    const g = this.add.graphics().setDepth(cy); // misma profundidad que su pared
+    const g = this.add.graphics().setDepth(worldDepth(cy)); // misma profundidad que su pared
     g.fillStyle(0x8b5a2b, 1);
     g.fillPoints(quad, true);
     g.lineStyle(1, 0x4a2f18, 1);
@@ -576,14 +581,14 @@ export class MainScene extends Phaser.Scene {
           color: "#ffffff",
         })
         .setScrollFactor(0)
-        .setDepth(1e6 + 3);
+        .setDepth(LAYER.UI_PANEL + 1);
 
     const ui: Array<Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text> = [];
     ui.push(
       this.add
         .rectangle(x + w / 2, y + h / 2, w, h, 0x12121a, 0.94)
         .setScrollFactor(0)
-        .setDepth(1e6 + 2)
+        .setDepth(LAYER.UI_PANEL)
         .setStrokeStyle(1, 0x6d6d94, 1),
     );
     ui.push(title(x + 12, y + 10, "Personaliza tu look"));
@@ -593,7 +598,7 @@ export class MainScene extends Phaser.Scene {
       const s = this.add
         .rectangle(x + 22 + i * 30, y + 68, 20, 20, c.value)
         .setScrollFactor(0)
-        .setDepth(1e6 + 3)
+        .setDepth(LAYER.UI_PANEL + 1)
         .setStrokeStyle(1, 0x000000, 1)
         .setInteractive({ useHandCursor: true })
         .on("pointerdown", () => this.applyPalette({ ...this.palette, shirt: c.value }));
@@ -606,7 +611,7 @@ export class MainScene extends Phaser.Scene {
       const s = this.add
         .rectangle(x + 22 + i * 30, y + 120, 20, 20, c.value)
         .setScrollFactor(0)
-        .setDepth(1e6 + 3)
+        .setDepth(LAYER.UI_PANEL + 1)
         .setStrokeStyle(1, 0x000000, 1)
         .setInteractive({ useHandCursor: true })
         .on("pointerdown", () => this.applyPalette({ ...this.palette, hair: c.value }));
@@ -792,7 +797,7 @@ export class MainScene extends Phaser.Scene {
       .setStrokeStyle(1, 0x1a1a24, 1);
 
     const container = this.add.container(at.x, at.y, [bg, txt]);
-    container.setDepth(1e6);
+    container.setDepth(LAYER.WORLD_TOP);
     container.setScale(0.4);
     this.bubbles.set(ownerId, container);
 
@@ -927,7 +932,7 @@ export class MainScene extends Phaser.Scene {
     const btn = this.add
       .rectangle(910, 20, 80, 28, 0x1a1a2e, 0.9)
       .setScrollFactor(0)
-      .setDepth(1e6)
+      .setDepth(LAYER.UI_HUD)
       .setStrokeStyle(1, 0x6d6d94, 1)
       .setInteractive({ useHandCursor: true })
       .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
@@ -942,7 +947,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
-      .setDepth(1e6 + 1);
+      .setDepth(LAYER.UI_HUD + 1);
 
     // OJO: este botón NO va en `loginUI`. Ahí estaba antes, y como
     // `closeLoginModal` destruye todo lo que hay en esa lista, al cerrar el
@@ -972,9 +977,9 @@ export class MainScene extends Phaser.Scene {
 
     // Fondo semitransparente
     const overlay = this.add
-      .rectangle(480, 270, 960, 540, 0x000000, 0.7)
+      .rectangle(480, 270, 960, 540, 0x000000, 0.86)
       .setScrollFactor(0)
-      .setDepth(1e5)
+      .setDepth(LAYER.UI_MODAL)
       .setInteractive();
 
     // Disposición en columna, medida siempre desde `panelY`, para que el panel
@@ -993,7 +998,7 @@ export class MainScene extends Phaser.Scene {
     const panel = this.add
       .rectangle(480, 270, panelW, panelH, 0x12121a, 0.96)
       .setScrollFactor(0)
-      .setDepth(1e5 + 1)
+      .setDepth(LAYER.UI_MODAL + 1)
       .setStrokeStyle(2, 0x6d6d94, 1);
 
     const title = this.add
@@ -1004,7 +1009,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
 
     // Input nickname (simulado con Text + eventos de teclado)
     const nicknameLabel = this.add
@@ -1014,7 +1019,7 @@ export class MainScene extends Phaser.Scene {
         color: "#cccccc",
       })
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
 
     const save = loadSave();
     this.loginNick = save?.nickname ?? "";
@@ -1022,7 +1027,7 @@ export class MainScene extends Phaser.Scene {
       .rectangle(colX, panelY + 72, panelW - 48, 34, 0x1a1a2e, 1)
       .setOrigin(0, 0)
       .setScrollFactor(0)
-      .setDepth(1e5 + 1)
+      .setDepth(LAYER.UI_MODAL + 1)
       .setStrokeStyle(1, 0x6d6d94, 1)
       .setInteractive({ useHandCursor: true });
 
@@ -1034,7 +1039,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0, 0)
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
     /** El Text sólo DIBUJA; el valor vive en `this.loginNick` */
     const drawNick = (): void => {
       nickText.setText(this.loginNick + "▌");
@@ -1050,7 +1055,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
     this.loginError = errorText;
 
     // Vista previa del avatar.
@@ -1064,7 +1069,7 @@ export class MainScene extends Phaser.Scene {
       .sprite(480, panelY + 170, PREVIEW_KEY, "down-0")
       .setOrigin(0.5)
       .setScale(3)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
     preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
 
     /**
@@ -1090,7 +1095,7 @@ export class MainScene extends Phaser.Scene {
         color: "#cccccc",
       })
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
 
     const hairLabel = this.add
       .text(colX, panelY + 266, "Pelo:", {
@@ -1099,7 +1104,7 @@ export class MainScene extends Phaser.Scene {
         color: "#cccccc",
       })
       .setScrollFactor(0)
-      .setDepth(1e5 + 2);
+      .setDepth(LAYER.UI_MODAL + 2);
 
     const shirtSwatches: Phaser.GameObjects.Rectangle[] = [];
     const hairSwatches: Phaser.GameObjects.Rectangle[] = [];
@@ -1108,7 +1113,7 @@ export class MainScene extends Phaser.Scene {
       const s = this.add
         .rectangle(colX + 10 + i * 32, panelY + 246, 20, 20, c.value)
         .setScrollFactor(0)
-        .setDepth(1e5 + 2)
+        .setDepth(LAYER.UI_MODAL + 2)
         .setStrokeStyle(1, c.value === this.palette.shirt ? 0xffffff : 0x000000, 2)
         .setInteractive({ useHandCursor: true })
         .on("pointerdown", () => {
@@ -1124,7 +1129,7 @@ export class MainScene extends Phaser.Scene {
       const s = this.add
         .rectangle(colX + 10 + i * 32, panelY + 296, 20, 20, c.value)
         .setScrollFactor(0)
-        .setDepth(1e5 + 2)
+        .setDepth(LAYER.UI_MODAL + 2)
         .setStrokeStyle(1, c.value === this.palette.hair ? 0xffffff : 0x000000, 2)
         .setInteractive({ useHandCursor: true })
         .on("pointerdown", () => {
@@ -1144,7 +1149,7 @@ export class MainScene extends Phaser.Scene {
     const saveBtn = this.add
       .rectangle(480, saveY, 180, 36, 0x6c5ce7, 1)
       .setScrollFactor(0)
-      .setDepth(1e5 + 2)
+      .setDepth(LAYER.UI_MODAL + 2)
       .setStrokeStyle(1, 0x8c7ce7, 1)
       .setInteractive({ useHandCursor: true })
       .on("pointerover", () => saveBtn.setFillStyle(0x8c7ce7, 1))
@@ -1159,7 +1164,7 @@ export class MainScene extends Phaser.Scene {
       })
       .setOrigin(0.5)
       .setScrollFactor(0)
-      .setDepth(1e5 + 3);
+      .setDepth(LAYER.UI_MODAL + 3);
 
     // Botón Cancelar (solo en modo edición)
     let cancelBtn: Phaser.GameObjects.Rectangle | null = null;
@@ -1167,7 +1172,7 @@ export class MainScene extends Phaser.Scene {
       cancelBtn = this.add
         .rectangle(480, cancelY, 180, 30, 0x3a3a55, 1)
         .setScrollFactor(0)
-        .setDepth(1e5 + 2)
+        .setDepth(LAYER.UI_MODAL + 2)
         .setStrokeStyle(1, 0x6d6d94, 1)
         .setInteractive({ useHandCursor: true })
         .on("pointerover", () => cancelBtn?.setFillStyle(0x4a4a75, 1))
@@ -1182,7 +1187,7 @@ export class MainScene extends Phaser.Scene {
         })
         .setOrigin(0.5)
         .setScrollFactor(0)
-        .setDepth(1e5 + 3);
+        .setDepth(LAYER.UI_MODAL + 3);
       this.loginUI.push(cancelBtn, cancelLabel);
     }
 
@@ -1442,7 +1447,7 @@ export class MainScene extends Phaser.Scene {
       peer.row = v.row;
 
       const p = peerScreen(peer.col, peer.row, v.sitting);
-      peer.sprite.setPosition(p.x, p.y).setDepth(p.depth).setFlipX(v.flip);
+      peer.sprite.setPosition(p.x, p.y).setDepth(worldDepth(p.depth)).setFlipX(v.flip);
       // La animación la decide el SERVIDOR (`moving`/`facing`), que ya lo envía
       // en cada snapshot. Antes se deducía del desplazamiento en píxeles entre
       // frames: con un suavizado el delta nunca llega a cero exacto, así que el
@@ -1454,7 +1459,7 @@ export class MainScene extends Phaser.Scene {
         ),
         true,
       );
-      peer.label.setPosition(p.x, p.y - 52).setDepth(p.depth + 0.1);
+      peer.label.setPosition(p.x, p.y - 52).setDepth(worldDepth(p.depth) + 0.1);
     }
 
     for (const id of [...this.peers.keys()]) {
@@ -1512,7 +1517,7 @@ export class MainScene extends Phaser.Scene {
   private showClickMarker(x: number, y: number): void {
     const marker = this.add
       .image(x, y, "tileset", 0)
-      .setDepth(1e6)
+      .setDepth(LAYER.WORLD_TOP)
       .setAlpha(0.75)
       .setScale(0.6);
     this.tweens.add({
@@ -1543,7 +1548,7 @@ export class MainScene extends Phaser.Scene {
         const gid = floor?.data?.[i] ?? 0;
         if (gid !== 0) {
           const pos = toScreen(col, row);
-          this.add.image(pos.x, pos.y, "tileset", gid - 1).setDepth(pos.y);
+          this.add.image(pos.x, pos.y, "tileset", gid - 1).setDepth(worldDepth(pos.y));
         }
         this.blocked[row][col] = (colsLayer?.data?.[i] ?? 0) !== 0;
       }
@@ -1587,7 +1592,7 @@ export class MainScene extends Phaser.Scene {
     for (let col = 0; col < this.cols; col++) {
       const { x, y } = toScreen(col, 0);
       this.paintWallFace(
-        this.add.graphics().setDepth(y),
+        this.add.graphics().setDepth(worldDepth(y)),
         [
           { x, y: y - 16 - h }, // arriba-izq
           { x: x + 32, y: y - h }, // arriba-der
@@ -1599,7 +1604,7 @@ export class MainScene extends Phaser.Scene {
     for (let row = 0; row < this.rows; row++) {
       const { x, y } = toScreen(0, row);
       this.paintWallFace(
-        this.add.graphics().setDepth(y),
+        this.add.graphics().setDepth(worldDepth(y)),
         [
           { x: x - 32, y: y - h },
           { x, y: y - 16 - h },
