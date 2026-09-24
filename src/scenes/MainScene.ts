@@ -65,6 +65,19 @@ const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 /** Textura propia de la vista previa del modal (independiente de la del jugador) */
 const PREVIEW_KEY = "avatar:preview";
 
+/** Gestos rápidos del menú de avatar. Viajan como mensajes de chat normales. */
+const EMOTES = ["👋", "😀", "😂", "❤️", "👍", "🎉"] as const;
+
+/**
+ * Pieza del menú de avatar con su desplazamiento respecto al ancla.
+ *
+ * Son objetos SUELTOS, no un `Container`: con el contenedor a
+ * `scrollFactor(0)` sus hijos conservaban el suyo propio (1) y Phaser
+ * calculaba las zonas de toque con una transformación distinta a la del
+ * dibujo — los botones se veían pero no recibían el clic.
+ */
+type MenuItem = { o: Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text; dx: number; dy: number };
+
 // ---------- Sincronización multijugador (Fase 1) ----------
 
 /** Snapshot recibido + la hora LOCAL de llegada (ese sello no viaja por la red) */
@@ -181,6 +194,10 @@ export class MainScene extends Phaser.Scene {
   private loginInput: TextInput | null = null;
   /** <input> real del chat: mismo motivo */
   private chatInput: TextInput | null = null;
+  /** Piezas del menú que sale al tocar a otro jugador (vacío = cerrado) */
+  private peerMenuItems: MenuItem[] = [];
+  /** Id del jugador al que pertenece el menú abierto */
+  private peerMenuFor = "";
   /** Texto de error del modal (referencia directa, no búsqueda por contenido) */
   private loginError: Phaser.GameObjects.Text | null = null;
   /** Paleta al abrir el modal, para poder descartar los cambios al cancelar */
@@ -210,6 +227,8 @@ export class MainScene extends Phaser.Scene {
     this.loginKeys = null;
     this.loginInput = null;
     this.chatInput = null;
+    this.peerMenuItems = [];
+    this.peerMenuFor = "";
     this.loginError = null;
     this.loginPaletteOnOpen = null;
     this.alive = true;
@@ -335,6 +354,10 @@ export class MainScene extends Phaser.Scene {
         // letra se escribiría dos veces.
         if (textInputFocused(this.loginInput, this.chatInput)) return;
         const key = e.key ?? "";
+        if (key === "Escape" && this.peerMenuItems.length > 0) {
+          this.closePeerMenu();
+          return;
+        }
         if (!this.chatOpen) {
           if (key === "Enter") this.openChat();
           else if (key === "c" || key === "C") this.toggleCustomPanel();
@@ -352,11 +375,29 @@ export class MainScene extends Phaser.Scene {
       });
     }
 
-    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      if (pointer.button !== 0) return; // solo clic izquierdo
-      if (this.loginModalOpen) return; // el modal se lleva todos los clics
-      this.handleWorldClick(pointer);
-    });
+    this.input.on(
+      "pointerdown",
+      (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
+        if (pointer.button !== 0) return; // solo clic izquierdo
+        if (this.loginModalOpen) return; // el modal se lleva todos los clics
+
+        // El clic cayó sobre un elemento interactivo (botón, selector, avatar):
+        // es suyo, no del mundo.
+        //
+        // Este manejador es GLOBAL: se dispara en el mismo clic que el del
+        // botón. Sin esta guarda, pulsar "Chat" abría el chat y acto seguido
+        // `handleWorldClick` lo cerraba ("un clic en el mundo cierra el chat"),
+        // así que el botón no hacía nada ni en PC ni en móvil.
+        if (sobre.length > 0) return;
+
+        // Un clic en el mundo con el menú de avatar abierto sólo lo cierra
+        if (this.peerMenuItems.length > 0) {
+          this.closePeerMenu();
+          return;
+        }
+        this.handleWorldClick(pointer);
+      },
+    );
 
     // Guardado: periódico + al cerrar la pestaña/escena
     this.time.addEvent({
@@ -454,6 +495,7 @@ export class MainScene extends Phaser.Scene {
     // Multijugador: dibujo a los demás (interpolados) y muevo las burbujas de
     // chat (la mía y las ajenas). Mi corrección ya se aplicó al principio.
     this.syncPeers();
+    this.movePeerMenu();
     this.moveBubbles();
   }
 
@@ -1034,6 +1076,7 @@ export class MainScene extends Phaser.Scene {
     this.loginModalOpen = true;
     this.chatOpen = false;
     this.closeChat();
+    this.closePeerMenu();
     // El panel de personalización se ocultaba a medias: se ponía `customOpen`
     // a false pero sus objetos seguían dibujados por encima del modal.
     if (this.customOpen) this.toggleCustomPanel();
@@ -1451,6 +1494,12 @@ export class MainScene extends Phaser.Scene {
       .sprite(0, 0, textureKey, `${v.facing}-0`)
       .setOrigin(0.5, 1)
       .setScale(2);
+    // Zona de toque algo mayor que el muñeco (16x24): con el dedo, 32x48 px
+    // en pantalla se falla demasiado.
+    sprite
+      .setInteractive(new Phaser.Geom.Rectangle(-4, -2, 24, 28), Phaser.Geom.Rectangle.Contains)
+      .on("pointerdown", () => this.openPeerMenu(v.id));
+    if (sprite.input) sprite.input.cursor = "pointer";
     const label = this.add
       .text(0, 0, v.name, {
         fontFamily: "monospace",
@@ -1478,6 +1527,7 @@ export class MainScene extends Phaser.Scene {
   private removePeer(id: string): void {
     const peer = this.peers.get(id);
     if (!peer) return;
+    if (this.peerMenuFor === id) this.closePeerMenu();
     peer.sprite.destroy();
     peer.label.destroy();
     this.bubbles.get(id)?.destroy();
@@ -1616,6 +1666,122 @@ export class MainScene extends Phaser.Scene {
       this.avatar.col = col;
       this.avatar.row = row;
     }
+  }
+
+  // ---------- Menú de avatar ----------
+
+  /**
+   * Menú que sale al tocar a otro jugador: gestos rápidos y abrir el chat
+   * dirigido a él. Los gestos son mensajes de chat normales, así que no hacen
+   * falta eventos nuevos en el protocolo.
+   */
+  private readonly MENU = { w: 216, h: 84 };
+
+  private openPeerMenu(id: string): void {
+    if (this.loginModalOpen) return;
+    this.closePeerMenu();
+
+    const peer = this.peers.get(id);
+    if (!peer) return;
+
+    const { w: W, h: H } = this.MENU;
+    const items: MenuItem[] = [];
+    const add = (o: MenuItem["o"], dx: number, dy: number, capa: number = LAYER.UI_PANEL): void => {
+      o.setScrollFactor(0).setDepth(capa);
+      items.push({ o, dx, dy });
+    };
+
+    // El fondo es interactivo para que un toque DENTRO del menú no lo cierre
+    add(
+      this.add.rectangle(0, 0, W, H, 0x12121a, 0.97).setStrokeStyle(1, 0x6d6d94, 1).setInteractive(),
+      0,
+      0,
+    );
+    add(
+      this.add
+        .text(0, 0, peer.view.name, { fontFamily: "monospace", fontSize: "12px", color: "#ffe9a8" })
+        .setOrigin(0.5),
+      0,
+      -H / 2 + 12,
+      LAYER.UI_PANEL + 1,
+    );
+
+    EMOTES.forEach((emote, i) => {
+      const dx = -W / 2 + 26 + i * 33;
+      const boton = this.add
+        .rectangle(0, 0, 28, 26, 0x1a1a2e, 1)
+        .setStrokeStyle(1, 0x3a3a55, 1)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerover", () => boton.setFillStyle(0x2a2a4e, 1))
+        .on("pointerout", () => boton.setFillStyle(0x1a1a2e, 1))
+        .on("pointerdown", () => this.sendEmote(emote));
+      add(boton, dx, -2);
+      add(this.add.text(0, 0, emote, { fontSize: "18px" }).setOrigin(0.5), dx, -2, LAYER.UI_PANEL + 1);
+    });
+
+    const chatBtn = this.add
+      .rectangle(0, 0, W - 24, 24, 0x6c5ce7, 1)
+      .setStrokeStyle(1, 0x8c7ce7, 1)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => chatBtn.setFillStyle(0x8c7ce7, 1))
+      .on("pointerout", () => chatBtn.setFillStyle(0x6c5ce7, 1))
+      .on("pointerdown", () => this.chatTo(peer.view.name));
+    add(chatBtn, 0, H / 2 - 17);
+    add(
+      this.add
+        .text(0, 0, `Escribir a ${peer.view.name}`, {
+          fontFamily: "monospace",
+          fontSize: "11px",
+          color: "#ffffff",
+        })
+        .setOrigin(0.5),
+      0,
+      H / 2 - 17,
+      LAYER.UI_PANEL + 1,
+    );
+
+    this.peerMenuItems = items;
+    this.peerMenuFor = id;
+    this.movePeerMenu();
+  }
+
+  private closePeerMenu(): void {
+    for (const { o } of this.peerMenuItems) o.destroy();
+    this.peerMenuItems = [];
+    this.peerMenuFor = "";
+  }
+
+  /** El menú sigue a su avatar; si el avatar se va, el menú se cierra */
+  private movePeerMenu(): void {
+    if (this.peerMenuItems.length === 0) return;
+    const peer = this.peers.get(this.peerMenuFor);
+    if (!peer) {
+      this.closePeerMenu();
+      return;
+    }
+    const { w: W, h: H } = this.MENU;
+    const cam = this.cameras.main;
+    // Sobre la cabeza del avatar, pero sin salirse del lienzo
+    const x = Phaser.Math.Clamp(peer.sprite.x - cam.scrollX, W / 2 + 4, this.scale.width - W / 2 - 4);
+    const y = Phaser.Math.Clamp(peer.sprite.y - cam.scrollY - 74, H / 2 + 4, this.scale.height - H / 2 - 4);
+    for (const { o, dx, dy } of this.peerMenuItems) o.setPosition(x + dx, y + dy);
+  }
+
+  /** Un gesto es un mensaje de chat corriente: lo ve toda la sala */
+  private sendEmote(emote: string): void {
+    this.closePeerMenu();
+    if (net.isOnline) net.chat(emote);
+    else this.showBubble("me", emote);
+  }
+
+  /** Abre el chat con el mensaje ya dirigido a ese jugador */
+  private chatTo(nombre: string): void {
+    this.closePeerMenu();
+    this.openChat();
+    const prefijo = `@${nombre} `;
+    this.chatText = prefijo;
+    this.chatInput?.setValue(prefijo);
+    this.renderChatBar();
   }
 
   /** Destello isométrico en la celda de destino */
