@@ -59,6 +59,9 @@ type Door = {
 
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
+/** Textura propia de la vista previa del modal (independiente de la del jugador) */
+const PREVIEW_KEY = "avatar:preview";
+
 // ---------- Sincronización multijugador (Fase 1) ----------
 
 /** Snapshot recibido + la hora LOCAL de llegada (ese sello no viaja por la red) */
@@ -1028,15 +1031,34 @@ export class MainScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(1e5 + 2);
 
-    // Vista previa del avatar
-    const previewKey = `avatar:preview`;
-    createAvatarTexture(this, this.palette, previewKey);
+    // Vista previa del avatar.
+    //
+    // Ojo con la animación: `this.anim("idle-down")` devuelve "avatar:idle-down",
+    // cuyos frames pertenecen a la textura del JUGADOR. Al reproducirla aquí, el
+    // sprite se reenganchaba a esa textura e ignoraba la de la preview, así que
+    // los colores elegidos no se veían. Hay que usar la animación de ESTA textura.
+    createAvatarTexture(this, this.palette, PREVIEW_KEY);
     const preview = this.add
-      .sprite(480, panelY + 240, previewKey, "down-0")
+      .sprite(480, panelY + 240, PREVIEW_KEY, "down-0")
       .setOrigin(0.5)
       .setScale(3)
       .setDepth(1e5 + 2);
-    preview.play(this.anim("idle-down"), true);
+    preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
+
+    /**
+     * Repinta la preview con la paleta actual.
+     *
+     * `createAvatarTexture` DESTRUYE y recrea textura y animaciones. Un sprite
+     * que siguiera reproduciendo la animación vieja se quedaría con frames
+     * muertos — es el mismo fallo que dejaba la pantalla en negro al cruzar una
+     * puerta. Por eso se para la animación ANTES y se vuelve a lanzar después.
+     */
+    const redrawPreview = (): void => {
+      preview.anims.stop();
+      createAvatarTexture(this, this.palette, PREVIEW_KEY);
+      preview.setTexture(PREVIEW_KEY, "down-0");
+      preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
+    };
 
     // Selectores de color (reutilizamos la lógica del panel C)
     const shirtLabel = this.add
@@ -1070,8 +1092,7 @@ export class MainScene extends Phaser.Scene {
         .on("pointerdown", () => {
           this.palette = { ...this.palette, shirt: c.value };
           this.refreshLoginSwatches(shirtSwatches, hairSwatches);
-          createAvatarTexture(this, this.palette, previewKey);
-          preview.setTexture(previewKey, "down-0");
+          redrawPreview();
         });
       shirtSwatches.push(s);
       this.loginUI.push(s);
@@ -1087,8 +1108,7 @@ export class MainScene extends Phaser.Scene {
         .on("pointerdown", () => {
           this.palette = { ...this.palette, hair: c.value };
           this.refreshLoginSwatches(shirtSwatches, hairSwatches);
-          createAvatarTexture(this, this.palette, previewKey);
-          preview.setTexture(previewKey, "down-0");
+          redrawPreview();
         });
       hairSwatches.push(s);
       this.loginUI.push(s);
@@ -1253,6 +1273,11 @@ export class MainScene extends Phaser.Scene {
       if (o.active) o.destroy();
     }
     this.loginUI = [];
+
+    // La preview tiene textura y animaciones propias: si no se liberan, cada
+    // apertura del perfil dejaba una textura y siete animaciones huérfanas.
+    // Va DESPUÉS de destruir los sprites, nunca antes.
+    destroyAvatarAssets(this, PREVIEW_KEY);
 
     this.setGameKeyboard(true);
   }
