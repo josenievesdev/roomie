@@ -174,6 +174,10 @@ export class MainScene extends Phaser.Scene {
   private loginNick = "";
   /** Listener de teclado del modal. Se guarda para poder QUITARLO al cerrar. */
   private loginKeys: ((e: KeyboardEvent) => void) | null = null;
+  /** Texto de error del modal (referencia directa, no búsqueda por contenido) */
+  private loginError: Phaser.GameObjects.Text | null = null;
+  /** Paleta al abrir el modal, para poder descartar los cambios al cancelar */
+  private loginPaletteOnOpen: Palette | null = null;
 
   constructor() {
     super("main");
@@ -197,6 +201,8 @@ export class MainScene extends Phaser.Scene {
     this.loginModalOpen = false;
     this.loginNick = "";
     this.loginKeys = null;
+    this.loginError = null;
+    this.loginPaletteOnOpen = null;
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
@@ -900,24 +906,20 @@ export class MainScene extends Phaser.Scene {
 
   /** Error al unirse (nickname duplicado, etc.) */
   private onJoinError(err: JoinErrorPayload): void {
-    if (err.code === "DUPLICATE_NAME") {
-      // Mostrar error en el modal de login
-      const errorText = this.loginUI.find(
-        (o) => o instanceof Phaser.GameObjects.Text && o.text === ""
-      ) as Phaser.GameObjects.Text | undefined;
-      if (errorText) {
-        errorText.setText(err.message);
-        errorText.setColor("#ff6b6b");
-        this.time.delayedCall(3000, () => {
-          if (errorText.active) {
-            errorText.setText("");
-            errorText.setColor("#ffffff");
-          }
-        });
-      }
-      // Si el modal no estaba abierto, abrirlo
-      if (!this.loginModalOpen) this.showLoginModal();
-    }
+    if (err.code !== "DUPLICATE_NAME") return;
+
+    // El texto de error pertenece al modal: si está cerrado hay que abrirlo
+    // ANTES de intentar escribir en él.
+    if (!this.loginModalOpen) this.showLoginModal();
+
+    // Antes se buscaba el objeto por su contenido (`text === ""`), que casaba
+    // con cualquier Text vacío del modal. Ahora es una referencia directa.
+    const errorText = this.loginError;
+    if (!errorText) return;
+    errorText.setText(err.message);
+    this.time.delayedCall(3000, () => {
+      if (errorText.active) errorText.setText("");
+    });
   }
 
   /** Botón "Perfil" en el HUD (esquina superior derecha) */
@@ -932,7 +934,7 @@ export class MainScene extends Phaser.Scene {
       .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
       .on("pointerdown", () => this.showLoginModal(true));
 
-    const label = this.add
+    this.add
       .text(910, 20, "Perfil", {
         fontFamily: "monospace",
         fontSize: "12px",
@@ -942,16 +944,27 @@ export class MainScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(1e6 + 1);
 
-    this.loginUI.push(btn, label); // reutilizamos loginUI para trackear
+    // OJO: este botón NO va en `loginUI`. Ahí estaba antes, y como
+    // `closeLoginModal` destruye todo lo que hay en esa lista, al cerrar el
+    // perfil una vez el botón desaparecía y ya no se podía volver a abrir.
+    // Vive lo que viva la escena; Phaser lo destruye en el SHUTDOWN.
   }
 
   /** Modal de login / edición de perfil */
   private showLoginModal(isEdit = false): void {
-    if (this.loginModalOpen && !isEdit) return;
+    // Ya abierto: no se apila otro encima. Antes, con isEdit, cada pulsación
+    // del botón Perfil creaba un modal nuevo y dejaba el anterior huérfano
+    // debajo (con su listener de teclado incluido).
+    if (this.loginModalOpen) return;
     this.loginModalOpen = true;
     this.chatOpen = false;
-    this.customOpen = false;
     this.closeChat();
+    // El panel de personalización se ocultaba a medias: se ponía `customOpen`
+    // a false pero sus objetos seguían dibujados por encima del modal.
+    if (this.customOpen) this.toggleCustomPanel();
+    // Los selectores de color cambian `this.palette` en vivo para que la
+    // preview los muestre; si se cancela hay que poder volver atrás.
+    this.loginPaletteOnOpen = { ...this.palette };
     // El teclado del juego se apaga entero: si no, escribir una "c" en el
     // nickname abre el panel de personalización y un Enter abre el chat
     // DETRÁS del modal, y además el avatar camina con WASD mientras escribes.
@@ -964,10 +977,18 @@ export class MainScene extends Phaser.Scene {
       .setDepth(1e5)
       .setInteractive();
 
+    // Disposición en columna, medida siempre desde `panelY`, para que el panel
+    // pueda cambiar de alto sin descuadrarse: la pantalla de entrada no lleva
+    // botón Cancelar y por tanto es más baja.
+    //
+    // Antes el panel medía 380 y el Cancelar se colocaba en `panelH - 40 + 44`
+    // = 384: se dibujaba FUERA del panel. La preview también se solapaba con
+    // la fila de tonos de pelo.
     const panelW = 360;
-    const panelH = 380;
+    const panelH = isEdit ? 400 : 358;
     const panelX = 480 - panelW / 2;
     const panelY = 270 - panelH / 2;
+    const colX = panelX + 24; // margen izquierdo del contenido
 
     const panel = this.add
       .rectangle(480, 270, panelW, panelH, 0x12121a, 0.96)
@@ -976,7 +997,7 @@ export class MainScene extends Phaser.Scene {
       .setStrokeStyle(2, 0x6d6d94, 1);
 
     const title = this.add
-      .text(480, panelY + 24, isEdit ? "Editar perfil" : "Entrar a Roomie", {
+      .text(480, panelY + 26, isEdit ? "Editar perfil" : "Entrar a Roomie", {
         fontFamily: "monospace",
         fontSize: "16px",
         color: "#ffe9a8",
@@ -987,7 +1008,7 @@ export class MainScene extends Phaser.Scene {
 
     // Input nickname (simulado con Text + eventos de teclado)
     const nicknameLabel = this.add
-      .text(panelX + 24, panelY + 68, "Nickname (máx 16):", {
+      .text(colX, panelY + 52, `Nickname (máx ${NAME_MAX}):`, {
         fontFamily: "monospace",
         fontSize: "13px",
         color: "#cccccc",
@@ -998,7 +1019,7 @@ export class MainScene extends Phaser.Scene {
     const save = loadSave();
     this.loginNick = save?.nickname ?? "";
     const nickBg = this.add
-      .rectangle(panelX + 24, panelY + 100, panelW - 48, 36, 0x1a1a2e, 1)
+      .rectangle(colX, panelY + 72, panelW - 48, 34, 0x1a1a2e, 1)
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(1e5 + 1)
@@ -1006,7 +1027,7 @@ export class MainScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
 
     const nickText = this.add
-      .text(panelX + 32, panelY + 108, "", {
+      .text(colX + 8, panelY + 80, "", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -1022,7 +1043,7 @@ export class MainScene extends Phaser.Scene {
 
     // Mensaje de error
     const errorText = this.add
-      .text(480, panelY + 150, "", {
+      .text(480, panelY + 118, "", {
         fontFamily: "monospace",
         fontSize: "12px",
         color: "#ff6b6b",
@@ -1030,6 +1051,7 @@ export class MainScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setScrollFactor(0)
       .setDepth(1e5 + 2);
+    this.loginError = errorText;
 
     // Vista previa del avatar.
     //
@@ -1039,7 +1061,7 @@ export class MainScene extends Phaser.Scene {
     // los colores elegidos no se veían. Hay que usar la animación de ESTA textura.
     createAvatarTexture(this, this.palette, PREVIEW_KEY);
     const preview = this.add
-      .sprite(480, panelY + 240, PREVIEW_KEY, "down-0")
+      .sprite(480, panelY + 170, PREVIEW_KEY, "down-0")
       .setOrigin(0.5)
       .setScale(3)
       .setDepth(1e5 + 2);
@@ -1062,7 +1084,7 @@ export class MainScene extends Phaser.Scene {
 
     // Selectores de color (reutilizamos la lógica del panel C)
     const shirtLabel = this.add
-      .text(panelX + 24, panelY + 160, "Ropa:", {
+      .text(colX, panelY + 216, "Ropa:", {
         fontFamily: "monospace",
         fontSize: "12px",
         color: "#cccccc",
@@ -1071,7 +1093,7 @@ export class MainScene extends Phaser.Scene {
       .setDepth(1e5 + 2);
 
     const hairLabel = this.add
-      .text(panelX + 24, panelY + 200, "Pelo:", {
+      .text(colX, panelY + 266, "Pelo:", {
         fontFamily: "monospace",
         fontSize: "12px",
         color: "#cccccc",
@@ -1084,7 +1106,7 @@ export class MainScene extends Phaser.Scene {
 
     SHIRT_COLORS.forEach((c, i) => {
       const s = this.add
-        .rectangle(panelX + 40 + i * 32, panelY + 178, 20, 20, c.value)
+        .rectangle(colX + 10 + i * 32, panelY + 246, 20, 20, c.value)
         .setScrollFactor(0)
         .setDepth(1e5 + 2)
         .setStrokeStyle(1, c.value === this.palette.shirt ? 0xffffff : 0x000000, 2)
@@ -1100,7 +1122,7 @@ export class MainScene extends Phaser.Scene {
 
     HAIR_COLORS.forEach((c, i) => {
       const s = this.add
-        .rectangle(panelX + 40 + i * 32, panelY + 218, 20, 20, c.value)
+        .rectangle(colX + 10 + i * 32, panelY + 296, 20, 20, c.value)
         .setScrollFactor(0)
         .setDepth(1e5 + 2)
         .setStrokeStyle(1, c.value === this.palette.hair ? 0xffffff : 0x000000, 2)
@@ -1114,9 +1136,13 @@ export class MainScene extends Phaser.Scene {
       this.loginUI.push(s);
     });
 
+    // Botones anclados al BORDE INFERIOR del panel, no a una altura fija.
+    const cancelY = panelY + panelH - 28;
+    const saveY = panelY + panelH - (isEdit ? 68 : 28);
+
     // Botón Guardar / Entrar
     const saveBtn = this.add
-      .rectangle(480, panelY + panelH - 40, 180, 36, 0x6c5ce7, 1)
+      .rectangle(480, saveY, 180, 36, 0x6c5ce7, 1)
       .setScrollFactor(0)
       .setDepth(1e5 + 2)
       .setStrokeStyle(1, 0x8c7ce7, 1)
@@ -1126,7 +1152,7 @@ export class MainScene extends Phaser.Scene {
       .on("pointerdown", () => this.submitLogin(this.loginNick, isEdit));
 
     const saveLabel = this.add
-      .text(480, panelY + panelH - 40, isEdit ? "Guardar cambios" : "Entrar", {
+      .text(480, saveY, isEdit ? "Guardar cambios" : "Entrar", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -1139,7 +1165,7 @@ export class MainScene extends Phaser.Scene {
     let cancelBtn: Phaser.GameObjects.Rectangle | null = null;
     if (isEdit) {
       cancelBtn = this.add
-        .rectangle(480, panelY + panelH - 40 + 44, 180, 30, 0x3a3a55, 1)
+        .rectangle(480, cancelY, 180, 30, 0x3a3a55, 1)
         .setScrollFactor(0)
         .setDepth(1e5 + 2)
         .setStrokeStyle(1, 0x6d6d94, 1)
@@ -1149,7 +1175,7 @@ export class MainScene extends Phaser.Scene {
         .on("pointerdown", () => this.closeLoginModal());
 
       const cancelLabel = this.add
-        .text(480, panelY + panelH - 40 + 44, "Cancelar", {
+        .text(480, cancelY, "Cancelar", {
           fontFamily: "monospace",
           fontSize: "12px",
           color: "#cccccc",
@@ -1246,6 +1272,8 @@ export class MainScene extends Phaser.Scene {
     this.player.setTexture("avatar", `${this.avatar.facing}-0`);
     this.player.play(this.anim(`idle-${this.avatar.facing}`), true);
 
+    // Los colores quedan confirmados: al cerrar ya no hay nada que descartar.
+    this.loginPaletteOnOpen = null;
     this.closeLoginModal();
 
     if (isEdit) {
@@ -1261,6 +1289,13 @@ export class MainScene extends Phaser.Scene {
 
   private closeLoginModal(): void {
     this.loginModalOpen = false;
+
+    // Cerrar sin guardar descarta los colores que se estaban probando.
+    if (this.loginPaletteOnOpen) {
+      this.palette = this.loginPaletteOnOpen;
+      this.loginPaletteOnOpen = null;
+    }
+    this.loginError = null;
 
     // Quitar SIEMPRE el listener: es lo que antes se acumulaba en cada
     // apertura (tres aperturas = cada tecla escrita tres veces).
