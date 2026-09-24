@@ -15,6 +15,7 @@ import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage"
 import { net, playerName } from "../net/client";
 import {
   KEYBOARD_SPEED,
+  NAME_MAX,
   ROOMS,
   type ChatPayload,
   type JoinErrorPayload,
@@ -161,6 +162,15 @@ export class MainScene extends Phaser.Scene {
   private snapshots: Snapshot[] = [];
   private loginModalOpen = false;
   private loginUI: Phaser.GameObjects.GameObject[] = [];
+  /**
+   * Valor REAL del nickname que se está escribiendo. Antes se sacaba del propio
+   * objeto Text quitándole el cursor (`text.replace("▌", "")`), y por eso el
+   * borrado no funcionaba: `slice(0, -1)` se comía el cursor, no la letra, y
+   * al volver a pegarlo el texto quedaba igual que estaba.
+   */
+  private loginNick = "";
+  /** Listener de teclado del modal. Se guarda para poder QUITARLO al cerrar. */
+  private loginKeys: ((e: KeyboardEvent) => void) | null = null;
 
   constructor() {
     super("main");
@@ -182,6 +192,8 @@ export class MainScene extends Phaser.Scene {
     this.chatText = "";
     this.customOpen = false;
     this.loginModalOpen = false;
+    this.loginNick = "";
+    this.loginKeys = null;
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
@@ -316,6 +328,7 @@ export class MainScene extends Phaser.Scene {
 
     this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       if (pointer.button !== 0) return; // solo clic izquierdo
+      if (this.loginModalOpen) return; // el modal se lleva todos los clics
       this.handleWorldClick(pointer);
     });
 
@@ -333,6 +346,12 @@ export class MainScene extends Phaser.Scene {
       // Los objetos de esta escena mueren: nada de red debe tocarlos ya
       this.alive = false;
       net.setHandlers({});
+      // Si la escena muere con el modal abierto, su listener de teclado
+      // sobreviviría al reinicio y escribiría sobre objetos destruidos.
+      if (this.loginKeys) {
+        window.removeEventListener("keydown", this.loginKeys);
+        this.loginKeys = null;
+      }
     });
   }
 
@@ -930,6 +949,10 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.customOpen = false;
     this.closeChat();
+    // El teclado del juego se apaga entero: si no, escribir una "c" en el
+    // nickname abre el panel de personalización y un Enter abre el chat
+    // DETRÁS del modal, y además el avatar camina con WASD mientras escribes.
+    this.setGameKeyboard(false);
 
     // Fondo semitransparente
     const overlay = this.add
@@ -970,7 +993,7 @@ export class MainScene extends Phaser.Scene {
       .setDepth(1e5 + 2);
 
     const save = loadSave();
-    const currentNick = save?.nickname ?? "";
+    this.loginNick = save?.nickname ?? "";
     const nickBg = this.add
       .rectangle(panelX + 24, panelY + 100, panelW - 48, 36, 0x1a1a2e, 1)
       .setOrigin(0, 0)
@@ -980,7 +1003,7 @@ export class MainScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
 
     const nickText = this.add
-      .text(panelX + 32, panelY + 108, currentNick + "▌", {
+      .text(panelX + 32, panelY + 108, "", {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -988,6 +1011,11 @@ export class MainScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setScrollFactor(0)
       .setDepth(1e5 + 2);
+    /** El Text sólo DIBUJA; el valor vive en `this.loginNick` */
+    const drawNick = (): void => {
+      nickText.setText(this.loginNick + "▌");
+    };
+    drawNick();
 
     // Mensaje de error
     const errorText = this.add
@@ -1075,7 +1103,7 @@ export class MainScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true })
       .on("pointerover", () => saveBtn.setFillStyle(0x8c7ce7, 1))
       .on("pointerout", () => saveBtn.setFillStyle(0x6c5ce7, 1))
-      .on("pointerdown", () => this.submitLogin(nickText.text.replace("▌", "").trim(), isEdit));
+      .on("pointerdown", () => this.submitLogin(this.loginNick, isEdit));
 
     const saveLabel = this.add
       .text(480, panelY + panelH - 40, isEdit ? "Guardar cambios" : "Entrar", {
@@ -1113,10 +1141,11 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Captura de teclado para el nickname
-    const onKeyDown = (e: KeyboardEvent) => {
+    const onKeyDown = (e: KeyboardEvent): void => {
       if (!this.loginModalOpen) return;
+
       if (e.key === "Enter") {
-        this.submitLogin(nickText.text.replace("▌", "").trim(), isEdit);
+        this.submitLogin(this.loginNick, isEdit);
         return;
       }
       if (e.key === "Escape") {
@@ -1124,14 +1153,22 @@ export class MainScene extends Phaser.Scene {
         return;
       }
       if (e.key === "Backspace") {
-        nickText.setText(nickText.text.slice(0, -1) + "▌");
+        e.preventDefault(); // en algunos navegadores retrocede de página
+        this.loginNick = this.loginNick.slice(0, -1);
+        drawNick();
         return;
       }
-      if (e.key.length === 1 && nickText.text.replace("▌", "").length < 16) {
-        const beforeCursor = nickText.text.replace("▌", "");
-        nickText.setText(beforeCursor + e.key + "▌");
+      // Atajos del navegador (Ctrl+R, Cmd+L...): no son texto
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length === 1 && this.loginNick.length < NAME_MAX) {
+        this.loginNick += e.key;
+        drawNick();
       }
     };
+    // Sólo puede haber UN listener vivo: si quedara el de una apertura
+    // anterior, cada tecla se escribiría dos veces y el borrado se comería
+    // dos letras. Por eso se guarda la referencia y se quita al cerrar.
+    this.loginKeys = onKeyDown;
     window.addEventListener("keydown", onKeyDown);
 
     // Guardar referencias para limpiar
@@ -1204,12 +1241,33 @@ export class MainScene extends Phaser.Scene {
 
   private closeLoginModal(): void {
     this.loginModalOpen = false;
+
+    // Quitar SIEMPRE el listener: es lo que antes se acumulaba en cada
+    // apertura (tres aperturas = cada tecla escrita tres veces).
+    if (this.loginKeys) {
+      window.removeEventListener("keydown", this.loginKeys);
+      this.loginKeys = null;
+    }
+
     for (const o of this.loginUI) {
       if (o.active) o.destroy();
     }
     this.loginUI = [];
-    // Limpiar listener de teclado (se limpia al cerrar la escena por el SHUTDOWN)
-    // Nota: en modo edición, el usuario puede volver a abrir con el botón Perfil
+
+    this.setGameKeyboard(true);
+  }
+
+  /**
+   * Apaga o enciende el teclado del juego. Mientras un modal escribe texto,
+   * las teclas son suyas y de nadie más.
+   */
+  private setGameKeyboard(on: boolean): void {
+    const kb = this.input.keyboard;
+    if (!kb) return;
+    kb.enabled = on;
+    // Sin esto, una tecla que estuviera pulsada al abrir el modal se queda
+    // "pulsada" para siempre y el avatar camina solo al cerrarlo.
+    if (!on) kb.resetKeys();
   }
 
   /** Sprite + nombre de un jugador remoto (se crea la primera vez que aparece) */
