@@ -17,6 +17,7 @@ import {
   isRoomId,
   type ChatPayload,
   type ClientEvents,
+  type JoinErrorPayload,
   type JoinPayload,
   type Look,
   type PlayerView,
@@ -236,11 +237,26 @@ io.on("connection", (socket) => {
     if (me) return; // ya estaba dentro
     const room = isRoomId(payload?.room) ? payload.room : ROOMS[0];
     const world = worlds.get(room)!;
+    const desiredName = sanitizeName(payload?.name);
+
+    // Rechazar si el nombre ya está en uso en ESA sala
+    const nameTaken = [...players.values()].some(
+      (p) => p.room === room && p.name.toLowerCase() === desiredName.toLowerCase()
+    );
+    if (nameTaken) {
+      const err: JoinErrorPayload = {
+        code: "DUPLICATE_NAME",
+        message: `El nombre "${desiredName}" ya está en uso en esta sala.`,
+      };
+      socket.emit("joinError", err);
+      return;
+    }
+
     const start = spawnCell(world, payload?.col, payload?.row);
 
     const player: Player = {
       id: socket.id,
-      name: uniqueName(sanitizeName(payload?.name)),
+      name: desiredName,
       room,
       look: sanitizeLook(payload?.look),
       world,
@@ -289,14 +305,29 @@ io.on("connection", (socket) => {
   socket.on("room", (p) => {
     if (!me || !isRoomId(p?.room)) return;
     const world = worlds.get(p.room)!;
-    enterRoom(socket, me, p.room);
-    me.world = world;
-    me.state = new AvatarState(
+    const player = me; // narrow for TS
+
+    // Rechazar si el nombre ya está en uso en la sala DESTINO
+    const nameTaken = [...players.values()].some(
+      (pl) => pl.room === p.room && pl.id !== player.id && pl.name.toLowerCase() === player.name.toLowerCase()
+    );
+    if (nameTaken) {
+      const err: JoinErrorPayload = {
+        code: "DUPLICATE_NAME",
+        message: `El nombre "${player.name}" ya está en uso en esa sala.`,
+      };
+      socket.emit("joinError", err);
+      return;
+    }
+
+    enterRoom(socket, player, p.room);
+    player.world = world;
+    player.state = new AvatarState(
       { cols: world.cols, rows: world.rows, isBlocked: world.isBlocked },
       spawnCell(world, p?.col, p?.row),
       normalizeFacing(p?.facing),
     );
-    me.input = { mx: 0, my: 0 };
+    player.input = { mx: 0, my: 0 };
   });
 
   socket.on("chat", (text: unknown) => {

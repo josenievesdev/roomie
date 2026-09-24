@@ -22,7 +22,7 @@ export function isRoomId(v: unknown): v is RoomId {
 
 /** px/s de pantalla para el teclado. Debe ser IGUAL en cliente y servidor. */
 export const KEYBOARD_SPEED = 105;
-/** ms por tick de simulación en el servidor (20 ticks/s, un snapshot por tick) */
+/** ms por tick de simulación en el servidor (20 ticks/s) */
 export const TICK_MS = 50;
 
 export const NAME_MAX = 16;
@@ -67,6 +67,9 @@ export type ChatPayload = {
   system: boolean;
 };
 
+/** Error al unirse (nickname duplicado, sala llena, etc.) */
+export type JoinErrorPayload = { code: "DUPLICATE_NAME" | "ROOM_FULL" | "INVALID"; message: string };
+
 /** Eventos que el cliente emite y el servidor escucha */
 export interface ClientEvents {
   /** Entrar (o reentrar) al juego con una posición y paleta conocidas */
@@ -89,6 +92,8 @@ export interface ClientEvents {
 export interface ServerEvents {
   /** Respuesta al `join`: tu id + todos los jugadores conectados */
   welcome: (p: { id: string; players: PlayerView[] }) => void;
+  /** Error al unirse (nickname duplicado, etc.) */
+  joinError: (p: JoinErrorPayload) => void;
   /** Snapshot a 20 Hz con los jugadores (emitted a la sala de cada uno) */
   players: (p: { players: PlayerView[] }) => void;
   /** Chat de sala (incluido el eco de tu propio mensaje) + avisos de sistema */

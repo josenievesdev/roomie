@@ -11,12 +11,13 @@ import {
   paletteFrom,
   type Palette,
 } from "../state/palette";
-import { loadSave, writeSave, type SaveData } from "../utils/storage";
+import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
 import { net, playerName } from "../net/client";
 import {
   KEYBOARD_SPEED,
   ROOMS,
   type ChatPayload,
+  type JoinErrorPayload,
   type Look,
   type PlayerView,
   type RoomId,
@@ -127,6 +128,8 @@ export class MainScene extends Phaser.Scene {
   private sentMove = { mx: 0, my: 0 };
   private lastMoveSent = 0;
   private reconcileIn = 0;
+  private loginModalOpen = false;
+  private loginUI: Phaser.GameObjects.GameObject[] = [];
 
   constructor() {
     super("main");
@@ -147,6 +150,7 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.chatText = "";
     this.customOpen = false;
+    this.loginModalOpen = false;
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
@@ -242,9 +246,18 @@ export class MainScene extends Phaser.Scene {
       .setVisible(false);
 
     this.buildCustomPanel();
+    this.buildProfileButton();
 
     // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
     this.setupNet();
+
+    // Si no hay nickname guardado, mostrar modal de login
+    if (!save?.nickname) {
+      this.showLoginModal();
+    } else {
+      // Ya hay nickname: entrar directo
+      this.sendWhere();
+    }
 
     const kb = this.input.keyboard;
     if (kb) {
@@ -599,6 +612,7 @@ export class MainScene extends Phaser.Scene {
   private saveGame(overrides: Partial<Omit<SaveData, "version">> = {}): void {
     // Durante el cruce de puerta solo se guarda el destino (con overrides)
     if (this.transitioning) return;
+    const save = loadSave();
     writeSave({
       room: this.roomId,
       col: Math.round(this.avatar.col),
@@ -606,6 +620,7 @@ export class MainScene extends Phaser.Scene {
       facing: this.avatar.facing,
       shirt: this.palette.shirt,
       hair: this.palette.hair,
+      nickname: save?.nickname ?? "",
       ...overrides,
     });
   }
@@ -750,16 +765,21 @@ export class MainScene extends Phaser.Scene {
         this.updateStatusHud();
         if (up) this.sendWhere();
       },
+      onJoinError: (err) => {
+        if (!this.alive) return;
+        this.onJoinError(err);
+      },
     });
     net.connect();
     this.netOnline = net.isOnline;
     this.netPlayers = net.roster;
-    this.sendWhere();
     this.updateStatusHud();
   }
 
   /** Me presento al servidor (o aviso de que cambié de sala) */
   private sendWhere(): void {
+    const save = loadSave();
+    const nickname = save?.nickname ?? playerName();
     const where = {
       room: this.roomId,
       col: Math.round(this.avatar.col),
@@ -767,7 +787,7 @@ export class MainScene extends Phaser.Scene {
       facing: this.avatar.facing,
     };
     if (net.isJoined) net.changeRoom(where);
-    else net.join({ name: playerName(), ...where, look: this.palette });
+    else net.join({ name: nickname, ...where, look: this.palette });
   }
 
   /** Manda el teclado cuando cambia (y un refuerzo cada 250 ms mientras se pulsa) */
@@ -815,6 +835,342 @@ export class MainScene extends Phaser.Scene {
     const here = 1 + this.netPlayers.filter((p) => p.room === this.roomId).length;
     this.statusText.setText(`● En línea — ${here} en ${this.roomId}`);
     this.statusText.setColor("#7bed9f");
+  }
+
+  /** Error al unirse (nickname duplicado, etc.) */
+  private onJoinError(err: JoinErrorPayload): void {
+    if (err.code === "DUPLICATE_NAME") {
+      // Mostrar error en el modal de login
+      const errorText = this.loginUI.find(
+        (o) => o instanceof Phaser.GameObjects.Text && o.text === ""
+      ) as Phaser.GameObjects.Text | undefined;
+      if (errorText) {
+        errorText.setText(err.message);
+        errorText.setColor("#ff6b6b");
+        this.time.delayedCall(3000, () => {
+          if (errorText.active) {
+            errorText.setText("");
+            errorText.setColor("#ffffff");
+          }
+        });
+      }
+      // Si el modal no estaba abierto, abrirlo
+      if (!this.loginModalOpen) this.showLoginModal();
+    }
+  }
+
+  /** Botón "Perfil" en el HUD (esquina superior derecha) */
+  private buildProfileButton(): void {
+    const btn = this.add
+      .rectangle(910, 20, 80, 28, 0x1a1a2e, 0.9)
+      .setScrollFactor(0)
+      .setDepth(1e6)
+      .setStrokeStyle(1, 0x6d6d94, 1)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
+      .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
+      .on("pointerdown", () => this.showLoginModal(true));
+
+    const label = this.add
+      .text(910, 20, "Perfil", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#ffe9a8",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(1e6 + 1);
+
+    this.loginUI.push(btn, label); // reutilizamos loginUI para trackear
+  }
+
+  /** Modal de login / edición de perfil */
+  private showLoginModal(isEdit = false): void {
+    if (this.loginModalOpen && !isEdit) return;
+    this.loginModalOpen = true;
+    this.chatOpen = false;
+    this.customOpen = false;
+    this.closeChat();
+
+    // Fondo semitransparente
+    const overlay = this.add
+      .rectangle(480, 270, 960, 540, 0x000000, 0.7)
+      .setScrollFactor(0)
+      .setDepth(1e5)
+      .setInteractive();
+
+    const panelW = 360;
+    const panelH = 380;
+    const panelX = 480 - panelW / 2;
+    const panelY = 270 - panelH / 2;
+
+    const panel = this.add
+      .rectangle(480, 270, panelW, panelH, 0x12121a, 0.96)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 1)
+      .setStrokeStyle(2, 0x6d6d94, 1);
+
+    const title = this.add
+      .text(480, panelY + 24, isEdit ? "Editar perfil" : "Entrar a Roomie", {
+        fontFamily: "monospace",
+        fontSize: "16px",
+        color: "#ffe9a8",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    // Input nickname (simulado con Text + eventos de teclado)
+    const nicknameLabel = this.add
+      .text(panelX + 24, panelY + 68, "Nickname (máx 16):", {
+        fontFamily: "monospace",
+        fontSize: "13px",
+        color: "#cccccc",
+      })
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    const save = loadSave();
+    const currentNick = save?.nickname ?? "";
+    const nickBg = this.add
+      .rectangle(panelX + 24, panelY + 100, panelW - 48, 36, 0x1a1a2e, 1)
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 1)
+      .setStrokeStyle(1, 0x6d6d94, 1)
+      .setInteractive({ useHandCursor: true });
+
+    const nickText = this.add
+      .text(panelX + 32, panelY + 108, currentNick + "▌", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+      })
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    // Mensaje de error
+    const errorText = this.add
+      .text(480, panelY + 150, "", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#ff6b6b",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    // Vista previa del avatar
+    const previewKey = `avatar:preview`;
+    createAvatarTexture(this, this.palette, previewKey);
+    const preview = this.add
+      .sprite(480, panelY + 240, previewKey, "down-0")
+      .setOrigin(0.5)
+      .setScale(3)
+      .setDepth(1e5 + 2);
+    preview.play(this.anim("idle-down"), true);
+
+    // Selectores de color (reutilizamos la lógica del panel C)
+    const shirtLabel = this.add
+      .text(panelX + 24, panelY + 160, "Ropa:", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#cccccc",
+      })
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    const hairLabel = this.add
+      .text(panelX + 24, panelY + 200, "Pelo:", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#cccccc",
+      })
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2);
+
+    const shirtSwatches: Phaser.GameObjects.Rectangle[] = [];
+    const hairSwatches: Phaser.GameObjects.Rectangle[] = [];
+
+    SHIRT_COLORS.forEach((c, i) => {
+      const s = this.add
+        .rectangle(panelX + 40 + i * 32, panelY + 178, 20, 20, c.value)
+        .setScrollFactor(0)
+        .setDepth(1e5 + 2)
+        .setStrokeStyle(1, c.value === this.palette.shirt ? 0xffffff : 0x000000, 2)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => {
+          this.palette = { ...this.palette, shirt: c.value };
+          this.refreshLoginSwatches(shirtSwatches, hairSwatches);
+          createAvatarTexture(this, this.palette, previewKey);
+          preview.setTexture(previewKey, "down-0");
+        });
+      shirtSwatches.push(s);
+      this.loginUI.push(s);
+    });
+
+    HAIR_COLORS.forEach((c, i) => {
+      const s = this.add
+        .rectangle(panelX + 40 + i * 32, panelY + 218, 20, 20, c.value)
+        .setScrollFactor(0)
+        .setDepth(1e5 + 2)
+        .setStrokeStyle(1, c.value === this.palette.hair ? 0xffffff : 0x000000, 2)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerdown", () => {
+          this.palette = { ...this.palette, hair: c.value };
+          this.refreshLoginSwatches(shirtSwatches, hairSwatches);
+          createAvatarTexture(this, this.palette, previewKey);
+          preview.setTexture(previewKey, "down-0");
+        });
+      hairSwatches.push(s);
+      this.loginUI.push(s);
+    });
+
+    // Botón Guardar / Entrar
+    const saveBtn = this.add
+      .rectangle(480, panelY + panelH - 40, 180, 36, 0x6c5ce7, 1)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 2)
+      .setStrokeStyle(1, 0x8c7ce7, 1)
+      .setInteractive({ useHandCursor: true })
+      .on("pointerover", () => saveBtn.setFillStyle(0x8c7ce7, 1))
+      .on("pointerout", () => saveBtn.setFillStyle(0x6c5ce7, 1))
+      .on("pointerdown", () => this.submitLogin(nickText.text.replace("▌", "").trim(), isEdit));
+
+    const saveLabel = this.add
+      .text(480, panelY + panelH - 40, isEdit ? "Guardar cambios" : "Entrar", {
+        fontFamily: "monospace",
+        fontSize: "14px",
+        color: "#ffffff",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(1e5 + 3);
+
+    // Botón Cancelar (solo en modo edición)
+    let cancelBtn: Phaser.GameObjects.Rectangle | null = null;
+    if (isEdit) {
+      cancelBtn = this.add
+        .rectangle(480, panelY + panelH - 40 + 44, 180, 30, 0x3a3a55, 1)
+        .setScrollFactor(0)
+        .setDepth(1e5 + 2)
+        .setStrokeStyle(1, 0x6d6d94, 1)
+        .setInteractive({ useHandCursor: true })
+        .on("pointerover", () => cancelBtn?.setFillStyle(0x4a4a75, 1))
+        .on("pointerout", () => cancelBtn?.setFillStyle(0x3a3a55, 1))
+        .on("pointerdown", () => this.closeLoginModal());
+
+      const cancelLabel = this.add
+        .text(480, panelY + panelH - 40 + 44, "Cancelar", {
+          fontFamily: "monospace",
+          fontSize: "12px",
+          color: "#cccccc",
+        })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(1e5 + 3);
+      this.loginUI.push(cancelBtn, cancelLabel);
+    }
+
+    // Captura de teclado para el nickname
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!this.loginModalOpen) return;
+      if (e.key === "Enter") {
+        this.submitLogin(nickText.text.replace("▌", "").trim(), isEdit);
+        return;
+      }
+      if (e.key === "Escape") {
+        this.closeLoginModal();
+        return;
+      }
+      if (e.key === "Backspace") {
+        nickText.setText(nickText.text.slice(0, -1) + "▌");
+        return;
+      }
+      if (e.key.length === 1 && nickText.text.replace("▌", "").length < 16) {
+        const beforeCursor = nickText.text.replace("▌", "");
+        nickText.setText(beforeCursor + e.key + "▌");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    // Guardar referencias para limpiar
+    this.loginUI.push(
+      overlay,
+      panel,
+      title,
+      nicknameLabel,
+      nickBg,
+      nickText,
+      errorText,
+      preview,
+      shirtLabel,
+      hairLabel,
+      saveBtn,
+      saveLabel,
+      ...shirtSwatches,
+      ...hairSwatches
+    );
+  }
+
+  private refreshLoginSwatches(
+    shirts: Phaser.GameObjects.Rectangle[],
+    hairs: Phaser.GameObjects.Rectangle[]
+  ): void {
+    shirts.forEach((s, i) => {
+      const sel = SHIRT_COLORS[i].value === this.palette.shirt;
+      s.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
+    });
+    hairs.forEach((h, i) => {
+      const sel = HAIR_COLORS[i].value === this.palette.hair;
+      h.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
+    });
+  }
+
+  private submitLogin(nickname: string, isEdit: boolean): void {
+    const clean = nickname
+      .replace(/[^\p{L}\p{N} _\-.]/gu, "")
+      .trim()
+      .slice(0, 16);
+    if (!clean) return;
+
+    writeSave({
+      room: this.roomId,
+      col: Math.round(this.avatar.col),
+      row: Math.round(this.avatar.row),
+      facing: this.avatar.facing,
+      shirt: this.palette.shirt,
+      hair: this.palette.hair,
+      nickname: clean,
+    });
+
+    // Actualizar textura local
+    createAvatarTexture(this, this.palette);
+    this.player.setTexture("avatar", `${this.avatar.facing}-0`);
+    this.player.play(this.anim(`idle-${this.avatar.facing}`), true);
+
+    this.closeLoginModal();
+
+    if (isEdit) {
+      // Cambiar nickname en el servidor
+      net.look(this.palette);
+      // Re-enviar join con nuevo nombre (el servidor validará duplicados)
+      this.sendWhere();
+    } else {
+      // Primera vez: entrar al juego
+      this.sendWhere();
+    }
+  }
+
+  private closeLoginModal(): void {
+    this.loginModalOpen = false;
+    for (const o of this.loginUI) {
+      if (o.active) o.destroy();
+    }
+    this.loginUI = [];
+    // Limpiar listener de teclado (se limpia al cerrar la escena por el SHUTDOWN)
+    // Nota: en modo edición, el usuario puede volver a abrir con el botón Perfil
   }
 
   /** Sprite + nombre de un jugador remoto (se crea la primera vez que aparece) */

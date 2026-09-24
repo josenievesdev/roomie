@@ -3,6 +3,7 @@ import type { Cell } from "../utils/pathfinding.ts";
 import type {
   ChatPayload,
   ClientEvents,
+  JoinErrorPayload,
   JoinPayload,
   Look,
   PlayerView,
@@ -21,6 +22,7 @@ export type NetHandlers = {
   onPlayers?: (players: PlayerView[]) => void;
   onChat?: (msg: ChatPayload) => void;
   onStatus?: (online: boolean) => void;
+  onJoinError?: (err: JoinErrorPayload) => void;
 };
 
 const NAME_KEY = "roomie:name";
@@ -115,6 +117,7 @@ class NetClient {
     socket.on("players", (p) => this.setPlayers(p.players));
 
     socket.on("chat", (msg) => this.handlers.onChat?.(msg));
+    socket.on("joinError", (err) => this.handlers.onJoinError?.(err));
   }
 
   private setPlayers(list: PlayerView[]): void {

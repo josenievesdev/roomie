@@ -11,6 +11,7 @@ export type SaveData = {
   facing: Facing;
   shirt: number;
   hair: number;
+  nickname: string;
 };
 
 const KEY = "roomie:save";
@@ -27,6 +28,7 @@ export function loadSave(): SaveData | null {
     if (typeof data.col !== "number" || !Number.isFinite(data.col)) return null;
     if (typeof data.row !== "number" || !Number.isFinite(data.row)) return null;
     if (data.facing !== "down" && data.facing !== "up" && data.facing !== "side") return null;
+    if (typeof data.nickname !== "string") return null;
     return {
       version: VERSION,
       room: data.room,
@@ -42,6 +44,7 @@ export function loadSave(): SaveData | null {
         typeof data.hair === "number" && Number.isFinite(data.hair)
           ? data.hair
           : DEFAULT_PALETTE.hair,
+      nickname: data.nickname.trim().slice(0, 16),
     };
   } catch {
     return null; // localStorage no disponible o dato corrupto
@@ -53,5 +56,14 @@ export function writeSave(data: Omit<SaveData, "version">): void {
     localStorage.setItem(KEY, JSON.stringify({ version: VERSION, ...data }));
   } catch {
     // modo privado / cuota llena: el juego sigue funcionando sin guardar
+  }
+}
+
+/** Borra el guardado (logout) */
+export function clearSave(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    // ignore
   }
 }
