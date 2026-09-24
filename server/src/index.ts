@@ -354,10 +354,48 @@ io.on("connection", (socket) => {
   });
 });
 
-// Tick: simula a todos y emite el snapshot a su sala
+// ---------- Bucle de simulación ----------
+//
+// Paso FIJO de TICK_MS, pero avanzando según el tiempo que ha pasado DE VERDAD.
+//
+// Antes esto era `setInterval(..., TICK_MS)` simulando TICK_MS por disparo.
+// Un temporizador nunca dispara puntual: en Windows la resolución del reloj es
+// de 15.625 ms, así que un `setInterval(50)` salta cada ~62.5 ms. El servidor
+// avanzaba 50 ms de movimiento por cada ~64 ms de reloj → caminaba un 21% más
+// lento que el cliente, la deriva crecía sin parar y la reconciliación acababa
+// devolviendo el avatar hacia atrás (rubber banding).
+//
+// Ahora el temporizador va fino (SCHED_MS) y sólo ACUMULA tiempo real; la
+// simulación consume ese tiempo en pasos exactos de TICK_MS. El ritmo de la
+// física deja de depender de la puntualidad del temporizador o del sistema.
+const STEP_S = TICK_MS / 1000;
+/** Cada cuánto despierta el planificador (más fino que el paso de simulación) */
+const SCHED_MS = 16;
+/** Tope de pasos por despertada: si el proceso se congela, NO se recupera todo
+ *  el atraso de golpe (sería un tirón visible para todos los jugadores). */
+const MAX_CATCHUP_STEPS = 5;
+
+let acc = 0;
+let lastAt = performance.now();
+
 setInterval(() => {
-  const dt = TICK_MS / 1000;
-  for (const p of players.values()) step(p, dt);
+  const now = performance.now();
+  acc += now - lastAt;
+  lastAt = now;
+
+  let steps = 0;
+  while (acc >= TICK_MS && steps < MAX_CATCHUP_STEPS) {
+    for (const p of players.values()) step(p, STEP_S);
+    acc -= TICK_MS;
+    steps++;
+  }
+  // Se alcanzó el tope: el atraso restante se DESCARTA. Mejor perder tiempo
+  // simulado que empujar a todo el mundo hacia delante de golpe.
+  if (acc >= TICK_MS) acc = 0;
+
+  // Sin paso simulado no hay nada nuevo que contar: así el snapshot sigue
+  // saliendo a ~20 Hz de media aunque el planificador despierte a ~60 Hz.
+  if (steps === 0) return;
 
   const byRoom = new Map<RoomId, PlayerView[]>();
   for (const p of players.values()) {
@@ -366,7 +404,7 @@ setInterval(() => {
     byRoom.set(p.room, list);
   }
   for (const [room, list] of byRoom) io.to(room).emit("players", { players: list });
-}, TICK_MS);
+}, SCHED_MS);
 
 httpServer.listen(PORT, () => {
   const rooms = ROOMS.join(", ");
