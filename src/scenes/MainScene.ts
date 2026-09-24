@@ -835,7 +835,14 @@ export class MainScene extends Phaser.Scene {
         this.netOnline = up;
         if (!this.alive) return;
         this.updateStatusHud();
-        if (up) this.sendWhere();
+        // NO entrar al mundo mientras el modal está pidiendo el nombre.
+        //
+        // Antes se entraba en cuanto conectaba el socket, así que un jugador
+        // nuevo aparecía para los demás como "Huésped-###" sin haber escrito
+        // nada. Y era irreversible: ese primer `join` marca `isJoined`, de modo
+        // que al pulsar Entrar `sendWhere()` mandaba `room` en vez de `join`
+        // — y `room` no lleva nombre. El nickname elegido no llegaba nunca.
+        if (up && !this.loginModalOpen) this.sendWhere();
       },
       onJoinError: (err) => {
         if (!this.alive) return;
