@@ -58,6 +58,36 @@ type Door = {
 
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
+// ---------- Sincronización multijugador (Fase 1) ----------
+
+/** Snapshot recibido + la hora LOCAL de llegada (ese sello no viaja por la red) */
+type Snapshot = { at: number; players: PlayerView[] };
+
+/**
+ * Los remotos se dibujan 100 ms EN EL PASADO. Así siempre hay un snapshot
+ * posterior con el que interpolar y el movimiento sale continuo. Antes se
+ * perseguía el último snapshot con un suavizado exponencial: eso nunca alcanza
+ * el blanco, va permanentemente retrasado y convierte cualquier irregularidad
+ * de la red en un cambio de velocidad visible.
+ */
+const INTERP_DELAY_MS = 100;
+/** Historia guardada (a 20 Hz son ~1 s) */
+const SNAPSHOT_BUFFER = 20;
+
+/**
+ * Zona muerta de la corrección, en celdas. El servidor va SIEMPRE un poco por
+ * detrás de mí porque mi entrada tarda en llegarle; ese desfase es normal y
+ * corregirlo continuamente me frenaría. Un tercio de baldosa es invisible.
+ */
+const CORRECTION_DEADZONE = 0.35;
+/** Velocidad del arrastre correctivo (1/s): absorbe el error en ~1/4 de segundo */
+const CORRECTION_RATE = 4;
+/**
+ * Por encima de esto ya no es deriva, es divergencia real (cambio de sala,
+ * respawn, camino rechazado): se adopta la posición del servidor de golpe.
+ */
+const CORRECTION_TELEPORT = 3;
+
 /** Avatar remoto dibujado en la escena (su textura es `avatar:<id>`) */
 type Peer = {
   view: PlayerView;
@@ -127,7 +157,8 @@ export class MainScene extends Phaser.Scene {
   private alive = false; // false durante un reinicio de escena (transición)
   private sentMove = { mx: 0, my: 0 };
   private lastMoveSent = 0;
-  private reconcileIn = 0;
+  /** Historia reciente de snapshots, para interpolar a los remotos */
+  private snapshots: Snapshot[] = [];
   private loginModalOpen = false;
   private loginUI: Phaser.GameObjects.GameObject[] = [];
 
@@ -157,7 +188,7 @@ export class MainScene extends Phaser.Scene {
     this.logLines = [];
     this.sentMove = { mx: 0, my: 0 };
     this.lastMoveSent = 0;
-    this.reconcileIn = 0;
+    this.snapshots = [];
     this.furniture = [];
     this.doors = [];
     this.pendingDoor = null;
@@ -307,7 +338,13 @@ export class MainScene extends Phaser.Scene {
 
   update(_time: number, delta: number): void {
     const dt = Math.min(delta / 1000, 0.1); // tope por si la pestaña estuvo en segundo plano
-    const old = { x: this.player.x, y: this.player.y };
+
+    // La autoridad se aplica ANTES que la entrada, a propósito: si el arrastre
+    // correctivo ocurriera después, entraría en el cálculo de `moving`/`facing`
+    // de más abajo y una corrección estando quieto te haría girar y animar
+    // como si caminaras.
+    this.reconcile(dt);
+    const old = this.avatar.screen();
 
     // Entrada -> estado (el estado decide qué hacer)
     let dx = 0;
@@ -363,10 +400,9 @@ export class MainScene extends Phaser.Scene {
     this.player.setPosition(p.x, p.y);
     this.player.setDepth(p.depth); // orden isométrico
 
-    // Multijugador: dibujo a los demás, ajusto mi posición con la del
-    // servidor y muevo las burujas de chat (la mía y las ajenas).
-    this.syncPeers(dt);
-    this.reconcile(dt);
+    // Multijugador: dibujo a los demás (interpolados) y muevo las burbujas de
+    // chat (la mía y las ajenas). Mi corrección ya se aplicó al principio.
+    this.syncPeers();
     this.moveBubbles();
   }
 
@@ -753,7 +789,10 @@ export class MainScene extends Phaser.Scene {
   private setupNet(): void {
     net.setHandlers({
       onPlayers: (list) => {
+        if (!this.alive) return; // escena reiniciándose (cruce de puerta)
         this.netPlayers = list;
+        this.snapshots.push({ at: performance.now(), players: list });
+        if (this.snapshots.length > SNAPSHOT_BUFFER) this.snapshots.shift();
         this.updateStatusHud();
       },
       onChat: (msg) => {
@@ -1220,14 +1259,54 @@ export class MainScene extends Phaser.Scene {
   }
 
   /**
-   * Dibuja a los jugadores de MI sala con interpolación suave hacia el último
-   * snapshot del servidor (20 Hz). Quien está en otra sala no se dibuja.
+   * Estado de los remotos en `ahora - INTERP_DELAY_MS`, interpolando entre los
+   * dos snapshots que rodean ese instante.
+   *
+   * No se EXTRAPOLA: si el buffer se queda seco (corte de red) el remoto se
+   * congela en su última posición conocida. Inventar posiciones que luego hay
+   * que desmentir es justo lo que produce tirones.
    */
-  private syncPeers(dt: number): void {
-    const k = 1 - Math.exp(-16 * dt); // factor de suavizado independiente del fps
+  private interpolatedViews(): PlayerView[] {
+    const buf = this.snapshots;
+    // Sin historia suficiente (recién entrado, o escena recién reiniciada al
+    // cruzar una puerta): se dibuja el último snapshot crudo.
+    if (buf.length < 2) return this.netPlayers;
+
+    const renderAt = performance.now() - INTERP_DELAY_MS;
+
+    let i = -1;
+    for (let k = buf.length - 1; k >= 0; k--) {
+      if (buf[k].at <= renderAt) {
+        i = k;
+        break;
+      }
+    }
+    if (i < 0) return buf[0].players; // todo el buffer es posterior al instante
+    if (i === buf.length - 1) return buf[i].players; // no hay snapshot siguiente
+
+    const from = buf[i];
+    const to = buf[i + 1];
+    const span = to.at - from.at;
+    const a = span > 0 ? (renderAt - from.at) / span : 0;
+
+    // El snapshot NUEVO manda en todo lo discreto (quién está, hacia dónde
+    // mira, si está sentado); sólo la posición se mezcla con el anterior.
+    const prev = new Map(from.players.map((p) => [p.id, p]));
+    return to.players.map((p) => {
+      const q = prev.get(p.id);
+      if (!q) return p; // acaba de aparecer: nada con que interpolar
+      return { ...p, col: q.col + (p.col - q.col) * a, row: q.row + (p.row - q.row) * a };
+    });
+  }
+
+  /**
+   * Dibuja a los jugadores de MI sala en su posición interpolada.
+   * Quien está en otra sala no se dibuja.
+   */
+  private syncPeers(): void {
     const visible = new Set<string>();
 
-    for (const v of this.netPlayers) {
+    for (const v of this.interpolatedViews()) {
       if (v.id === net.id || v.room !== this.roomId) continue;
       visible.add(v.id);
 
@@ -1241,22 +1320,19 @@ export class MainScene extends Phaser.Scene {
         peer.sprite.setTexture(peer.textureKey, `${peer.view.facing}-0`);
       }
 
-      peer.col += (v.col - peer.col) * k;
-      peer.row += (v.row - peer.row) * k;
-      if (Math.hypot(v.col - peer.col, v.row - peer.row) > 2) {
-        peer.col = v.col; // salto grande (lag o corte): mejor teletransportar
-        peer.row = v.row;
-      }
+      peer.col = v.col;
+      peer.row = v.row;
 
-      const prev = { x: peer.sprite.x, y: peer.sprite.y };
       const p = peerScreen(peer.col, peer.row, v.sitting);
-      const moving = Math.abs(p.x - prev.x) > 1e-6 || Math.abs(p.y - prev.y) > 1e-6;
-
       peer.sprite.setPosition(p.x, p.y).setDepth(p.depth).setFlipX(v.flip);
+      // La animación la decide el SERVIDOR (`moving`/`facing`), que ya lo envía
+      // en cada snapshot. Antes se deducía del desplazamiento en píxeles entre
+      // frames: con un suavizado el delta nunca llega a cero exacto, así que el
+      // remoto parpadeaba entre caminar y estar quieto.
       peer.sprite.play(
         animKey(
           peer.textureKey,
-          v.sitting ? "idle-sit" : moving ? `walk-${v.facing}` : `idle-${v.facing}`,
+          v.sitting ? "idle-sit" : v.moving ? `walk-${v.facing}` : `idle-${v.facing}`,
         ),
         true,
       );
@@ -1269,24 +1345,49 @@ export class MainScene extends Phaser.Scene {
   }
 
   /**
-   * Predicción vs. autoridad: mi sprite lo muestro yo (instantáneo), pero
-   * cada 2 s miro lo que dice el servidor. Si la deriva pasa de 1 celda
-   * (p. ej. el servidor rechazó un camino), adopto su posición.
+   * Predicción vs. autoridad, SIN salto.
+   *
+   * Mi avatar lo muevo yo (instantáneo) y el servidor va siempre un poco por
+   * detrás, porque mi entrada tarda en llegarle. Ese desfase constante NO se
+   * corrige: cae en la zona muerta y es invisible. Lo que la supera se absorbe
+   * arrastrando, nunca teletransportando — el salto de antes (cada 2 s, más de
+   * 1 celda) era exactamente el rubber banding que se veía al detenerse.
+   *
+   * Se ejecuta CADA frame, no cada 2 s: cuanto antes se empieza a absorber un
+   * error, menos hay que absorber y menos se nota.
    */
   private reconcile(dt: number): void {
     if (!net.isOnline) return;
-    this.reconcileIn += dt;
-    if (this.reconcileIn < 2) return;
-    this.reconcileIn = 0;
-
     const self = net.self();
     if (!self || self.room !== this.roomId) return;
-    const drift = Math.hypot(self.col - this.avatar.col, self.row - this.avatar.row);
-    if (drift <= 1) return;
-    this.avatar.col = self.col;
-    this.avatar.row = self.row;
-    this.avatar.cancelPath();
-    this.pendingDoor = null;
+
+    const dCol = self.col - this.avatar.col;
+    const dRow = self.row - this.avatar.row;
+    const drift = Math.hypot(dCol, dRow);
+
+    if (drift <= CORRECTION_DEADZONE) return;
+
+    // Divergencia real, no deriva: adoptar la posición autoritativa.
+    if (drift > CORRECTION_TELEPORT) {
+      this.avatar.col = self.col;
+      this.avatar.row = self.row;
+      this.avatar.cancelPath();
+      this.pendingDoor = null;
+      return;
+    }
+
+    // Arrastre exponencial, independiente del fps
+    const k = 1 - Math.exp(-CORRECTION_RATE * dt);
+    const col = this.avatar.col + dCol * k;
+    const row = this.avatar.row + dRow * k;
+    // El destino del servidor siempre es válido, pero el punto intermedio del
+    // arrastre podría rozar una esquina bloqueada: el arrastre no salta muros.
+    const c = Math.round(col);
+    const r = Math.round(row);
+    if (this.inBounds(c, r) && !this.blocked[r][c]) {
+      this.avatar.col = col;
+      this.avatar.row = row;
+    }
   }
 
   /** Destello isométrico en la celda de destino */
