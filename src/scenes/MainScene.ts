@@ -1,9 +1,9 @@
 import Phaser from "phaser";
 import { toScreen, toGrid } from "../utils/iso";
-import { createAvatarTexture } from "../entities/avatar";
+import { animKey, createAvatarTexture, destroyAvatarAssets } from "../entities/avatar";
 import { createFurniture, type FurnitureKind } from "../entities/furniture";
 import { findPath, type Cell } from "../utils/pathfinding";
-import { AvatarState, type Facing } from "../state/avatarState";
+import { AvatarState, SIT_OFFSET, SIT_SHIFT, type Facing } from "../state/avatarState";
 import {
   DEFAULT_PALETTE,
   HAIR_COLORS,
@@ -12,6 +12,15 @@ import {
   type Palette,
 } from "../state/palette";
 import { loadSave, writeSave, type SaveData } from "../utils/storage";
+import { net, playerName } from "../net/client";
+import {
+  KEYBOARD_SPEED,
+  ROOMS,
+  type ChatPayload,
+  type Look,
+  type PlayerView,
+  type RoomId,
+} from "../net/protocol";
 
 type TiledObject = {
   name?: string;
@@ -46,11 +55,32 @@ type Door = {
   targetRow: number;
 };
 
-const ROOMS = ["room1", "room2"] as const;
-type RoomId = (typeof ROOMS)[number];
-
-const KEYBOARD_SPEED = 105; // px/s en pantalla (WASD); en paridad con PATH_SPEED
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
+
+/** Avatar remoto dibujado en la escena (su textura es `avatar:<id>`) */
+type Peer = {
+  view: PlayerView;
+  sprite: Phaser.GameObjects.Sprite;
+  label: Phaser.GameObjects.Text;
+  /** Posición interpolada en celdas (va detrás del snapshot del servidor) */
+  col: number;
+  row: number;
+  textureKey: string;
+  look: Look;
+};
+
+/** Render de un avatar remoto: MISMA fórmula que `AvatarState.screen()` */
+function peerScreen(
+  col: number,
+  row: number,
+  sitting: boolean,
+): { x: number; y: number; depth: number } {
+  const base = toScreen(col, row);
+  const depth = toScreen(Math.round(col), Math.round(row)).y + 0.5;
+  return sitting
+    ? { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth }
+    : { x: base.x, y: base.y, depth };
+}
 
 // Fase 6: múltiples salas con puertas. Render + entrada + chat + guardado +
 // personalización; la lógica del avatar vive en AvatarState (módulo puro).
@@ -82,7 +112,21 @@ export class MainScene extends Phaser.Scene {
   private chatText = "";
   private chatBg!: Phaser.GameObjects.Rectangle;
   private chatLabel!: Phaser.GameObjects.Text;
-  private bubble: Phaser.GameObjects.Container | null = null;
+  private statusText!: Phaser.GameObjects.Text;
+  /** Burbujas por avatar: "me" o el id del jugador remoto */
+  private bubbles = new Map<string, Phaser.GameObjects.Container>();
+  /** Avisos de sistema (entró/salió) en la esquina inferior izquierda */
+  private logLines: string[] = [];
+  private logLabel!: Phaser.GameObjects.Text;
+
+  // Multijugador (Fase 7)
+  private peers = new Map<string, Peer>();
+  private netPlayers: PlayerView[] = [];
+  private netOnline = false;
+  private alive = false; // false durante un reinicio de escena (transición)
+  private sentMove = { mx: 0, my: 0 };
+  private lastMoveSent = 0;
+  private reconcileIn = 0;
 
   constructor() {
     super("main");
@@ -103,7 +147,13 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.chatText = "";
     this.customOpen = false;
-    this.bubble = null;
+    this.alive = true;
+    this.peers = new Map(); // los game objects viejos ya los destruyó el restart
+    this.bubbles = new Map();
+    this.logLines = [];
+    this.sentMove = { mx: 0, my: 0 };
+    this.lastMoveSent = 0;
+    this.reconcileIn = 0;
     this.furniture = [];
     this.doors = [];
     this.pendingDoor = null;
@@ -135,7 +185,7 @@ export class MainScene extends Phaser.Scene {
       .setOrigin(0.5, 1)
       .setScale(2) // 24px -> 48px de alto: proporción Habbo frente a los tiles
       .setDepth(p.depth);
-    this.player.play(`idle-${this.avatar.facing}`);
+    this.player.play(this.anim(`idle-${this.avatar.facing}`));
 
     const [bx, by, bw, bh] = this.roomBounds();
     this.cameras.main.setBounds(bx, by, bw, bh);
@@ -152,6 +202,27 @@ export class MainScene extends Phaser.Scene {
         color: "#ffffff",
       })
       .setScrollFactor(0);
+
+    // Estado de la conexión (multijugador)
+    const statusStyle: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: "monospace",
+      fontSize: "13px",
+      color: "#ffe9a8",
+    };
+    this.statusText = this.add
+      .text(8, 46, "", statusStyle)
+      .setScrollFactor(0)
+      .setDepth(1e6);
+    // Log de avisos del servidor (entró/salió), 3 líneas máx.
+    this.logLabel = this.add
+      .text(8, 452, "", {
+        fontFamily: "monospace",
+        fontSize: "12px",
+        color: "#9a9ad0",
+      })
+      .setOrigin(0, 1)
+      .setScrollFactor(0)
+      .setDepth(1e6);
 
     // Barra de chat (interfaz fija en pantalla)
     this.chatBg = this.add
@@ -171,6 +242,9 @@ export class MainScene extends Phaser.Scene {
       .setVisible(false);
 
     this.buildCustomPanel();
+
+    // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
+    this.setupNet();
 
     const kb = this.input.keyboard;
     if (kb) {
@@ -212,6 +286,9 @@ export class MainScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       if (!this.transitioning) this.saveGame(); // al cruzar puerta ya se guardó el destino
       window.removeEventListener("beforeunload", onSave);
+      // Los objetos de esta escena mueren: nada de red debe tocarlos ya
+      this.alive = false;
+      net.setHandlers({});
     });
   }
 
@@ -228,17 +305,18 @@ export class MainScene extends Phaser.Scene {
       if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
       if (this.cursors?.down.isDown || this.wasd?.S.isDown) dy += 1;
     }
+    if (dx !== 0 && dy !== 0) {
+      dx *= Math.SQRT1_2; // diagonal normalizada (igual que el servidor)
+      dy *= Math.SQRT1_2;
+    }
 
     if (dx !== 0 || dy !== 0) {
       this.pendingDoor = null; // moverse cancela el camino de la puerta
-      if (dx !== 0 && dy !== 0) {
-        dx *= Math.SQRT1_2;
-        dy *= Math.SQRT1_2;
-      }
       this.avatar.keyboardMove(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
     } else {
       this.avatar.tick(dt);
     }
+    this.sendMove(dx, dy);
 
     // ¿Llegó a una puerta? → cruzar
     if (this.pendingDoor && this.avatar.path.length === 0) {
@@ -259,11 +337,11 @@ export class MainScene extends Phaser.Scene {
     const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
 
     if (this.avatar.sitting) {
-      this.player.play("idle-sit", true);
+      this.player.play(this.anim("idle-sit"), true);
     } else {
       if (moving) this.avatar.updateFacing(moveX, moveY);
       this.player.play(
-        moving ? `walk-${this.avatar.facing}` : `idle-${this.avatar.facing}`,
+        this.anim(moving ? `walk-${this.avatar.facing}` : `idle-${this.avatar.facing}`),
         true,
       );
     }
@@ -272,8 +350,11 @@ export class MainScene extends Phaser.Scene {
     this.player.setPosition(p.x, p.y);
     this.player.setDepth(p.depth); // orden isométrico
 
-    // La burbuja de chat sigue al avatar (48px de alto con la escala x2)
-    if (this.bubble) this.bubble.setPosition(p.x, p.y - 54);
+    // Multijugador: dibujo a los demás, ajusto mi posición con la del
+    // servidor y muevo las burujas de chat (la mía y las ajenas).
+    this.syncPeers(dt);
+    this.reconcile(dt);
+    this.moveBubbles();
   }
 
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
@@ -299,7 +380,10 @@ export class MainScene extends Phaser.Scene {
     if (start.col === goal.col && start.row === goal.row) {
       this.avatar.cancelPath();
       this.pendingDoor = null;
-      if (this.avatar.sitting) this.avatar.stand(); // segundo clic en el sofá: levantarse
+      if (this.avatar.sitting) {
+        this.avatar.stand(); // segundo clic en el sofá: levantarse
+        net.stand();
+      }
       return;
     }
 
@@ -315,6 +399,7 @@ export class MainScene extends Phaser.Scene {
 
     this.pendingDoor = door ?? null;
     this.avatar.startPath(path, sitTarget);
+    net.path(path); // el servidor simula el mismo camino con AvatarState
     this.showClickMarker(world.x, world.y);
   }
 
@@ -473,10 +558,19 @@ export class MainScene extends Phaser.Scene {
     // El sprite necesita reengancharse a la textura nueva
     const frame = this.avatar.sitting ? "sit-0" : `${this.avatar.facing}-0`;
     this.player.setTexture("avatar", frame);
-    this.player.play(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`, true);
+    this.player.play(
+      this.anim(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`),
+      true,
+    );
 
     this.refreshSwatches();
     this.saveGame();
+    net.look(next); // los demás me ven con la ropa nueva
+  }
+
+  /** Nombre de animación del avatar LOCAL (prefijo `avatar:`) */
+  private anim(name: string): string {
+    return animKey("avatar", name);
   }
 
   /** Resalta con borde blanco el color seleccionado en cada fila */
@@ -565,7 +659,11 @@ export class MainScene extends Phaser.Scene {
   private sendChat(): void {
     const msg = this.chatText.trim();
     this.closeChat();
-    if (msg) this.showBubble(msg);
+    if (!msg) return;
+    // Sin servidor la burbuja es sólo local; con servidor, el eco del server
+    // la dibuja (así TODOS vemos lo mismo, incluido yo).
+    if (net.isOnline) net.chat(msg);
+    else this.showBubble("me", msg);
   }
 
   private renderChatBar(): void {
@@ -576,9 +674,32 @@ export class MainScene extends Phaser.Scene {
     );
   }
 
+  /** Punto donde flota la burbuja de un avatar ("me" o un id de la sala) */
+  private bubbleAnchor(ownerId: string): { x: number; y: number } | null {
+    if (ownerId === "me") return { x: this.player.x, y: this.player.y - 54 };
+    const peer = this.peers.get(ownerId);
+    if (!peer) return null;
+    return { x: peer.sprite.x, y: peer.sprite.y - 72 }; // hueco para su nombre
+  }
+
+  /** Las burbujas siguen a su avatar (o desaparecen si el avatar ya no está) */
+  private moveBubbles(): void {
+    for (const [id, bubble] of this.bubbles) {
+      const at = this.bubbleAnchor(id);
+      if (!at) {
+        bubble.destroy();
+        this.bubbles.delete(id);
+      } else {
+        bubble.setPosition(at.x, at.y);
+      }
+    }
+  }
+
   /** Burbuja blanca sobre la cabeza que dura 4 segundos */
-  private showBubble(message: string): void {
-    this.bubble?.destroy();
+  private showBubble(ownerId: string, message: string): void {
+    const at = this.bubbleAnchor(ownerId);
+    if (!at) return;
+    this.bubbles.get(ownerId)?.destroy();
 
     const txt = this.add
       .text(0, 0, message, {
@@ -591,24 +712,225 @@ export class MainScene extends Phaser.Scene {
       .rectangle(0, -txt.height / 2 - 1, txt.width + 12, txt.height + 6, 0xffffff, 0.95)
       .setStrokeStyle(1, 0x1a1a24, 1);
 
-    const container = this.add.container(this.player.x, this.player.y - 54, [bg, txt]);
+    const container = this.add.container(at.x, at.y, [bg, txt]);
     container.setDepth(1e6);
     container.setScale(0.4);
-    this.bubble = container;
+    this.bubbles.set(ownerId, container);
 
     this.tweens.add({ targets: container, scale: 1, duration: 220, ease: "Back.easeOut" });
     this.time.delayedCall(4000, () => {
-      if (this.bubble !== container) return; // ya se sustituyó por otra
+      if (this.bubbles.get(ownerId) !== container) return; // ya se sustituyó por otra
       this.tweens.add({
         targets: container,
         alpha: 0,
         duration: 250,
         onComplete: () => {
-          if (this.bubble === container) this.bubble = null;
+          if (this.bubbles.get(ownerId) === container) this.bubbles.delete(ownerId);
           container.destroy();
         },
       });
     });
+  }
+
+  // ---------- Multijugador (Fase 7) ----------
+
+  /** Conecta y engancha los callbacks de red a ESTA escena */
+  private setupNet(): void {
+    net.setHandlers({
+      onPlayers: (list) => {
+        this.netPlayers = list;
+        this.updateStatusHud();
+      },
+      onChat: (msg) => {
+        if (this.alive) this.onNetChat(msg);
+      },
+      onStatus: (up) => {
+        this.netOnline = up;
+        if (!this.alive) return;
+        this.updateStatusHud();
+        if (up) this.sendWhere();
+      },
+    });
+    net.connect();
+    this.netOnline = net.isOnline;
+    this.netPlayers = net.roster;
+    this.sendWhere();
+    this.updateStatusHud();
+  }
+
+  /** Me presento al servidor (o aviso de que cambié de sala) */
+  private sendWhere(): void {
+    const where = {
+      room: this.roomId,
+      col: Math.round(this.avatar.col),
+      row: Math.round(this.avatar.row),
+      facing: this.avatar.facing,
+    };
+    if (net.isJoined) net.changeRoom(where);
+    else net.join({ name: playerName(), ...where, look: this.palette });
+  }
+
+  /** Manda el teclado cuando cambia (y un refuerzo cada 250 ms mientras se pulsa) */
+  private sendMove(mx: number, my: number): void {
+    if (!net.isOnline) return;
+    const now = this.time.now;
+    const changed = mx !== this.sentMove.mx || my !== this.sentMove.my;
+    const active = mx !== 0 || my !== 0;
+    if (!changed && !(active && now - this.lastMoveSent > 250)) return;
+    net.move(mx, my);
+    this.sentMove = { mx, my };
+    this.lastMoveSent = now;
+  }
+
+  /** Chat recibido del servidor: burbuja sobre quien habló, o aviso de sistema */
+  private onNetChat(msg: ChatPayload): void {
+    if (msg.system) {
+      this.pushLog(msg.text);
+      return;
+    }
+    if (!msg.text) return;
+    if (msg.from && msg.from !== net.id) {
+      const view = this.netPlayers.find((p) => p.id === msg.from);
+      if (!view || view.room !== this.roomId) return; // no está en mi sala
+      this.showBubble(msg.from, msg.text);
+    } else {
+      this.showBubble("me", msg.text);
+    }
+  }
+
+  /** Aviso del servidor en la esquina inferior (entró/salió), 3 líneas */
+  private pushLog(text: string): void {
+    this.logLines = [...this.logLines, text].slice(-3);
+    this.logLabel.setText(this.logLines.join("\n"));
+  }
+
+  /** Contador de la sala en la barra de estado */
+  private updateStatusHud(): void {
+    if (!this.statusText) return;
+    if (!this.netOnline) {
+      this.statusText.setText("○ Sin servidor — single-player");
+      this.statusText.setColor("#8a8aa8");
+      return;
+    }
+    const here = 1 + this.netPlayers.filter((p) => p.room === this.roomId).length;
+    this.statusText.setText(`● En línea — ${here} en ${this.roomId}`);
+    this.statusText.setColor("#7bed9f");
+  }
+
+  /** Sprite + nombre de un jugador remoto (se crea la primera vez que aparece) */
+  private ensurePeer(v: PlayerView): Peer {
+    const existing = this.peers.get(v.id);
+    if (existing) return existing;
+
+    const textureKey = `avatar:${v.id}`;
+    createAvatarTexture(this, v.look, textureKey);
+    const sprite = this.add
+      .sprite(0, 0, textureKey, `${v.facing}-0`)
+      .setOrigin(0.5, 1)
+      .setScale(2);
+    const label = this.add
+      .text(0, 0, v.name, {
+        fontFamily: "monospace",
+        fontSize: "11px",
+        color: "#ffe9a8",
+        stroke: "#12121a",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1);
+
+    const peer: Peer = {
+      view: v,
+      sprite,
+      label,
+      col: v.col,
+      row: v.row,
+      textureKey,
+      look: { ...v.look },
+    };
+    this.peers.set(v.id, peer);
+    return peer;
+  }
+
+  /** Borra un jugador remoto del mundo (y sus texturas) */
+  private removePeer(id: string): void {
+    const peer = this.peers.get(id);
+    if (!peer) return;
+    peer.sprite.destroy();
+    peer.label.destroy();
+    this.bubbles.get(id)?.destroy();
+    this.bubbles.delete(id);
+    destroyAvatarAssets(this, peer.textureKey);
+    this.peers.delete(id);
+  }
+
+  /**
+   * Dibuja a los jugadores de MI sala con interpolación suave hacia el último
+   * snapshot del servidor (20 Hz). Quien está en otra sala no se dibuja.
+   */
+  private syncPeers(dt: number): void {
+    const k = 1 - Math.exp(-16 * dt); // factor de suavizado independiente del fps
+    const visible = new Set<string>();
+
+    for (const v of this.netPlayers) {
+      if (v.id === net.id || v.room !== this.roomId) continue;
+      visible.add(v.id);
+
+      const peer = this.ensurePeer(v);
+      peer.view = v;
+
+      // Cambió la ropa/pelo del remoto → regenerar SU textura (no la mía)
+      if (peer.look.shirt !== v.look.shirt || peer.look.hair !== v.look.hair) {
+        peer.look = { ...v.look };
+        createAvatarTexture(this, peer.look, peer.textureKey);
+        peer.sprite.setTexture(peer.textureKey, `${peer.view.facing}-0`);
+      }
+
+      peer.col += (v.col - peer.col) * k;
+      peer.row += (v.row - peer.row) * k;
+      if (Math.hypot(v.col - peer.col, v.row - peer.row) > 2) {
+        peer.col = v.col; // salto grande (lag o corte): mejor teletransportar
+        peer.row = v.row;
+      }
+
+      const prev = { x: peer.sprite.x, y: peer.sprite.y };
+      const p = peerScreen(peer.col, peer.row, v.sitting);
+      const moving = Math.abs(p.x - prev.x) > 1e-6 || Math.abs(p.y - prev.y) > 1e-6;
+
+      peer.sprite.setPosition(p.x, p.y).setDepth(p.depth).setFlipX(v.flip);
+      peer.sprite.play(
+        animKey(
+          peer.textureKey,
+          v.sitting ? "idle-sit" : moving ? `walk-${v.facing}` : `idle-${v.facing}`,
+        ),
+        true,
+      );
+      peer.label.setPosition(p.x, p.y - 52).setDepth(p.depth + 0.1);
+    }
+
+    for (const id of [...this.peers.keys()]) {
+      if (!visible.has(id)) this.removePeer(id);
+    }
+  }
+
+  /**
+   * Predicción vs. autoridad: mi sprite lo muestro yo (instantáneo), pero
+   * cada 2 s miro lo que dice el servidor. Si la deriva pasa de 1 celda
+   * (p. ej. el servidor rechazó un camino), adopto su posición.
+   */
+  private reconcile(dt: number): void {
+    if (!net.isOnline) return;
+    this.reconcileIn += dt;
+    if (this.reconcileIn < 2) return;
+    this.reconcileIn = 0;
+
+    const self = net.self();
+    if (!self || self.room !== this.roomId) return;
+    const drift = Math.hypot(self.col - this.avatar.col, self.row - this.avatar.row);
+    if (drift <= 1) return;
+    this.avatar.col = self.col;
+    this.avatar.row = self.row;
+    this.avatar.cancelPath();
+    this.pendingDoor = null;
   }
 
   /** Destello isométrico en la celda de destino */

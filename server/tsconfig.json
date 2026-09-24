@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "useDefineForClassFields": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "../src/net/protocol.ts",
+    "../src/state/**/*.ts",
+    "../src/utils/iso.ts",
+    "../src/utils/pathfinding.ts",
+    "../src/utils/storage.ts"
+  ]
+}
