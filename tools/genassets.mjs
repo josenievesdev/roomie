@@ -309,7 +309,7 @@ const rooms = [
       // Zona de estar sobre la alfombra
       ...zona("alfombra", 3, 5, 3, 3),
       { type: "sofa", col: 4, row: 5 },
-      { type: "mesa", col: 4, row: 7 },
+      { type: "mesa", col: 4, row: 6 }, // centrada en la alfombra, frente al sofá
       // Mostrador de recepción, pegado a la pared derecha
       { type: "barra", col: 9, row: 3 },
       { type: "barra", col: 9, row: 4 },

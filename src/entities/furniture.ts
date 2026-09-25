@@ -311,24 +311,41 @@ function drawSpeaker(g: Phaser.GameObjects.Graphics, p: RoomPalette): void {
   linea(g, { x: 14, y: -44 }, { x: 14, y: -4 }, clr(c, 0.3), 0.6);
 }
 
-/** Alfombra / pista de baile: plana, NO estorba, se pisa */
+/**
+ * Alfombra / pista de baile: plana, NO estorba, se pisa.
+ *
+ * Ocupa la celda ENTERA y sin contorno, a propósito: una pieza más pequeña
+ * dejaba 2 px de hueco contra sus vecinas y nueve de ellas se leían como nueve
+ * baldosas rojas en vez de como una alfombra. Tampoco lleva motivo central,
+ * que repetido en cada celda volvía a delatar la cuadrícula.
+ *
+ * La textura se consigue con un tramado finísimo, que al repetirse por varias
+ * celdas parece tejido y no un patrón.
+ */
 function drawRug(g: Phaser.GameObjects.Graphics, p: RoomPalette): void {
   const c = p.alfombra;
-  // Un pelín más pequeña que la celda, para que se vea la junta del suelo
-  poly(g, [
-    { x: 0, y: -15 },
-    { x: 30, y: 0 },
-    { x: 0, y: 15 },
-    { x: -30, y: 0 },
-  ], c);
-  poly(g, [
-    { x: 0, y: -9 },
-    { x: 18, y: 0 },
-    { x: 0, y: 9 },
-    { x: -18, y: 0 },
-  ], clr(c, 0.16));
-  linea(g, { x: 0, y: -15 }, { x: 30, y: 0 }, clr(c, 0.32), 0.6);
-  linea(g, { x: -30, y: 0 }, { x: 0, y: -15 }, clr(c, 0.32), 0.6);
+
+  // Rombo a tamaño completo de celda: así las piezas contiguas se sueldan
+  g.fillStyle(c, 1);
+  g.fillPoints(
+    [
+      { x: 0, y: -16 },
+      { x: 32, y: 0 },
+      { x: 0, y: 16 },
+      { x: -32, y: 0 },
+    ],
+    true,
+  );
+
+  // Trama diagonal de hilos, dos tonos, sin tocar el borde de la celda
+  g.lineStyle(1, clr(c, 0.1), 0.45);
+  for (let i = -24; i <= 24; i += 8) {
+    g.lineBetween(i - 6, -3 - i / 4, i + 6, 3 - i / 4);
+  }
+  g.lineStyle(1, osc(c, 0.86), 0.35);
+  for (let i = -20; i <= 20; i += 8) {
+    g.lineBetween(i - 6, 3 + i / 4, i + 6, -3 + i / 4);
+  }
 }
 
 const DIBUJOS: Record<FurnitureKind, (g: Phaser.GameObjects.Graphics, p: RoomPalette) => void> = {
