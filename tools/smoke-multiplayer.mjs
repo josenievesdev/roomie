@@ -90,12 +90,19 @@ check(await until(() => !view(A).moving), "al soltar teclas, el servidor se para
 // ---------- 3. Camino A* + sentarse en el sofá ----------
 const me = view(A);
 const start = { col: Math.round(me.col), row: Math.round(me.row) };
-const sofa = { col: 4, row: 2 };
+// El asiento se BUSCA en el mapa en vez de estar escrito aquí: así redecorar
+// una sala no rompe el test (antes el sofá estaba fijado en (4,2) y al
+// moverlo este bloque fallaba sin que hubiera ninguna regresión real).
+const [sitCol, sitRow] = [...room1.sitCells][0].split(",").map(Number);
+const sofa = { col: sitCol, row: sitRow };
 const path = findPath(start, sofa, room1.cols, room1.rows, room1.isBlocked, true);
 check(!!path && path.length > 0, `A* encontró un camino de ${path?.length ?? 0} celdas`);
 if (path) {
   A.sock.emit("path", path);
-  check(await until(() => view(A)?.sitting, 8000), "el servidor llega al sofá y se sienta");
+  check(
+    await until(() => view(A)?.sitting, 8000),
+    `el servidor llega al asiento (${sofa.col},${sofa.row}) y se sienta`,
+  );
   A.sock.emit("stand");
   check(await until(() => !view(A)?.sitting, 3000), "`stand` lo levanta");
 }
@@ -121,20 +128,44 @@ check(
   "camino que empieza lejos del avatar: rechazado",
 );
 
-// ---------- 5b. Colisión con la mesa (7,5) ----------
-// Desde (6,6) avanzando en +x de pantalla el avatar acabaría EN la celda de
-// la mesa: el servidor debe frenarlo igual que el cliente (sin atravesarla).
-A.sock.emit("room", { room: "room1", ...room1.freeCell(), facing: "down" });
-await until(() => Math.round(view(A).col) === 6 && Math.round(view(A).row) === 6, 3000);
-const push = setInterval(() => A.sock.emit("move", 1, 0), 40);
-await sleep(700);
-A.sock.emit("move", 0, 0);
-clearInterval(push);
-const walled = view(A);
-check(
-  walled.col > 6.4 && walled.col < 6.6 && walled.row > 5.4 && walled.row < 5.6,
-  `la mesa (7,5) frena al avatar en (${walled.col.toFixed(2)},${walled.row.toFixed(2)}) sin atravesarla`,
-);
+// ---------- 5b. Colisión con mobiliario ----------
+// Se BUSCA una celda libre que tenga un mueble justo al lado en +x de
+// pantalla (col+1, row-1) y se empuja contra él: el servidor debe frenar al
+// avatar igual que el cliente, sin atravesarlo. Antes esto dependía de que
+// hubiera una mesa exactamente en (7,5).
+let desde = null;
+for (let row = 1; row < room1.rows - 1 && !desde; row++) {
+  for (let col = 1; col < room1.cols - 1; col++) {
+    const vecino = { col: col + 1, row: row - 1 };
+    if (room1.isBlocked(col, row)) continue;
+    if (vecino.row < 1 || !room1.isBlocked(vecino.col, vecino.row)) continue;
+    desde = { col, row, obstaculo: vecino };
+    break;
+  }
+}
+check(!!desde, "hay mobiliario contra el que empujar en room1");
+if (desde) {
+  A.sock.emit("room", { room: "room1", col: desde.col, row: desde.row, facing: "down" });
+  await until(
+    () => Math.round(view(A).col) === desde.col && Math.round(view(A).row) === desde.row,
+    3000,
+  );
+  const push = setInterval(() => A.sock.emit("move", 1, 0), 40);
+  await sleep(700);
+  A.sock.emit("move", 0, 0);
+  clearInterval(push);
+  const walled = view(A);
+  // Se queda a menos de media celda del obstáculo, sin llegar a ocuparlo
+  const dentro =
+    Math.round(walled.col) !== desde.obstaculo.col ||
+    Math.round(walled.row) !== desde.obstaculo.row;
+  const avanzo = walled.col > desde.col + 0.2;
+  check(
+    dentro && avanzo,
+    `el mueble (${desde.obstaculo.col},${desde.obstaculo.row}) frena al avatar en ` +
+      `(${walled.col.toFixed(2)},${walled.row.toFixed(2)}) sin atravesarlo`,
+  );
+}
 
 // ---------- 6. Desconexión ----------
 const C = makeClient();

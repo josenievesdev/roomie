@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { FURNITURE, isFurniture } from "../../src/state/furniture-catalog.ts";
 import type { RoomId } from "../../src/net/protocol.ts";
 import type { Cell } from "../../src/utils/pathfinding.ts";
 
@@ -84,12 +85,14 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
       doorCells.add(cellKey(col, row));
       continue; // ya viene bloqueada por la capa de colisiones
     }
-    if (kind === "sofa") {
-      sitCells.add(cellKey(col, row));
-      blocked[row][col] = true;
-    } else if (kind === "mesa") {
-      blocked[row][col] = true;
-    }
+    // Las reglas salen del CATÁLOGO, el mismo que usa el cliente. Antes había
+    // aquí una lista de `if` propia y añadir un mueble obligaba a acordarse de
+    // los dos lados; si se olvidaba uno, cliente y servidor discrepaban sobre
+    // qué celdas están libres.
+    if (!isFurniture(kind)) continue;
+    const def = FURNITURE[kind];
+    if (def.sit) sitCells.add(cellKey(col, row));
+    if (def.blocks) blocked[row][col] = true;
   }
 
   const isBlocked = (col: number, row: number): boolean => blocked[row][col];

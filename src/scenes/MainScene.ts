@@ -1,7 +1,8 @@
 import Phaser from "phaser";
 import { toScreen, toGrid } from "../utils/iso";
 import { animKey, createAvatarTexture, destroyAvatarAssets } from "../entities/avatar";
-import { createFurniture, type FurnitureKind } from "../entities/furniture";
+import { createFurniture } from "../entities/furniture";
+import { FURNITURE, isFurniture, isSeat, type FurnitureKind } from "../state/furniture-catalog";
 import { findPath, type Cell } from "../utils/pathfinding";
 import { AvatarState, SIT_OFFSET, SIT_SHIFT, type Facing } from "../state/avatarState";
 import {
@@ -582,7 +583,7 @@ export class MainScene extends Phaser.Scene {
 
     const door = this.doorAt(goal.col, goal.row);
     const furn = this.furnitureAt(goal.col, goal.row);
-    const sitTarget = furn?.kind === "sofa" ? furn : null;
+    const sitTarget = isSeat(furn?.kind) ? (furn ?? null) : null;
     if (!door && !sitTarget && this.blocked[goal.row][goal.col]) return;
 
     const start: Cell = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
@@ -1980,7 +1981,7 @@ export class MainScene extends Phaser.Scene {
 
     const objs = data.layers.find((l) => l.name === "objetos");
     for (const o of objs?.objects ?? []) {
-      const kind = (o.type || o.class) as FurnitureKind | "puerta" | undefined;
+      const kind = o.type || o.class;
       const col = this.intProp(o.properties, "col");
       const row = this.intProp(o.properties, "row");
       if (col === undefined || row === undefined) continue;
@@ -1997,9 +1998,10 @@ export class MainScene extends Phaser.Scene {
         continue; // el anillo de colisiones ya bloquea la celda
       }
 
-      if (kind !== "sofa" && kind !== "mesa") continue;
-      createFurniture(this, kind, col, row, this.theme.furniture);
-      this.blocked[row][col] = true;
+      if (!isFurniture(kind)) continue;
+      createFurniture(this, kind, col, row, this.theme.palette);
+      // Qué estorba y qué se pisa lo decide el catálogo, no un `if` aquí
+      if (FURNITURE[kind].blocks) this.blocked[row][col] = true;
       this.furniture.push({ kind, col, row });
     }
   }

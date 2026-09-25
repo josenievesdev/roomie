@@ -325,11 +325,35 @@
       "objects": [
         {
           "id": 1,
-          "name": "sofa-1",
-          "type": "sofa",
-          "class": "sofa",
-          "x": 448,
-          "y": 112,
+          "name": "alfombra-1",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 320,
+          "y": 144,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 3
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "name": "alfombra-2",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 352,
+          "y": 160,
           "width": 64,
           "height": 32,
           "rotation": 0,
@@ -343,17 +367,17 @@
             {
               "name": "row",
               "type": "int",
-              "value": 2
+              "value": 5
             }
           ]
         },
         {
-          "id": 2,
-          "name": "mesa-2",
-          "type": "mesa",
-          "class": "mesa",
-          "x": 448,
-          "y": 208,
+          "id": 3,
+          "name": "alfombra-3",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 384,
+          "y": 176,
           "width": 64,
           "height": 32,
           "rotation": 0,
@@ -362,7 +386,7 @@
             {
               "name": "col",
               "type": "int",
-              "value": 7
+              "value": 5
             },
             {
               "name": "row",
@@ -372,8 +396,392 @@
           ]
         },
         {
-          "id": 3,
-          "name": "puerta-3",
+          "id": 4,
+          "name": "alfombra-4",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 288,
+          "y": 160,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 3
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "name": "alfombra-5",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 320,
+          "y": 176,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "name": "alfombra-6",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 352,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 5
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "name": "alfombra-7",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 256,
+          "y": 176,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 3
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "name": "alfombra-8",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 288,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "name": "alfombra-9",
+          "type": "alfombra",
+          "class": "alfombra",
+          "x": 320,
+          "y": 208,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 5
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "name": "sofa-10",
+          "type": "sofa",
+          "class": "sofa",
+          "x": 352,
+          "y": 160,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "name": "mesa-11",
+          "type": "mesa",
+          "class": "mesa",
+          "x": 288,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 7
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "name": "barra-12",
+          "type": "barra",
+          "class": "barra",
+          "x": 576,
+          "y": 208,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 9
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "name": "barra-13",
+          "type": "barra",
+          "class": "barra",
+          "x": 544,
+          "y": 224,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 9
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "name": "taburete-14",
+          "type": "taburete",
+          "class": "taburete",
+          "x": 544,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 8
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "name": "taburete-15",
+          "type": "taburete",
+          "class": "taburete",
+          "x": 512,
+          "y": 208,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 8
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "name": "planta-16",
+          "type": "planta",
+          "class": "planta",
+          "x": 384,
+          "y": 80,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 2
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "name": "planta-17",
+          "type": "planta",
+          "class": "planta",
+          "x": 384,
+          "y": 304,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 9
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 9
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "name": "planta-18",
+          "type": "planta",
+          "class": "planta",
+          "x": 160,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 2
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 9
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "name": "lampara-19",
+          "type": "lampara",
+          "class": "lampara",
+          "x": 512,
+          "y": 144,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 6
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "name": "puerta-20",
           "type": "puerta",
           "class": "puerta",
           "x": 640,
@@ -419,7 +827,7 @@
     }
   ],
   "nextlayerid": 4,
-  "nextobjectid": 4,
+  "nextobjectid": 21,
   "orientation": "isometric",
   "renderorder": "right-down",
   "tiledversion": "1.11.2",

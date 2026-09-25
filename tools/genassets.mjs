@@ -289,15 +289,37 @@ function buildRoom({ id, width: W, height: H, theme, objects }) {
   console.log(`${id}.json (${W}x${H}, tema "${THEMES[theme].nombre}", ${objects.length} objetos)`);
 }
 
+// Una alfombra ocupa una celda; varias seguidas forman una zona.
+const zona = (type, c0, r0, ancho, alto) => {
+  const out = [];
+  for (let r = r0; r < r0 + alto; r++) {
+    for (let c = c0; c < c0 + ancho; c++) out.push({ type, col: c, row: r });
+  }
+  return out;
+};
+
 const rooms = [
   {
+    // PLAZA CENTRAL: recibidor con mostrador, zona de estar y plantas
     id: "room1",
     width: 12,
     height: 12,
     theme: 0,
     objects: [
-      { type: "sofa", col: 4, row: 2 },
-      { type: "mesa", col: 7, row: 5 },
+      // Zona de estar sobre la alfombra
+      ...zona("alfombra", 3, 5, 3, 3),
+      { type: "sofa", col: 4, row: 5 },
+      { type: "mesa", col: 4, row: 7 },
+      // Mostrador de recepción, pegado a la pared derecha
+      { type: "barra", col: 9, row: 3 },
+      { type: "barra", col: 9, row: 4 },
+      { type: "taburete", col: 8, row: 3 },
+      { type: "taburete", col: 8, row: 4 },
+      // Verde y luz
+      { type: "planta", col: 2, row: 2 },
+      { type: "planta", col: 9, row: 9 },
+      { type: "planta", col: 2, row: 9 },
+      { type: "lampara", col: 6, row: 2 },
       {
         type: "puerta",
         col: 8,
@@ -307,13 +329,28 @@ const rooms = [
     ],
   },
   {
+    // CLUB NEÓN: pista de baile, barra con taburetes y altavoces
     id: "room2",
     width: 14,
     height: 10,
     theme: 1,
     objects: [
-      { type: "sofa", col: 5, row: 2 },
-      { type: "mesa", col: 9, row: 6 },
+      // Pista de baile en el centro
+      ...zona("alfombra", 5, 3, 4, 4),
+      // Barra a la derecha
+      { type: "barra", col: 11, row: 3 },
+      { type: "barra", col: 11, row: 4 },
+      { type: "barra", col: 11, row: 5 },
+      { type: "taburete", col: 10, row: 3 },
+      { type: "taburete", col: 10, row: 4 },
+      { type: "taburete", col: 10, row: 5 },
+      // Altavoces en las esquinas de la pista
+      { type: "altavoz", col: 2, row: 2 },
+      { type: "altavoz", col: 2, row: 7 },
+      // Reservado
+      { type: "sofa", col: 7, row: 1 },
+      { type: "mesa", col: 12, row: 8 },
+      { type: "lampara", col: 5, row: 8 },
       {
         type: "puerta",
         col: 3,
