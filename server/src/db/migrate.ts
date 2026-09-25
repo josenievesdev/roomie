@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { sql, conexion, cerrar } from "./index.ts";
 
 // Ejecutor de migraciones. Cada .sql de db/migrations se aplica UNA vez, en
@@ -47,7 +47,13 @@ export async function migrar(): Promise<void> {
   console.log(nuevas === 0 ? "\nSin cambios: el esquema ya estaba al día." : `\n${nuevas} migración(es) aplicada(s).`);
 }
 
-if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
+// `pathToFileURL` y no construir la cadena a mano: en Windows la ruta es
+// C:\... y el URL file:///C:/..., así que comparar strings no casaba nunca y
+// el comando terminaba en silencio sin hacer nada.
+const ejecutadoDirectamente =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (ejecutadoDirectamente) {
   console.log(`Migrando contra ${conexion.host}${conexion.pooler ? " (pooler)" : ""}\n`);
   try {
     await migrar();

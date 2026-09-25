@@ -120,8 +120,29 @@ try {
   await recoger(item.id, id);
   ok((await inventarioDe(id)).length === 1, "recogerlo lo devuelve al inventario");
 
-  // ------------------------------------------------------ limpieza
+  // Borrar la sala devuelve sus muebles al inventario, no los destruye ni
+  // deja filas medio colocadas. Esto es lo que destapó que `on delete set
+  // null` vaciaba room_id pero no col/row.
+  const suelto = (await inventarioDe(id))[0];
+  await colocar(suelto.id, id, sala.id, 6, 6, 0);
+  const [{ n: enTotal }] = await sql<{ n: number }[]>`
+    select count(*)::int as n from items where owner_id = ${id}
+  `;
   await sql`delete from rooms where id = ${sala.id}`;
+  const despues = await inventarioDe(id);
+  // La propiedad que importa: no se destruye nada. Todo lo que tenía sigue
+  // siendo suyo, y ahora está en el inventario.
+  ok(
+    despues.length === enTotal,
+    "borrar la sala devuelve sus muebles al inventario, sin perder ninguno",
+    `${enTotal} en total -> ${despues.length} en inventario`,
+  );
+  ok(
+    despues.every((i) => i.room_id === null && i.col === null && i.row === null),
+    "y ninguno queda medio colocado",
+  );
+
+  // ------------------------------------------------------ limpieza
   await sql`delete from accounts where id = ${id}`;
   const [queda] = await sql`select count(*)::int as n from ledger where account_id = ${id}`;
   ok(queda.n === 0, "borrar la cuenta se lleva sus apuntes (cascade)");
