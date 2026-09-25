@@ -5,11 +5,14 @@
   "type": "module",
   "description": "Servidor multijugador de Roomie (Node + Socket.io, AvatarState autoritativo)",
   "scripts": {
-    "dev": "node --watch src/index.ts",
-    "start": "node src/index.ts"
+    "dev": "node --env-file-if-exists=.env --watch src/index.ts",
+    "start": "node --env-file-if-exists=.env src/index.ts",
+    "db:migrate": "node --env-file-if-exists=.env src/db/migrate.ts",
+    "db:check": "node --env-file-if-exists=.env src/db/check.ts"
   },
   "dependencies": {
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"
