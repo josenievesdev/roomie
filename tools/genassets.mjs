@@ -1,7 +1,14 @@
 // Genera los assets base de Roomie:
-//  - public/assets/tileset.png  → tileset isométrico 64×32 (2 variantes de suelo)
+//  - public/assets/tileset.png → suelos isométricos 64×32, 3 por tema
+//  - public/assets/walls.png   → caras de pared 32×64, 2 por tema (izq. y der.)
 //  - public/assets/room1.json  → sala 12×12 en formato Tiled (editable con Tiled)
 //  - public/assets/room2.json  → sala 14×10 en formato Tiled
+//
+// Todo se dibuja PÍXEL A PÍXEL, no con formas vectoriales: es lo que separa
+// "rombos planos de colores" de pixel art de verdad. Cada superficie lleva
+// biselado (la luz entra por arriba), tramado para romper el color plano,
+// junta oscura entre baldosas y zócalo en las paredes.
+//
 // Uso: node tools/genassets.mjs
 import fs from "node:fs";
 import path from "node:path";
@@ -53,58 +60,184 @@ function encodePng(w, h, rgba) {
   ]);
 }
 
-// ---------- Tileset: rombos 64×32 ----------
+// ---------- Color ----------
+const hex = (s) => [
+  parseInt(s.slice(1, 3), 16),
+  parseInt(s.slice(3, 5), 16),
+  parseInt(s.slice(5, 7), 16),
+];
+const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+/** t>0 aclara, t<0 oscurece */
+const shade = (c, t) => (t >= 0 ? mix(c, [255, 255, 255], t) : mix(c, [0, 0, 0], -t));
+
+// ---------- Lienzo ----------
+const canvas = (w, h) => ({ w, h, buf: Buffer.alloc(w * h * 4) });
+
+function px(cv, x, y, c) {
+  if (x < 0 || y < 0 || x >= cv.w || y >= cv.h) return;
+  const i = (y * cv.w + x) * 4;
+  cv.buf[i] = c[0];
+  cv.buf[i + 1] = c[1];
+  cv.buf[i + 2] = c[2];
+  cv.buf[i + 3] = 255;
+}
+
 const TILE_W = 64;
 const TILE_H = 32;
+const WALL_H = 48; // alto de la cara de pared
+const WALL_W = 32; // ancho de cada pieza
+const WALL_TILE_H = WALL_H + 16; // + el sesgo isométrico
 
-function drawDiamond(buf, offset, base, edge) {
+// ---------- Temas ----------
+// Cada sala tiene el suyo, y por eso se distinguen de un vistazo.
+const THEMES = [
+  {
+    key: "salon",
+    nombre: "Salón cálido",
+    floorA: hex("#c07a55"), // terracota
+    floorB: hex("#ad6b49"),
+    floorJoint: hex("#7d4630"), // junta entre baldosas
+    floorAccent: hex("#f0c987"), // cenefa dorada
+    wall: hex("#e3cfae"), // crema
+    wallRail: hex("#a9633f"), // moldura a media altura
+    wallBase: hex("#8c5334"), // zócalo
+  },
+  {
+    key: "club",
+    nombre: "Sala fría",
+    floorA: hex("#2f7f8c"), // turquesa
+    floorB: hex("#266d79"),
+    floorJoint: hex("#143c45"),
+    floorAccent: hex("#7fe3d1"), // menta
+    wall: hex("#2b3a63"), // índigo
+    wallRail: hex("#5b7fd4"),
+    wallBase: hex("#1b2540"),
+  },
+];
+
+/** Tramado ordenado 4×4: rompe el color plano sin ensuciar */
+const BAYER = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+];
+const dither = (x, y, fuerza) => (BAYER[y & 3][x & 3] / 15 - 0.5) * fuerza;
+
+// ---------- Suelo: rombo 64×32 ----------
+// variante 0 = baldosa A, 1 = baldosa B, 2 = cenefa decorativa
+function drawFloorTile(cv, ox, tema, variante) {
+  const base = variante === 1 ? tema.floorB : tema.floorA;
   for (let y = 0; y < TILE_H; y++) {
     for (let x = 0; x < TILE_W; x++) {
       const nx = (x + 0.5 - TILE_W / 2) / (TILE_W / 2);
       const ny = (y + 0.5 - TILE_H / 2) / (TILE_H / 2);
       const d = Math.abs(nx) + Math.abs(ny);
       if (d > 1) continue;
-      const [r, g, b] = d > 0.86 ? edge : base;
-      const i = (y * (TILE_W * 2) + offset + x) * 4;
-      buf[i] = r;
-      buf[i + 1] = g;
-      buf[i + 2] = b;
-      buf[i + 3] = 255;
+
+      let c = base;
+
+      // Relieve: la luz entra por arriba, así que el canto superior brilla
+      // y el inferior queda en sombra. Es lo que da volumen a la baldosa.
+      if (d > 0.93) c = tema.floorJoint; // junta
+      else if (d > 0.80) c = shade(base, ny < 0 ? 0.18 : -0.14);
+      else c = shade(base, dither(x, y, 0.07));
+
+      // Cenefa: un rombo interior en color de acento
+      if (variante === 2 && d > 0.48 && d < 0.6) {
+        c = shade(tema.floorAccent, dither(x, y, 0.05));
+      }
+      // Baldosa B: motivo central, para que el damero no sea sólo dos tonos
+      if (variante === 1 && d < 0.14) c = shade(base, 0.22);
+
+      px(cv, ox + x, y, c);
     }
   }
 }
 
-const tilesetW = TILE_W * 2;
-const tileset = Buffer.alloc(tilesetW * TILE_H * 4);
-drawDiamond(tileset, 0, [58, 58, 82], [34, 34, 50]); // suelo claro
-drawDiamond(tileset, TILE_W, [49, 49, 74], [29, 29, 44]); // suelo oscuro
+// ---------- Pared: pieza 32×64 ----------
+// lado "der" = fila 0 (sube hacia la derecha), "izq" = columna 0 (hacia la izq.)
+function drawWallTile(cv, ox, tema, lado) {
+  // El muro que mira al noroeste recibe menos luz: dos tonos como en todo
+  // isométrico decente.
+  const luz = lado === "der" ? 0 : -0.1;
 
-// ---------- Salas en formato Tiled ----------
+  for (let u = 0; u < WALL_W; u++) {
+    const top = lado === "der" ? Math.floor(u / 2) : Math.floor((WALL_W - 1 - u) / 2);
+    for (let v = 0; v < WALL_H; v++) {
+      let c;
+      if (v < 2) c = shade(tema.wall, 0.34); // remate superior
+      else if (v < 5) c = shade(tema.wall, 0.16);
+      else if (v >= 29 && v <= 31) c = tema.wallRail; // moldura a media altura
+      else if (v >= WALL_H - 7) {
+        c = v === WALL_H - 7 ? shade(tema.wallBase, 0.22) : tema.wallBase; // zócalo
+      } else if (v < 29) c = tema.wall;
+      else c = shade(tema.wall, -0.06); // bajo la moldura, algo más oscuro
+
+      // Juntas verticales de los paneles
+      if (u % 8 === 0 && v > 4 && v < WALL_H - 7) c = shade(c, -0.1);
+      // Tramado suave
+      c = shade(c, dither(u, v, 0.05) + luz);
+      // Cantos
+      if (u === 0 || u === WALL_W - 1) c = shade(c, -0.12);
+      if (v === WALL_H - 1) c = shade(c, -0.25);
+
+      px(cv, ox + u, top + v, c);
+    }
+  }
+}
+
+// ---------- Montaje de las hojas ----------
 const outDir = path.resolve(process.cwd(), "public", "assets");
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(outDir, "tileset.png"), encodePng(tilesetW, TILE_H, tileset));
 
+const FLOORS_POR_TEMA = 3;
+const tileset = canvas(TILE_W * FLOORS_POR_TEMA * THEMES.length, TILE_H);
+THEMES.forEach((tema, t) => {
+  for (let v = 0; v < FLOORS_POR_TEMA; v++) {
+    drawFloorTile(tileset, (t * FLOORS_POR_TEMA + v) * TILE_W, tema, v);
+  }
+});
+fs.writeFileSync(path.join(outDir, "tileset.png"), encodePng(tileset.w, tileset.h, tileset.buf));
+
+const WALLS_POR_TEMA = 2;
+const walls = canvas(WALL_W * WALLS_POR_TEMA * THEMES.length, WALL_TILE_H);
+THEMES.forEach((tema, t) => {
+  drawWallTile(walls, (t * WALLS_POR_TEMA + 0) * WALL_W, tema, "der");
+  drawWallTile(walls, (t * WALLS_POR_TEMA + 1) * WALL_W, tema, "izq");
+});
+fs.writeFileSync(path.join(outDir, "walls.png"), encodePng(walls.w, walls.h, walls.buf));
+
+// ---------- Salas en formato Tiled ----------
 const TILESET_DEF = {
-  columns: 2,
+  columns: FLOORS_POR_TEMA * THEMES.length,
   firstgid: 1,
   image: "tileset.png",
   imageheight: TILE_H,
-  imagewidth: tilesetW,
+  imagewidth: tileset.w,
   margin: 0,
   name: "floor",
   spacing: 0,
-  tilecount: 2,
+  tilecount: FLOORS_POR_TEMA * THEMES.length,
   tileheight: TILE_H,
   tilewidth: TILE_W,
 };
 
-function buildRoom({ id, width: W, height: H, objects }) {
+function buildRoom({ id, width: W, height: H, theme, objects }) {
+  // gid = índice de frame + 1. Cada sala usa los suyos, así que el mapa se
+  // sigue viendo bien en Tiled sin que el cliente tenga que desplazar nada.
+  const primero = theme * FLOORS_POR_TEMA + 1;
+  const [A, B, CENEFA] = [primero, primero + 1, primero + 2];
+
   const floor = [];
   const collisions = [];
   for (let row = 0; row < H; row++) {
     for (let col = 0; col < W; col++) {
-      floor.push((row + col) % 2 === 0 ? 1 : 2);
       const ring = row === 0 || col === 0 || row === H - 1 || col === W - 1;
+      const cenefa = row === 1 || col === 1 || row === H - 2 || col === W - 2;
+      if (ring) floor.push(A); // queda detrás de las paredes
+      else if (cenefa) floor.push(CENEFA); // marco decorativo interior
+      else floor.push((row + col) % 2 === 0 ? A : B);
       collisions.push(ring ? 1 : 0); // anillo exterior = muros
     }
   }
@@ -153,7 +286,7 @@ function buildRoom({ id, width: W, height: H, objects }) {
   };
 
   fs.writeFileSync(path.join(outDir, `${id}.json`), JSON.stringify(map, null, 2));
-  console.log(`${id}.json (${W}x${H}, ${objects.length} objetos) generado`);
+  console.log(`${id}.json (${W}x${H}, tema "${THEMES[theme].nombre}", ${objects.length} objetos)`);
 }
 
 const rooms = [
@@ -161,6 +294,7 @@ const rooms = [
     id: "room1",
     width: 12,
     height: 12,
+    theme: 0,
     objects: [
       { type: "sofa", col: 4, row: 2 },
       { type: "mesa", col: 7, row: 5 },
@@ -176,6 +310,7 @@ const rooms = [
     id: "room2",
     width: 14,
     height: 10,
+    theme: 1,
     objects: [
       { type: "sofa", col: 5, row: 2 },
       { type: "mesa", col: 9, row: 6 },
@@ -190,4 +325,4 @@ const rooms = [
 ];
 
 for (const room of rooms) buildRoom(room);
-console.log(`tileset.png (${tilesetW}x${TILE_H}) generado en ${outDir}`);
+console.log(`tileset.png (${tileset.w}x${tileset.h}) y walls.png (${walls.w}x${walls.h}) generados en ${outDir}`);

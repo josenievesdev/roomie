@@ -13,6 +13,7 @@ import {
 } from "../state/palette";
 import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
+import { themeFor, type RoomTheme } from "../render/theme";
 import { createTextInput, textInputFocused, type TextInput } from "../ui/textInput";
 import { net, playerName } from "../net/client";
 import {
@@ -167,6 +168,8 @@ function peerScreen(
 // personalización; la lógica del avatar vive en AvatarState (módulo puro).
 export class MainScene extends Phaser.Scene {
   private roomId: RoomId = "room1";
+  /** Paleta y piezas de atlas de la sala actual */
+  private theme!: RoomTheme;
   private player!: Phaser.GameObjects.Sprite;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
@@ -246,6 +249,11 @@ export class MainScene extends Phaser.Scene {
       frameWidth: 64,
       frameHeight: 32,
     });
+    // Caras de pared: 32 de ancho por 48 de alto MÁS 16 de sesgo isométrico
+    this.load.spritesheet("walls", "assets/walls.png", {
+      frameWidth: 32,
+      frameHeight: 64,
+    });
   }
 
   create(): void {
@@ -282,8 +290,11 @@ export class MainScene extends Phaser.Scene {
     this.palette = paletteFrom(save);
 
     createAvatarTexture(this, this.palette);
-    // Vecino más cercano también para el tileset (nítido al escalar)
+    // Vecino más cercano en TODO el pixel art: con muestreo lineal los
+    // bordes de las baldosas se emborronan al escalar el lienzo.
     this.textures.get("tileset").setFilter(Phaser.Textures.FilterMode.NEAREST);
+    this.textures.get("walls").setFilter(Phaser.Textures.FilterMode.NEAREST);
+    this.theme = themeFor(this.roomId);
     this.buildRoom();
 
     this.avatar = new AvatarState(
@@ -674,14 +685,28 @@ export class MainScene extends Phaser.Scene {
       p0,
     ];
 
+    const { hoja, marco, pomo } = this.theme.door;
     const g = this.add.graphics().setDepth(worldDepth(cy)); // misma profundidad que su pared
-    g.fillStyle(0x8b5a2b, 1);
+    g.fillStyle(hoja, 1);
     g.fillPoints(quad, true);
-    g.lineStyle(1, 0x4a2f18, 1);
+    g.lineStyle(1, marco, 1);
     g.strokePoints(quad, true);
+    // Cuarterón: una línea interior para que no sea una tabla lisa
+    const c0 = lerp(p0, p1, 0.18);
+    const c1 = lerp(p0, p1, 0.82);
+    g.lineStyle(1, marco, 0.5);
+    g.strokePoints(
+      [
+        { x: c0.x, y: c0.y - h * 0.82 },
+        { x: c1.x, y: c1.y - h * 0.82 },
+        { x: c1.x, y: c1.y - h * 0.22 },
+        { x: c0.x, y: c0.y - h * 0.22 },
+      ],
+      true,
+    );
     // Pomo
     const knob = lerp(p0, p1, 0.72);
-    g.fillStyle(0xf1c40f, 1);
+    g.fillStyle(pomo, 1);
     g.fillCircle(knob.x, knob.y - h * 0.5, 2);
   }
 
@@ -1973,7 +1998,7 @@ export class MainScene extends Phaser.Scene {
       }
 
       if (kind !== "sofa" && kind !== "mesa") continue;
-      createFurniture(this, kind, col, row);
+      createFurniture(this, kind, col, row, this.theme.furniture);
       this.blocked[row][col] = true;
       this.furniture.push({ kind, col, row });
     }
@@ -1982,51 +2007,27 @@ export class MainScene extends Phaser.Scene {
   /**
    * Paredes isométricas sobre los dos bordes traseros (fila 0 y columna 0),
    * una pieza por celda con su propia profundidad.
+   *
+   * Son SPRITES de `walls.png`, no polígonos: el pixel art (remate, moldura,
+   * zócalo, juntas de panel y tramado) se dibuja en el generador, píxel a
+   * píxel, y aquí sólo se coloca. Cada sala usa los frames de su tema.
    */
   private buildWalls(): void {
-    const h = 48; // altura de pared en px
+    const h = 48; // altura de la cara de pared, igual que en genassets.mjs
     for (let col = 0; col < this.cols; col++) {
       const { x, y } = toScreen(col, 0);
-      this.paintWallFace(
-        this.add.graphics().setDepth(worldDepth(y)),
-        [
-          { x, y: y - 16 - h }, // arriba-izq
-          { x: x + 32, y: y - h }, // arriba-der
-          { x: x + 32, y }, // abajo-der
-          { x, y: y - 16 }, // abajo-izq
-        ],
-      );
+      this.add
+        .image(x, y - 16 - h, "walls", this.theme.wallRight)
+        .setOrigin(0, 0)
+        .setDepth(worldDepth(y));
     }
     for (let row = 0; row < this.rows; row++) {
       const { x, y } = toScreen(0, row);
-      this.paintWallFace(
-        this.add.graphics().setDepth(worldDepth(y)),
-        [
-          { x: x - 32, y: y - h },
-          { x, y: y - 16 - h },
-          { x, y: y - 16 },
-          { x: x - 32, y },
-        ],
-      );
+      this.add
+        .image(x - 32, y - 16 - h, "walls", this.theme.wallLeft)
+        .setOrigin(0, 0)
+        .setDepth(worldDepth(y));
     }
-  }
-
-  /** Cara de pared + zócalo + remate superior. pts en orden horario desde arriba */
-  private paintWallFace(g: Phaser.GameObjects.Graphics, pts: { x: number; y: number }[]): void {
-    const [p0, p1, p2, p3] = pts;
-    g.fillStyle(0x6d6d94, 1);
-    g.fillPoints(pts, true);
-    g.lineStyle(1, 0x3a3a55, 1);
-    g.strokePoints(pts, true);
-    // Zócalo: franja oscura de 5px pegada al suelo
-    g.fillStyle(0x4e4e70, 1);
-    g.fillPoints(
-      [p3, p2, { x: p2.x, y: p2.y - 5 }, { x: p3.x, y: p3.y - 5 }],
-      true,
-    );
-    // Remate superior claro
-    g.lineStyle(2, 0x9a9ad0, 1);
-    g.lineBetween(p0.x, p0.y, p1.x, p1.y);
   }
 
   /** Lee una propiedad entera de un objeto de Tiled */
