@@ -65,6 +65,36 @@ const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 /** Textura propia de la vista previa del modal (independiente de la del jugador) */
 const PREVIEW_KEY = "avatar:preview";
 
+/**
+ * Panel de chat de la esquina inferior izquierda, al estilo de Minecraft:
+ * historial a la vista que se desvanece solo, y al abrir para escribir se
+ * muestra entero con fondo.
+ */
+const CHAT_PANEL = {
+  x: 10,
+  /** Línea de base: las líneas se apilan hacia ARRIBA desde aquí */
+  bottom: 492,
+  w: 392,
+  /** Cuántas líneas caben a la vez */
+  lines: 10,
+  lineH: 15,
+  /** Caracteres por línea antes de partir (monoespaciada de 12px) */
+  wrap: 52,
+};
+/** Con el chat cerrado, una línea se desvanece a los 12 s */
+const CHAT_FADE_MS = 12000;
+/** Historial guardado (más de lo que cabe en pantalla) */
+const CHAT_HISTORY = 60;
+
+const CHAT_COLORS = {
+  system: "#9a9ad0",
+  mine: "#ffe9a8",
+  other: "#ffffff",
+} as const;
+
+/** Una línea ya partida del historial */
+type ChatLine = { text: string; color: string; at: number };
+
 /** Gestos rápidos del menú de avatar. Viajan como mensajes de chat normales. */
 const EMOTES = ["👋", "😀", "😂", "❤️", "👍", "🎉"] as const;
 
@@ -166,9 +196,11 @@ export class MainScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   /** Burbujas por avatar: "me" o el id del jugador remoto */
   private bubbles = new Map<string, Phaser.GameObjects.Container>();
-  /** Avisos de sistema (entró/salió) en la esquina inferior izquierda */
-  private logLines: string[] = [];
-  private logLabel!: Phaser.GameObjects.Text;
+  /** Historial del panel de chat (ya partido en líneas) */
+  private chatLines: ChatLine[] = [];
+  /** Objetos de texto reutilizados, uno por línea visible */
+  private chatLineTexts: Phaser.GameObjects.Text[] = [];
+  private chatPanelBg!: Phaser.GameObjects.Rectangle;
 
   // Multijugador (Fase 7)
   private peers = new Map<string, Peer>();
@@ -234,7 +266,8 @@ export class MainScene extends Phaser.Scene {
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
-    this.logLines = [];
+    this.chatLines = [];
+    this.chatLineTexts = [];
     this.sentMove = { mx: 0, my: 0 };
     this.lastMoveSent = 0;
     this.snapshots = [];
@@ -301,25 +334,48 @@ export class MainScene extends Phaser.Scene {
       .text(8, 46, "", statusStyle)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_HUD);
-    // Log de avisos del servidor (entró/salió), 3 líneas máx.
-    this.logLabel = this.add
-      .text(8, 452, "", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#9a9ad0",
-      })
-      .setOrigin(0, 1)
+    // Panel de chat: fondo (sólo visible mientras se escribe) + líneas
+    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 10;
+    this.chatPanelBg = this.add
+      .rectangle(
+        CHAT_PANEL.x + CHAT_PANEL.w / 2,
+        CHAT_PANEL.bottom - alturaPanel / 2 + 6,
+        CHAT_PANEL.w,
+        alturaPanel,
+        0x000000,
+        0.55,
+      )
       .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD);
+      .setDepth(LAYER.UI_PANEL)
+      .setVisible(false);
 
-    // Barra de chat (interfaz fija en pantalla)
+    // Una línea = un objeto de texto reutilizado, para no recrearlos sin parar
+    this.chatLineTexts = [];
+    for (let i = 0; i < CHAT_PANEL.lines; i++) {
+      this.chatLineTexts.push(
+        this.add
+          .text(CHAT_PANEL.x + 8, 0, "", {
+            fontFamily: "monospace",
+            fontSize: "12px",
+            color: CHAT_COLORS.other,
+          })
+          .setOrigin(0, 1)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_PANEL + 1)
+          .setVisible(false),
+      );
+    }
+    // El desvanecido depende del reloj, no de que ocurra nada
+    this.time.addEvent({ delay: 500, loop: true, callback: () => this.renderChatPanel() });
+
+    // Barra de escritura, alineada con el panel
     this.chatBg = this.add
-      .rectangle(480, 512, 420, 26, 0x000000, 0.65)
+      .rectangle(CHAT_PANEL.x + CHAT_PANEL.w / 2, 508, CHAT_PANEL.w, 24, 0x000000, 0.8)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
     this.chatLabel = this.add
-      .text(280, 512, "", {
+      .text(CHAT_PANEL.x + 8, 508, "", {
         fontFamily: "monospace",
         fontSize: "13px",
         color: "#ffffff",
@@ -792,6 +848,7 @@ export class MainScene extends Phaser.Scene {
     this.chatBg.setVisible(true);
     this.chatLabel.setVisible(true);
     this.renderChatBar();
+    this.renderChatPanel(); // al abrir se ve el historial entero
 
     // <input> real: en el móvil no hay tecla Enter ni teclado físico, así que
     // sin esto el chat era inaccesible desde un teléfono.
@@ -814,6 +871,7 @@ export class MainScene extends Phaser.Scene {
     this.chatLabel.setVisible(false);
     this.chatInput?.destroy();
     this.chatInput = null;
+    this.renderChatPanel(); // al cerrar vuelve el modo "sólo lo reciente"
   }
 
   private sendChat(): void {
@@ -822,8 +880,12 @@ export class MainScene extends Phaser.Scene {
     if (!msg) return;
     // Sin servidor la burbuja es sólo local; con servidor, el eco del server
     // la dibuja (así TODOS vemos lo mismo, incluido yo).
-    if (net.isOnline) net.chat(msg);
-    else this.showBubble("me", msg);
+    if (net.isOnline) {
+      net.chat(msg); // el eco del servidor lo pintará en el panel
+    } else {
+      this.showBubble("me", msg);
+      this.pushChatLine(`Tú: ${msg}`, CHAT_COLORS.mine);
+    }
   }
 
   private renderChatBar(): void {
@@ -960,23 +1022,82 @@ export class MainScene extends Phaser.Scene {
   /** Chat recibido del servidor: burbuja sobre quien habló, o aviso de sistema */
   private onNetChat(msg: ChatPayload): void {
     if (msg.system) {
-      this.pushLog(msg.text);
+      this.pushChatLine(msg.text, CHAT_COLORS.system);
       return;
     }
     if (!msg.text) return;
-    if (msg.from && msg.from !== net.id) {
+
+    const mio = !msg.from || msg.from === net.id;
+    if (!mio) {
       const view = this.netPlayers.find((p) => p.id === msg.from);
       if (!view || view.room !== this.roomId) return; // no está en mi sala
-      this.showBubble(msg.from, msg.text);
+      this.showBubble(msg.from as string, msg.text);
     } else {
       this.showBubble("me", msg.text);
     }
+    // Burbuja sobre la cabeza Y línea en el panel: la burbuja se va en 4 s,
+    // el panel conserva la conversación.
+    this.pushChatLine(`${msg.name}: ${msg.text}`, mio ? CHAT_COLORS.mine : CHAT_COLORS.other);
   }
 
   /** Aviso del servidor en la esquina inferior (entró/salió), 3 líneas */
-  private pushLog(text: string): void {
-    this.logLines = [...this.logLines, text].slice(-3);
-    this.logLabel.setText(this.logLines.join("\n"));
+  /**
+   * Añade una línea al historial. El texto largo se parte aquí (y no con el
+   * `wordWrap` de Phaser) porque cada línea lleva su propio color.
+   */
+  private pushChatLine(text: string, color: string): void {
+    const at = this.time.now;
+    for (const trozo of this.wrapChat(text)) {
+      this.chatLines.push({ text: trozo, color, at });
+    }
+    if (this.chatLines.length > CHAT_HISTORY) {
+      this.chatLines = this.chatLines.slice(-CHAT_HISTORY);
+    }
+    this.renderChatPanel();
+  }
+
+  /** Parte por palabras, y a lo bruto si una palabra no cabe */
+  private wrapChat(text: string): string[] {
+    const max = CHAT_PANEL.wrap;
+    const salida: string[] = [];
+    let resto = text;
+    while (resto.length > max) {
+      let corte = resto.lastIndexOf(" ", max);
+      if (corte <= 0) corte = max;
+      salida.push(resto.slice(0, corte));
+      resto = resto.slice(corte).trimStart();
+    }
+    if (resto.length > 0) salida.push(resto);
+    return salida;
+  }
+
+  /**
+   * Dibuja el panel. Con el chat abierto se ve entero y con fondo; cerrado,
+   * sólo las líneas recientes y sin fondo, como en Minecraft.
+   */
+  private renderChatPanel(): void {
+    if (this.chatLineTexts.length === 0) return;
+    const ahora = this.time.now;
+    const visibles = this.chatLines
+      .filter((l) => this.chatOpen || ahora - l.at < CHAT_FADE_MS)
+      .slice(-CHAT_PANEL.lines);
+
+    this.chatPanelBg.setVisible(this.chatOpen);
+
+    // Se pintan de abajo hacia arriba: la más nueva, la de más abajo
+    for (let i = 0; i < this.chatLineTexts.length; i++) {
+      const obj = this.chatLineTexts[i];
+      const linea = visibles[visibles.length - 1 - i];
+      if (!linea) {
+        obj.setVisible(false);
+        continue;
+      }
+      obj
+        .setText(linea.text)
+        .setColor(linea.color)
+        .setPosition(CHAT_PANEL.x + 8, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
+        .setVisible(true);
+    }
   }
 
   /** Contador de la sala en la barra de estado */
@@ -1770,8 +1891,12 @@ export class MainScene extends Phaser.Scene {
   /** Un gesto es un mensaje de chat corriente: lo ve toda la sala */
   private sendEmote(emote: string): void {
     this.closePeerMenu();
-    if (net.isOnline) net.chat(emote);
-    else this.showBubble("me", emote);
+    if (net.isOnline) {
+      net.chat(emote);
+    } else {
+      this.showBubble("me", emote);
+      this.pushChatLine(`Tú: ${emote}`, CHAT_COLORS.mine);
+    }
   }
 
   /** Abre el chat con el mensaje ya dirigido a ese jugador */
