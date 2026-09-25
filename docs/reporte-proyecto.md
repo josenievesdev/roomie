@@ -1,4 +1,10 @@
-# Roomie — Reporte del proyecto
+> **Documento histórico.** Describe el proyecto en la Fase 7 y está desfasado:
+> desde entonces llegaron la corrección del movimiento, la pasada visual, la
+> decoración, la base de datos y el login real.
+>
+> El estado vigente está en **`docs/estado-actual.md`**.
+
+# Roomie — Reporte del proyecto (histórico, Fase 7)
 
 **Fecha del reporte:** 24 de septiembre de 2026
 **Estado:** Fase 7 completada. Single-player jugable y estable + **multijugador en tiempo real** (red local / mismo host).

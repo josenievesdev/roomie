@@ -4,21 +4,32 @@ Mundo abierto 2D en pixel art con proyección isométrica, estilo Habbo.
 Juego web hecho con **Phaser 3 + TypeScript + Vite**, con **servidor Node + Socket.io**
 (multijugador en tiempo real).
 
+> **Estado del proyecto y qué viene:** `docs/estado-actual.md`.
+
 ## Requisitos
 
-- Node.js 24+ (`node -v`) — el servidor se ejecuta en `.ts` directamente (sin build)
+- Node.js 24+ (`node -v`) — el servidor ejecuta los `.ts` directamente, sin build
+- Una base Postgres (Supabase sirve): desde el login real, la identidad es
+  obligatoria y no hay modo sin servidor
 
 ## Puesta en marcha
 
-Dos terminales:
+```bash
+npm install && npm --prefix server install
+
+cp server/.env.example server/.env    # y pegar dentro la cadena de conexión
+npm --prefix server run db:migrate    # crea el esquema
+```
+
+Y luego, en dos terminales:
 
 ```bash
 npm run dev:server   # servidor del juego → :3001
 npm run dev          # cliente Vite      → http://localhost:5173
 ```
 
-Abre **dos pestañas** en http://localhost:5173 y verás a los dos avatares moverse
-en tiempo real. Sin servidor, el juego sigue funcionando en single-player.
+Regístrate, y abre **otra pestaña con otra cuenta** para ver el multijugador
+(la misma cuenta no puede estar dentro dos veces).
 
 Otros comandos:
 
@@ -26,54 +37,65 @@ Otros comandos:
 npm run typecheck                        # tsc del cliente + tsc del servidor
 npm run build                            # compilación de producción en dist/
 npm run preview                          # previsualizar el build
-node tools/smoke-multiplayer.mjs         # smoke test E2E del multijugador (20 checks)
+node tools/smoke-multiplayer.mjs         # E2E: registra cuentas reales y juega
+npm --prefix server run db:check         # ejerce los invariantes de la base
+npm --prefix server run db:migrate       # aplica db/migrations/*.sql
+node tools/genassets.mjs                 # regenera tileset, paredes y mapas
 ```
-
-## Estructura
-
-Ver sección **Arquitectura** más abajo.
 
 ## Roadmap
 
-- [x] Fase 0 — proyecto Vite + TS + Phaser, primera escena
-- [x] Fase 1 — proyección isométrica, panorama de sala y cámara
-- [x] Fase 2 — avatar con animaciones, colisiones y clic para caminar (A*)
-- [x] Fase 3 — sala real con paredes y mobiliario
-- [x] Fase 4 — sentarse en el sofá y burbuja de chat (Enter)
-- [x] Fase 5 — guardado (localStorage) + estado aislado para el online
-- [x] Personalización del avatar (tecla **C**: ropa y pelo, se guarda)
-- [x] Múltiples salas: room1 ↔ room2 con puertas (clic en la puerta)
-- [x] Fase 7 — **multijugador**: servidor autoritativo + ver a los demás + chat de sala
-- [ ] Despliegue (red local con `vite --host`, luego hosting público)
-- [ ] Futuro — cuentas, inventario, más salas, sonidos
+Hecho:
+
+- [x] Isométrico, avatar animado, A\* y colisiones, dos salas con puertas
+- [x] Multijugador con servidor autoritativo, chat y personalización
+- [x] **Movimiento sin tirones**: simulación con tiempo real e interpolación
+- [x] **Capas de interfaz** separadas del mundo
+- [x] **Teclado en móvil** y panel de chat con historial
+- [x] **Pixel art de verdad** y una identidad visual por sala
+- [x] **Catálogo de mobiliario** compartido entre cliente y servidor
+- [x] **Base de datos Postgres** con cuentas, libro mayor e inventario
+- [x] **Login real** con sesiones persistentes
+
+Siguiente:
+
+- [ ] Tienda e inventario (las tablas ya están; falta la interfaz)
+- [ ] Colocar muebles comprados en una sala
+- [ ] Salas como datos, para poder crear plazas y locales sin tocar código
+- [ ] Salas propias por cuenta
+- [ ] Trabajos y economía
+
+El detalle de cada punto, y por qué en ese orden, en `docs/estado-actual.md`.
 
 ## Arquitectura
 
 ```
 src/
-├── main.ts              # configuración del juego
-├── scenes/
-│   └── MainScene.ts     # render + entrada + chat + guardado + avatares remotos
-├── state/
-│   ├── avatarState.ts   # LÓGICA PURA del avatar (sin Phaser) → la ejecuta el SERVIDOR
-│   └── palette.ts       # paleta del avatar: colores de ropa y pelo
+├── main.ts                  # configuración del juego
+├── scenes/MainScene.ts      # render, entrada, chat, red, modales
+├── state/                   # PURO (sin Phaser) — lo ejecuta el SERVIDOR
+│   ├── avatarState.ts       #   movimiento y colisiones
+│   ├── furniture-catalog.ts #   qué mueble estorba y en cuál se sienta uno
+│   └── palette.ts
 ├── net/
-│   ├── protocol.ts      # eventos y tipos compartidos cliente ↔ servidor (PURO)
-│   └── client.ts        # cliente socket.io (sin Phaser, sobrevive a los reinicios)
-├── entities/
-│   ├── avatar.ts        # textura por avatar (`avatar`, `avatar:<id>`) + animaciones
-│   └── furniture.ts     # sofá, mesa...
-├── utils/
-│   ├── iso.ts           # proyección isométrica 2:1
-│   ├── pathfinding.ts   # A* (8 direcciones, octile)
-│   └── storage.ts       # guardado en localStorage
-├── tools/
-│   ├── genassets.mjs            # genera tileset.png y room1.json
-│   └── smoke-multiplayer.mjs    # smoke test E2E contra el servidor
-server/                  # paquete Node aparte (su propio package.json)
+│   ├── protocol.ts          # PURO — eventos y tipos compartidos
+│   └── client.ts            # socket.io + token de sesión
+├── render/
+│   ├── layers.ts            # bandas de profundidad (mundo / HUD / modal)
+│   └── theme.ts             # paleta y piezas de atlas por sala
+├── entities/                # avatar y mobiliario (Phaser)
+├── ui/textInput.ts          # <input> real: teclado en móvil
+└── utils/                   # iso, A*, guardado local
+
+server/                      # paquete Node aparte
 └── src/
-    ├── index.ts         # Socket.io + simulación autoritativa (AvatarState) a 20 Hz
-    └── world.ts         # lee los JSON de Tiled y construye colisiones/puertas/sofás
+    ├── index.ts             # socket.io + autenticación + simulación 20 Hz
+    ├── world.ts             # lee los mapas de Tiled → colisiones
+    └── db/                  # conexión, migraciones, cuentas, sesiones
+
+db/migrations/*.sql          # esquema, en orden
+tools/                       # generador de assets y smoke test E2E
+docs/                        # estado-actual.md + informe de cada tanda
 ```
 
 - `AvatarState` es un módulo **sin dependencias de Phaser**: recibe órdenes
