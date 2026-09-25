@@ -22,18 +22,25 @@ export type TextInput = {
 export type TextInputOptions = {
   maxLength: number;
   initial?: string;
+  /** "password" oculta el texto y evita que el navegador lo autocorrija */
+  type?: "text" | "password";
+  /** Qué sugerir al gestor de contraseñas del navegador */
+  autocomplete?: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onCancel: () => void;
+  /** Tabulador: saltar al siguiente campo */
+  onNext?: () => void;
 };
 
 export function createTextInput(opts: TextInputOptions): TextInput {
   const el = document.createElement("input");
-  el.type = "text";
+  el.type = opts.type ?? "text";
   el.value = opts.initial ?? "";
   el.maxLength = opts.maxLength;
-  // Nada de ayudas del navegador: el texto lo valida el juego
-  el.autocomplete = "off";
+  // En las contraseñas SÍ interesa el gestor del navegador: que ofrezca
+  // guardarla y rellenarla es mejor seguridad, no peor.
+  el.autocomplete = (opts.autocomplete ?? "off") as AutoFill;
   el.spellcheck = false;
   el.setAttribute("autocapitalize", "off");
   el.setAttribute("autocorrect", "off");
@@ -78,6 +85,11 @@ export function createTextInput(opts: TextInputOptions): TextInput {
     // mismo problema al revés: cerraba el chat y acto seguido lo reabría.
     e.stopPropagation();
 
+    if (e.key === "Tab" && opts.onNext) {
+      e.preventDefault();
+      opts.onNext();
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       opts.onSubmit();

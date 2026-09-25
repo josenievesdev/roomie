@@ -26,6 +26,10 @@ export const KEYBOARD_SPEED = 105;
 export const TICK_MS = 50;
 
 export const NAME_MAX = 16;
+export const USER_MIN = 3;
+export const USER_MAX = 16;
+export const PASS_MIN = 6;
+export const PASS_MAX = 72;
 export const CHAT_MAX = 60;
 export const CHAT_COOLDOWN_MS = 400;
 export const MAX_PATH_CELLS = 400;
@@ -47,13 +51,51 @@ export type PlayerView = {
   look: Look;
 };
 
+// ---------------------------------------------------------------- Identidad
+//
+// El nombre YA NO viaja en `join`. Antes el cliente decía cómo se llamaba y el
+// servidor se lo creía, así que el nickname era una etiqueta que cada uno se
+// ponía, no una identidad. Ahora sale de la cuenta autenticada y el cliente no
+// puede elegirlo al entrar a una sala.
+
+export type AuthMode = "login" | "register";
+
+export type AuthPayload = {
+  mode: AuthMode;
+  username: string;
+  password: string;
+  /** Sólo al registrarse */
+  nickname?: string;
+  look?: Look;
+};
+
+/** Reanudar con el token guardado, sin volver a teclear la contraseña */
+export type ResumePayload = { token: string };
+
+export type AuthOkPayload = {
+  /** Se guarda en el navegador; es lo único que conserva de su identidad */
+  token: string;
+  username: string;
+  nickname: string;
+  look: Look;
+  saldo: number;
+};
+
+export type AuthErrorCode =
+  | "BAD_CREDENTIALS"
+  | "USERNAME_TAKEN"
+  | "NICKNAME_TAKEN"
+  | "INVALID"
+  | "RATE_LIMITED"
+  | "NO_DB";
+
+export type AuthErrorPayload = { code: AuthErrorCode; message: string };
+
 export type JoinPayload = {
-  name: string;
   room: RoomId;
   col: number;
   row: number;
   facing: Facing;
-  look: Look;
 };
 
 export type RoomPayload = { room: RoomId; col: number; row: number; facing: Facing };
@@ -72,7 +114,13 @@ export type JoinErrorPayload = { code: "DUPLICATE_NAME" | "ROOM_FULL" | "INVALID
 
 /** Eventos que el cliente emite y el servidor escucha */
 export interface ClientEvents {
-  /** Entrar (o reentrar) al juego con una posición y paleta conocidas */
+  /** Crear cuenta o entrar con usuario y contraseña */
+  auth: (p: AuthPayload) => void;
+  /** Entrar con el token guardado de una sesión anterior */
+  resume: (p: ResumePayload) => void;
+  /** Cerrar sesión y olvidar el token */
+  logout: () => void;
+  /** Entrar (o reentrar) al mundo. Requiere estar autenticado. */
   join: (p: JoinPayload) => void;
   /** Teclado: ejes normalizados de PANTALLA (-1..1, diagonal ya escalada) */
   move: (mx: number, my: number) => void;
@@ -90,6 +138,10 @@ export interface ClientEvents {
 
 /** Eventos que el servidor emite y el cliente escucha */
 export interface ServerEvents {
+  /** Identidad confirmada: ya se puede `join` */
+  authOk: (p: AuthOkPayload) => void;
+  /** No se pudo entrar ni registrar */
+  authError: (p: AuthErrorPayload) => void;
   /** Respuesta al `join`: tu id + todos los jugadores conectados */
   welcome: (p: { id: string; players: PlayerView[] }) => void;
   /** Error al unirse (nickname duplicado, etc.) */

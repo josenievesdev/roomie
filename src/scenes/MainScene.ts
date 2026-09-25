@@ -16,14 +16,19 @@ import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage"
 import { LAYER, worldDepth } from "../render/layers";
 import { themeFor, type RoomTheme } from "../render/theme";
 import { createTextInput, textInputFocused, type TextInput } from "../ui/textInput";
-import { net, playerName } from "../net/client";
+import { net, tokenGuardado } from "../net/client";
 import {
   CHAT_MAX,
   KEYBOARD_SPEED,
   NAME_MAX,
+  PASS_MIN,
+  PASS_MAX,
   ROOMS,
+  USER_MIN,
   type ChatPayload,
   type JoinErrorPayload,
+  type AuthErrorPayload,
+  type AuthOkPayload,
   type Look,
   type PlayerView,
   type RoomId,
@@ -66,6 +71,19 @@ const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
 /** Textura propia de la vista previa del modal (independiente de la del jugador) */
 const PREVIEW_KEY = "avatar:preview";
+
+/** Los tres modos del modal de cuenta */
+type AuthModalMode = "login" | "register" | "profile";
+type CampoClave = "username" | "password" | "nickname";
+
+/** Un campo de texto del modal: lo dibuja Phaser, lo escribe un <input> real */
+type CampoAuth = {
+  clave: CampoClave;
+  fondo: Phaser.GameObjects.Rectangle;
+  texto: Phaser.GameObjects.Text;
+  secreto: boolean;
+  input: TextInput | null;
+};
 
 /**
  * Panel de chat de la esquina inferior izquierda, al estilo de Minecraft:
@@ -215,29 +233,20 @@ export class MainScene extends Phaser.Scene {
   private lastMoveSent = 0;
   /** Historia reciente de snapshots, para interpolar a los remotos */
   private snapshots: Snapshot[] = [];
-  private loginModalOpen = false;
-  private loginUI: Phaser.GameObjects.GameObject[] = [];
-  /**
-   * Valor REAL del nickname que se está escribiendo. Antes se sacaba del propio
-   * objeto Text quitándole el cursor (`text.replace("▌", "")`), y por eso el
-   * borrado no funcionaba: `slice(0, -1)` se comía el cursor, no la letra, y
-   * al volver a pegarlo el texto quedaba igual que estaba.
-   */
-  private loginNick = "";
-  /** Listener de teclado del modal. Se guarda para poder QUITARLO al cerrar. */
-  private loginKeys: ((e: KeyboardEvent) => void) | null = null;
-  /** <input> real del nickname: sin él no hay teclado en el móvil */
-  private loginInput: TextInput | null = null;
-  /** <input> real del chat: mismo motivo */
+  private authModalOpen = false;
+  private authMode: AuthModalMode = "login";
+  private authUI: Phaser.GameObjects.GameObject[] = [];
+  private authCampos: CampoAuth[] = [];
+  private campoActivo: CampoAuth | null = null;
+  private authError: Phaser.GameObjects.Text | null = null;
+  /** Paleta al abrir, para poder descartar los cambios al cancelar */
+  private paletaAlAbrir: Palette | null = null;
+  /** <input> real del chat: sin él no hay teclado en el móvil */
   private chatInput: TextInput | null = null;
   /** Piezas del menú que sale al tocar a otro jugador (vacío = cerrado) */
   private peerMenuItems: MenuItem[] = [];
   /** Id del jugador al que pertenece el menú abierto */
   private peerMenuFor = "";
-  /** Texto de error del modal (referencia directa, no búsqueda por contenido) */
-  private loginError: Phaser.GameObjects.Text | null = null;
-  /** Paleta al abrir el modal, para poder descartar los cambios al cancelar */
-  private loginPaletteOnOpen: Palette | null = null;
 
   constructor() {
     super("main");
@@ -263,15 +272,15 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.chatText = "";
     this.customOpen = false;
-    this.loginModalOpen = false;
-    this.loginNick = "";
-    this.loginKeys = null;
-    this.loginInput = null;
+    this.authModalOpen = false;
+    this.authUI = [];
+    this.authCampos = [];
+    this.campoActivo = null;
     this.chatInput = null;
     this.peerMenuItems = [];
     this.peerMenuFor = "";
-    this.loginError = null;
-    this.loginPaletteOnOpen = null;
+    this.authError = null;
+    this.paletaAlAbrir = null;
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
@@ -404,13 +413,13 @@ export class MainScene extends Phaser.Scene {
     // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
     this.setupNet();
 
-    // Si no hay nickname guardado, mostrar modal de login
-    if (!save?.nickname) {
-      this.showLoginModal();
-    } else {
-      // Ya hay nickname: entrar directo
-      this.sendWhere();
-    }
+    // Quién eres lo decide el servidor. Si ya hay sesión (token válido que
+    // `net` reanudó al conectar) se entra directo; si no, a identificarse.
+    //
+    // Si todavía no ha llegado la respuesta al `resume`, no se abre el modal:
+    // lo hará `onAuthError` si el token no valía.
+    if (net.autenticado) this.sendWhere();
+    else if (!net.isOnline || !tokenGuardado()) this.showAuthModal("login");
 
     const kb = this.input.keyboard;
     if (kb) {
@@ -420,7 +429,7 @@ export class MainScene extends Phaser.Scene {
       kb.on("keydown", (e: { key?: string }) => {
         // Si el foco está en un <input> real, las teclas son suyas: si no, cada
         // letra se escribiría dos veces.
-        if (textInputFocused(this.loginInput, this.chatInput)) return;
+        if (textInputFocused(...this.authCampos.map((c) => c.input), this.chatInput)) return;
         const key = e.key ?? "";
         if (key === "Escape" && this.peerMenuItems.length > 0) {
           this.closePeerMenu();
@@ -447,7 +456,7 @@ export class MainScene extends Phaser.Scene {
       "pointerdown",
       (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
         if (pointer.button !== 0) return; // solo clic izquierdo
-        if (this.loginModalOpen) return; // el modal se lleva todos los clics
+        if (this.authModalOpen) return; // el modal se lleva todos los clics
 
         // El clic cayó sobre un elemento interactivo (botón, selector, avatar):
         // es suyo, no del mundo.
@@ -483,14 +492,10 @@ export class MainScene extends Phaser.Scene {
       net.setHandlers({});
       // Si la escena muere con el modal abierto, su listener de teclado
       // sobreviviría al reinicio y escribiría sobre objetos destruidos.
-      if (this.loginKeys) {
-        window.removeEventListener("keydown", this.loginKeys);
-        this.loginKeys = null;
-      }
       // Los <input> viven en el DOM, fuera de Phaser: hay que quitarlos a mano
       // o se acumularían uno por cada cruce de puerta.
-      this.loginInput?.destroy();
-      this.loginInput = null;
+      for (const c of this.authCampos) c.input?.destroy();
+      this.authCampos = [];
       this.chatInput?.destroy();
       this.chatInput = null;
     });
@@ -774,7 +779,19 @@ export class MainScene extends Phaser.Scene {
     if (this.customOpen) this.refreshSwatches();
   }
 
-  /** Regenera la textura con la nueva paleta y guarda */
+  /** Regenera la textura del avatar con la paleta actual (sin tocar la red) */
+  private applyPaletteLocal(): void {
+    createAvatarTexture(this, this.palette);
+    const frame = this.avatar.sitting ? "sit-0" : `${this.avatar.facing}-0`;
+    this.player.setTexture("avatar", frame);
+    this.player.play(
+      this.anim(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`),
+      true,
+    );
+    this.refreshSwatches();
+  }
+
+  /** Regenera la textura con la nueva paleta, guarda y avisa al servidor */
   private applyPalette(next: Palette): void {
     this.palette = next;
     createAvatarTexture(this, next);
@@ -866,7 +883,7 @@ export class MainScene extends Phaser.Scene {
   // ---------- Chat ----------
 
   private openChat(): void {
-    if (this.loginModalOpen) return; // el modal se lleva la entrada
+    if (this.authModalOpen) return; // el modal se lleva la entrada
     this.chatOpen = true;
     this.chatText = "";
     this.avatar.cancelPath();
@@ -1006,11 +1023,20 @@ export class MainScene extends Phaser.Scene {
         // nada. Y era irreversible: ese primer `join` marca `isJoined`, de modo
         // que al pulsar Entrar `sendWhere()` mandaba `room` en vez de `join`
         // — y `room` no lleva nombre. El nickname elegido no llegaba nunca.
-        if (up && !this.loginModalOpen) this.sendWhere();
+        // Sólo se entra al mundo si ya hay identidad confirmada
+        if (up && net.autenticado && !this.authModalOpen) this.sendWhere();
       },
       onJoinError: (err) => {
         if (!this.alive) return;
         this.onJoinError(err);
+      },
+      onAuthOk: (p) => {
+        if (!this.alive) return;
+        this.onAuthOk(p);
+      },
+      onAuthError: (err) => {
+        if (!this.alive) return;
+        this.onAuthError(err);
       },
     });
     net.connect();
@@ -1020,9 +1046,12 @@ export class MainScene extends Phaser.Scene {
   }
 
   /** Me presento al servidor (o aviso de que cambié de sala) */
+  /**
+   * Me presento al servidor. Ya NO manda nombre ni aspecto: eso pertenece a la
+   * cuenta y el servidor lo saca de la base de datos.
+   */
   private sendWhere(): void {
-    const save = loadSave();
-    const nickname = save?.nickname ?? playerName();
+    if (!net.autenticado) return;
     const where = {
       room: this.roomId,
       col: Math.round(this.avatar.col),
@@ -1030,7 +1059,7 @@ export class MainScene extends Phaser.Scene {
       facing: this.avatar.facing,
     };
     if (net.isJoined) net.changeRoom(where);
-    else net.join({ name: nickname, ...where, look: this.palette });
+    else net.join(where);
   }
 
   /** Manda el teclado cuando cambia (y un refuerzo cada 250 ms mientras se pulsa) */
@@ -1138,8 +1167,36 @@ export class MainScene extends Phaser.Scene {
     // incluye a mí. El "1 +" que había aquí me sumaba una segunda vez: estando
     // solo, el HUD mostraba "2 en room1".
     const here = this.netPlayers.filter((p) => p.room === this.roomId).length;
-    this.statusText.setText(`● En línea — ${here} en ${this.roomId}`);
+    const yo = net.identidad;
+    const quien = yo ? `${yo.nickname} · ${yo.saldo}◎ — ` : "";
+    this.statusText.setText(`● ${quien}${here} en ${this.roomId}`);
     this.statusText.setColor("#7bed9f");
+  }
+
+  /**
+   * Identidad confirmada: el aspecto y el saldo vienen del servidor, no del
+   * guardado local. A partir de aquí ya se puede entrar al mundo.
+   */
+  private onAuthOk(p: AuthOkPayload): void {
+    this.palette = paletteFrom(p.look);
+    this.paletaAlAbrir = null; // confirmados: no hay nada que descartar
+    this.applyPaletteLocal();
+    this.closeAuthModal();
+    this.saveGame();
+    this.pushChatLine(`Hola, ${p.nickname}. Tienes ${p.saldo} monedas.`, CHAT_COLORS.mine);
+    this.sendWhere();
+    this.updateStatusHud();
+  }
+
+  private onAuthError(err: AuthErrorPayload): void {
+    // Si el modal está abierto, el mensaje va dentro. Si no (p. ej. el token
+    // guardado caducó al reconectar), hay que volver a pedir credenciales.
+    if (this.authModalOpen) {
+      this.mensajeAuth(err.message);
+      return;
+    }
+    this.showAuthModal("login");
+    this.mensajeAuth(err.message);
   }
 
   /** Error al unirse (nickname duplicado, etc.) */
@@ -1148,16 +1205,9 @@ export class MainScene extends Phaser.Scene {
 
     // El texto de error pertenece al modal: si está cerrado hay que abrirlo
     // ANTES de intentar escribir en él.
-    if (!this.loginModalOpen) this.showLoginModal();
-
-    // Antes se buscaba el objeto por su contenido (`text === ""`), que casaba
-    // con cualquier Text vacío del modal. Ahora es una referencia directa.
-    const errorText = this.loginError;
-    if (!errorText) return;
-    errorText.setText(err.message);
-    this.time.delayedCall(3000, () => {
-      if (errorText.active) errorText.setText("");
-    });
+    // Esto ya no es "el nombre está cogido" sino "esa cuenta ya está dentro
+    // en otra pestaña", así que no tiene sentido reabrir el formulario.
+    this.pushChatLine(err.message, CHAT_COLORS.system);
   }
 
   /** Botón "Perfil" en el HUD (esquina superior derecha) */
@@ -1170,7 +1220,7 @@ export class MainScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true })
       .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
       .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
-      .on("pointerdown", () => this.showLoginModal(true));
+      .on("pointerdown", () => this.showAuthModal(net.autenticado ? "profile" : "login"));
 
     this.add
       .text(910, 20, "Perfil", {
@@ -1214,408 +1264,393 @@ export class MainScene extends Phaser.Scene {
       .setDepth(LAYER.UI_HUD + 1);
   }
 
-  /** Modal de login / edición de perfil */
-  private showLoginModal(isEdit = false): void {
-    // Ya abierto: no se apila otro encima. Antes, con isEdit, cada pulsación
-    // del botón Perfil creaba un modal nuevo y dejaba el anterior huérfano
-    // debajo (con su listener de teclado incluido).
-    if (this.loginModalOpen) return;
-    this.loginModalOpen = true;
+  // ---------- Modal de cuenta ----------
+  //
+  // Tres modos sobre el mismo panel:
+  //   login    — usuario + contraseña
+  //   register — usuario + contraseña + nombre en el juego + aspecto
+  //   profile  — ya dentro: sólo aspecto y cerrar sesión
+  //
+  // El nombre del jugador YA NO se elige aquí cada vez: pertenece a la cuenta
+  // y vive en la base de datos. Antes el cliente decía cómo se llamaba y el
+  // servidor se lo creía.
+
+  private showAuthModal(modo: AuthModalMode = "login"): void {
+    if (this.authModalOpen) return; // no apilar
+    this.authModalOpen = true;
+    this.authMode = modo;
     this.chatOpen = false;
     this.closeChat();
     this.closePeerMenu();
-    // El panel de personalización se ocultaba a medias: se ponía `customOpen`
-    // a false pero sus objetos seguían dibujados por encima del modal.
     if (this.customOpen) this.toggleCustomPanel();
-    // Los selectores de color cambian `this.palette` en vivo para que la
-    // preview los muestre; si se cancela hay que poder volver atrás.
-    this.loginPaletteOnOpen = { ...this.palette };
-    // El teclado del juego se apaga entero: si no, escribir una "c" en el
-    // nickname abre el panel de personalización y un Enter abre el chat
-    // DETRÁS del modal, y además el avatar camina con WASD mientras escribes.
+    this.paletaAlAbrir = { ...this.palette };
+    // El teclado del juego se apaga entero: si no, escribir una "c" abre el
+    // panel de personalización y Enter abre el chat detrás del modal.
     this.setGameKeyboard(false);
 
-    const overlay = this.add
-      // Velo OPACO a propósito. Translúcido, el mundo se veía al 14% fuera del
-      // panel y al 4% detrás de él: un avatar que cruzara el borde del panel
-      // cambiaba de brillo 3,5x de golpe y se leía como "cortado". Mientras el
-      // panel sea más opaco que el velo eso es aritmética de alfas, no un
-      // defecto que se pueda pulir; la única solución es no dejar ver el mundo.
-      .rectangle(480, 270, 960, 540, 0x000000, 1)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL)
-      .setInteractive();
+    const registro = modo === "register";
+    const perfil = modo === "profile";
+    const conAspecto = registro || perfil;
 
-    // Disposición en columna, medida siempre desde `panelY`, para que el panel
-    // pueda cambiar de alto sin descuadrarse: la pantalla de entrada no lleva
-    // botón Cancelar y por tanto es más baja.
-    //
-    // Antes el panel medía 380 y el Cancelar se colocaba en `panelH - 40 + 44`
-    // = 384: se dibujaba FUERA del panel. La preview también se solapaba con
-    // la fila de tonos de pelo.
-    const panelW = 360;
-    const panelH = isEdit ? 400 : 358;
-    const panelX = 480 - panelW / 2;
-    const panelY = 270 - panelH / 2;
-    const colX = panelX + 24; // margen izquierdo del contenido
+    // La altura se CALCULA a partir de lo que va dentro, no se elige a ojo.
+    // Puesta a mano, el botón acababa montado encima de los selectores de
+    // color en el formulario de registro, que es el más alto.
+    const CAMPO = 48; // etiqueta + caja
+    const PREVIEW = 62;
+    const FILA = 44; // etiqueta + fila de colores
+    const BOTONES = 76; // dos botones y su separación
+    const nCampos = perfil ? 0 : registro ? 3 : 2;
+    const aspecto = conAspecto ? PREVIEW + FILA * 2 : 0;
 
-    const panel = this.add
-      .rectangle(480, 270, panelW, panelH, 0x12121a, 0.96)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 1)
-      .setStrokeStyle(2, 0x6d6d94, 1);
+    const W = 380;
+    const H = 52 + nCampos * CAMPO + 20 + aspecto + BOTONES + 18;
+    const X = 480 - W / 2;
+    const Y = 270 - H / 2;
+    const colX = X + 26;
 
-    const title = this.add
-      .text(480, panelY + 26, isEdit ? "Editar perfil" : "Entrar a Roomie", {
-        fontFamily: "monospace",
-        fontSize: "16px",
-        color: "#ffe9a8",
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-
-    // Input nickname (simulado con Text + eventos de teclado)
-    const nicknameLabel = this.add
-      .text(colX, panelY + 52, `Nickname (máx ${NAME_MAX}):`, {
-        fontFamily: "monospace",
-        fontSize: "13px",
-        color: "#cccccc",
-      })
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-
-    const save = loadSave();
-    this.loginNick = save?.nickname ?? "";
-    const nickBg = this.add
-      .rectangle(colX, panelY + 72, panelW - 48, 34, 0x1a1a2e, 1)
-      .setOrigin(0, 0)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 1)
-      .setStrokeStyle(1, 0x6d6d94, 1)
-      .setInteractive({ useHandCursor: true });
-
-    const nickText = this.add
-      .text(colX + 8, panelY + 80, "", {
-        fontFamily: "monospace",
-        fontSize: "14px",
-        color: "#ffffff",
-      })
-      .setOrigin(0, 0)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-    /** El Text sólo DIBUJA; el valor vive en `this.loginNick` */
-    const drawNick = (): void => {
-      nickText.setText(this.loginNick + "▌");
-    };
-    drawNick();
-
-    // <input> real e invisible: es lo que hace salir el teclado en un móvil.
-    this.loginInput = createTextInput({
-      maxLength: NAME_MAX,
-      initial: this.loginNick,
-      onChange: (v) => {
-        this.loginNick = v;
-        drawNick();
-      },
-      onSubmit: () => this.submitLogin(this.loginNick, isEdit),
-      onCancel: () => this.closeLoginModal(),
-    });
-    this.loginInput.focus();
-    // En el móvil el teclado sólo se abre dentro de un gesto del usuario, así
-    // que tocar el campo (o el panel) vuelve a pedir el foco.
-    nickBg.on("pointerdown", () => this.loginInput?.focus());
-    panel.setInteractive().on("pointerdown", () => this.loginInput?.focus());
-
-    // Mensaje de error
-    const errorText = this.add
-      .text(480, panelY + 118, "", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#ff6b6b",
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-    this.loginError = errorText;
-
-    // Vista previa del avatar.
-    //
-    // Ojo con la animación: `this.anim("idle-down")` devuelve "avatar:idle-down",
-    // cuyos frames pertenecen a la textura del JUGADOR. Al reproducirla aquí, el
-    // sprite se reenganchaba a esa textura e ignoraba la de la preview, así que
-    // los colores elegidos no se veían. Hay que usar la animación de ESTA textura.
-    createAvatarTexture(this, this.palette, PREVIEW_KEY);
-    const preview = this.add
-      .sprite(480, panelY + 170, PREVIEW_KEY, "down-0")
-      .setOrigin(0.5)
-      .setScale(3)
-      // Sin esto la preview era el ÚNICO elemento del modal en coordenadas del
-      // MUNDO: la cámara se la llevaba. Y el desplazamiento de cámara depende
-      // del tamaño de la sala (roomBounds la centra), así que en room1
-      // (12x12, centro x=0 -> scroll -480) acababa en x=960, justo el borde
-      // derecho del lienzo, cortada por la mitad; en room2 (14x10, centro
-      // x=64 -> scroll -416) caía en x=896 y se veía entera. Mismo código,
-      // resultado distinto según la sala.
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-    preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
-
-    /**
-     * Repinta la preview con la paleta actual.
-     *
-     * `createAvatarTexture` DESTRUYE y recrea textura y animaciones. Un sprite
-     * que siguiera reproduciendo la animación vieja se quedaría con frames
-     * muertos — es el mismo fallo que dejaba la pantalla en negro al cruzar una
-     * puerta. Por eso se para la animación ANTES y se vuelve a lanzar después.
-     */
-    const redrawPreview = (): void => {
-      preview.anims.stop();
-      createAvatarTexture(this, this.palette, PREVIEW_KEY);
-      preview.setTexture(PREVIEW_KEY, "down-0");
-      preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
+    const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => {
+      this.authUI.push(o);
+      return o;
     };
 
-    // Selectores de color (reutilizamos la lógica del panel C)
-    const shirtLabel = this.add
-      .text(colX, panelY + 216, "Ropa:", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#cccccc",
-      })
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-
-    const hairLabel = this.add
-      .text(colX, panelY + 266, "Pelo:", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#cccccc",
-      })
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2);
-
-    const shirtSwatches: Phaser.GameObjects.Rectangle[] = [];
-    const hairSwatches: Phaser.GameObjects.Rectangle[] = [];
-
-    SHIRT_COLORS.forEach((c, i) => {
-      const s = this.add
-        .rectangle(colX + 10 + i * 32, panelY + 246, 20, 20, c.value)
+    add(
+      this.add
+        .rectangle(480, 270, 960, 540, 0x000000, 1)
         .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 2)
-        .setStrokeStyle(1, c.value === this.palette.shirt ? 0xffffff : 0x000000, 2)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerdown", () => {
-          this.palette = { ...this.palette, shirt: c.value };
-          this.refreshLoginSwatches(shirtSwatches, hairSwatches);
-          redrawPreview();
-        });
-      shirtSwatches.push(s);
-      this.loginUI.push(s);
-    });
-
-    HAIR_COLORS.forEach((c, i) => {
-      const s = this.add
-        .rectangle(colX + 10 + i * 32, panelY + 296, 20, 20, c.value)
+        .setDepth(LAYER.UI_MODAL)
+        .setInteractive(),
+    );
+    const panel = add(
+      this.add
+        .rectangle(480, 270, W, H, 0x12121a, 0.98)
         .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 2)
-        .setStrokeStyle(1, c.value === this.palette.hair ? 0xffffff : 0x000000, 2)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerdown", () => {
-          this.palette = { ...this.palette, hair: c.value };
-          this.refreshLoginSwatches(shirtSwatches, hairSwatches);
-          redrawPreview();
-        });
-      hairSwatches.push(s);
-      this.loginUI.push(s);
-    });
+        .setDepth(LAYER.UI_MODAL + 1)
+        .setStrokeStyle(2, 0x6d6d94, 1)
+        .setInteractive(),
+    );
 
-    // Botones anclados al BORDE INFERIOR del panel, no a una altura fija.
-    const cancelY = panelY + panelH - 28;
-    const saveY = panelY + panelH - (isEdit ? 68 : 28);
-
-    // Botón Guardar / Entrar
-    const saveBtn = this.add
-      .rectangle(480, saveY, 180, 36, 0x6c5ce7, 1)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 2)
-      .setStrokeStyle(1, 0x8c7ce7, 1)
-      .setInteractive({ useHandCursor: true })
-      .on("pointerover", () => saveBtn.setFillStyle(0x8c7ce7, 1))
-      .on("pointerout", () => saveBtn.setFillStyle(0x6c5ce7, 1))
-      .on("pointerdown", () => this.submitLogin(this.loginNick, isEdit));
-
-    const saveLabel = this.add
-      .text(480, saveY, isEdit ? "Guardar cambios" : "Entrar", {
-        fontFamily: "monospace",
-        fontSize: "14px",
-        color: "#ffffff",
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_MODAL + 3);
-
-    // Botón Cancelar (solo en modo edición)
-    let cancelBtn: Phaser.GameObjects.Rectangle | null = null;
-    if (isEdit) {
-      cancelBtn = this.add
-        .rectangle(480, cancelY, 180, 30, 0x3a3a55, 1)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 2)
-        .setStrokeStyle(1, 0x6d6d94, 1)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerover", () => cancelBtn?.setFillStyle(0x4a4a75, 1))
-        .on("pointerout", () => cancelBtn?.setFillStyle(0x3a3a55, 1))
-        .on("pointerdown", () => this.closeLoginModal());
-
-      const cancelLabel = this.add
-        .text(480, cancelY, "Cancelar", {
-          fontFamily: "monospace",
-          fontSize: "12px",
-          color: "#cccccc",
-        })
+    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : "Entrar a Roomie";
+    add(
+      this.add
+        .text(480, Y + 24, titulo, { fontFamily: "monospace", fontSize: "16px", color: "#ffe9a8" })
         .setOrigin(0.5)
         .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 3);
-      this.loginUI.push(cancelBtn, cancelLabel);
-    }
-
-    // Captura de teclado para el nickname
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (!this.loginModalOpen) return;
-      // Respaldo para escritorio si el <input> perdiera el foco; con el foco
-      // puesto, quien manda es él.
-      if (textInputFocused(this.loginInput)) return;
-
-      if (e.key === "Enter") {
-        this.submitLogin(this.loginNick, isEdit);
-        return;
-      }
-      if (e.key === "Escape") {
-        this.closeLoginModal();
-        return;
-      }
-      if (e.key === "Backspace") {
-        e.preventDefault(); // en algunos navegadores retrocede de página
-        this.loginNick = this.loginNick.slice(0, -1);
-        drawNick();
-        return;
-      }
-      // Atajos del navegador (Ctrl+R, Cmd+L...): no son texto
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key.length === 1 && this.loginNick.length < NAME_MAX) {
-        this.loginNick += e.key;
-        drawNick();
-      }
-    };
-    // Sólo puede haber UN listener vivo: si quedara el de una apertura
-    // anterior, cada tecla se escribiría dos veces y el borrado se comería
-    // dos letras. Por eso se guarda la referencia y se quita al cerrar.
-    this.loginKeys = onKeyDown;
-    window.addEventListener("keydown", onKeyDown);
-
-    // Guardar referencias para limpiar
-    this.loginUI.push(
-      overlay,
-      panel,
-      title,
-      nicknameLabel,
-      nickBg,
-      nickText,
-      errorText,
-      preview,
-      shirtLabel,
-      hairLabel,
-      saveBtn,
-      saveLabel,
-      ...shirtSwatches,
-      ...hairSwatches
+        .setDepth(LAYER.UI_MODAL + 2),
     );
-  }
 
-  private refreshLoginSwatches(
-    shirts: Phaser.GameObjects.Rectangle[],
-    hairs: Phaser.GameObjects.Rectangle[]
-  ): void {
-    shirts.forEach((s, i) => {
-      const sel = SHIRT_COLORS[i].value === this.palette.shirt;
-      s.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
-    });
-    hairs.forEach((h, i) => {
-      const sel = HAIR_COLORS[i].value === this.palette.hair;
-      h.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
-    });
-  }
+    let cursorY = Y + 52;
 
-  private submitLogin(nickname: string, isEdit: boolean): void {
-    const clean = nickname
-      .replace(/[^\p{L}\p{N} _\-.]/gu, "")
-      .trim()
-      .slice(0, 16);
-    if (!clean) return;
+    // ---------- Campos de texto ----------
+    this.authCampos = [];
+    const campo = (
+      clave: CampoClave,
+      etiqueta: string,
+      secreto: boolean,
+      autocomplete: string,
+      inicial = "",
+    ): void => {
+      add(
+        this.add
+          .text(colX, cursorY, etiqueta, {
+            fontFamily: "monospace",
+            fontSize: "12px",
+            color: "#cccccc",
+          })
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 2),
+      );
+      const fondo = add(
+        this.add
+          .rectangle(colX, cursorY + 16, W - 52, 30, 0x1a1a2e, 1)
+          .setOrigin(0, 0)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 1)
+          .setStrokeStyle(1, 0x6d6d94, 1)
+          .setInteractive({ useHandCursor: true }),
+      );
+      const texto = add(
+        this.add
+          .text(colX + 8, cursorY + 23, "", {
+            fontFamily: "monospace",
+            fontSize: "13px",
+            color: "#ffffff",
+          })
+          .setOrigin(0, 0.5)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 2),
+      );
 
-    writeSave({
-      room: this.roomId,
-      col: Math.round(this.avatar.col),
-      row: Math.round(this.avatar.row),
-      facing: this.avatar.facing,
-      shirt: this.palette.shirt,
-      hair: this.palette.hair,
-      nickname: clean,
-    });
+      const c: CampoAuth = { clave, fondo, texto, secreto, input: null };
+      c.input = createTextInput({
+        maxLength: secreto ? PASS_MAX : NAME_MAX,
+        initial: inicial,
+        type: secreto ? "password" : "text",
+        autocomplete,
+        onChange: () => this.pintarCampos(),
+        onSubmit: () => this.submitAuth(),
+        onCancel: () => this.closeAuthModal(),
+        onNext: () => this.enfocarSiguiente(),
+      });
+      fondo.on("pointerdown", () => this.enfocarCampo(c));
+      this.authCampos.push(c);
+      cursorY += CAMPO;
+    };
 
-    // Actualizar textura local
-    createAvatarTexture(this, this.palette);
-    this.player.setTexture("avatar", `${this.avatar.facing}-0`);
-    this.player.play(this.anim(`idle-${this.avatar.facing}`), true);
+    if (!perfil) {
+      campo("username", "Usuario:", false, registro ? "username" : "username");
+      campo("password", "Contraseña:", true, registro ? "new-password" : "current-password");
+    }
+    if (registro) campo("nickname", "Tu nombre en el juego:", false, "nickname");
 
-    // Los colores quedan confirmados: al cerrar ya no hay nada que descartar.
-    this.loginPaletteOnOpen = null;
-    this.closeLoginModal();
+    // ---------- Mensaje ----------
+    this.authError = add(
+      this.add
+        .text(480, cursorY + 2, "", {
+          fontFamily: "monospace",
+          fontSize: "11px",
+          color: "#ff6b6b",
+          wordWrap: { width: W - 40 },
+          align: "center",
+        })
+        .setOrigin(0.5, 0)
+        .setScrollFactor(0)
+        .setDepth(LAYER.UI_MODAL + 2),
+    );
+    cursorY += 22;
 
-    if (isEdit) {
-      // Cambiar nickname en el servidor
-      net.look(this.palette);
-      // Re-enviar join con nuevo nombre (el servidor validará duplicados)
-      this.sendWhere();
+    // ---------- Aspecto ----------
+    if (conAspecto) {
+      createAvatarTexture(this, this.palette, PREVIEW_KEY);
+      const preview = add(
+        this.add
+          .sprite(480, cursorY + 30, PREVIEW_KEY, "down-0")
+          .setOrigin(0.5)
+          .setScale(2)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 2),
+      );
+      preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
+      const repintar = (): void => {
+        preview.anims.stop();
+        createAvatarTexture(this, this.palette, PREVIEW_KEY);
+        preview.setTexture(PREVIEW_KEY, "down-0");
+        preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
+      };
+      cursorY += PREVIEW;
+
+      const fila = (
+        colores: typeof SHIRT_COLORS,
+        etiqueta: string,
+        leer: () => number,
+        poner: (v: number) => void,
+      ): Phaser.GameObjects.Rectangle[] => {
+        add(
+          this.add
+            .text(colX, cursorY, etiqueta, {
+              fontFamily: "monospace",
+              fontSize: "11px",
+              color: "#cccccc",
+            })
+            .setScrollFactor(0)
+            .setDepth(LAYER.UI_MODAL + 2),
+        );
+        const muestras: Phaser.GameObjects.Rectangle[] = [];
+        colores.forEach((c, i) => {
+          const m = add(
+            this.add
+              .rectangle(colX + 10 + i * 32, cursorY + 26, 20, 20, c.value)
+              .setScrollFactor(0)
+              .setDepth(LAYER.UI_MODAL + 2)
+              .setStrokeStyle(c.value === leer() ? 2 : 1, c.value === leer() ? 0xffffff : 0x000000, 2)
+              .setInteractive({ useHandCursor: true })
+              .on("pointerdown", () => {
+                poner(c.value);
+                muestras.forEach((s, j) => {
+                  const sel = colores[j].value === leer();
+                  s.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
+                });
+                repintar();
+              }),
+          );
+          muestras.push(m);
+        });
+        cursorY += FILA;
+        return muestras;
+      };
+
+      fila(SHIRT_COLORS, "Ropa:", () => this.palette.shirt, (v) => {
+        this.palette = { ...this.palette, shirt: v };
+      });
+      fila(HAIR_COLORS, "Pelo:", () => this.palette.hair, (v) => {
+        this.palette = { ...this.palette, hair: v };
+      });
+    }
+
+    // ---------- Botones ----------
+    const boton = (
+      y: number,
+      ancho: number,
+      relleno: number,
+      hover: number,
+      etiqueta: string,
+      alPulsar: () => void,
+    ): void => {
+      const b = add(
+        this.add
+          .rectangle(480, y, ancho, 30, relleno, 1)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 2)
+          .setStrokeStyle(1, hover, 1)
+          .setInteractive({ useHandCursor: true })
+          .on("pointerover", () => b.setFillStyle(hover, 1))
+          .on("pointerout", () => b.setFillStyle(relleno, 1))
+          .on("pointerdown", alPulsar),
+      );
+      add(
+        this.add
+          .text(480, y, etiqueta, { fontFamily: "monospace", fontSize: "12px", color: "#ffffff" })
+          .setOrigin(0.5)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 3),
+      );
+    };
+
+    // Los botones cuelgan del final del contenido, no de una altura fija
+    const yPrincipal = cursorY + 18;
+    boton(
+      yPrincipal,
+      W - 52,
+      0x6c5ce7,
+      0x8c7ce7,
+      perfil ? "Guardar aspecto" : registro ? "Crear cuenta y entrar" : "Entrar",
+      () => this.submitAuth(),
+    );
+
+    if (perfil) {
+      boton(yPrincipal + 38, W - 52, 0x3a3a55, 0x4a4a75, "Cerrar sesión", () => this.cerrarSesion());
     } else {
-      // Primera vez: entrar al juego
-      this.sendWhere();
+      boton(
+        yPrincipal + 38,
+        W - 52,
+        0x2a2a3e,
+        0x3a3a55,
+        registro ? "Ya tengo cuenta" : "Crear una cuenta nueva",
+        () => {
+          this.closeAuthModal();
+          this.showAuthModal(registro ? "login" : "register");
+        },
+      );
+    }
+
+    void panel;
+    this.pintarCampos();
+    if (this.authCampos[0]) this.enfocarCampo(this.authCampos[0]);
+  }
+
+  /** Dibuja el contenido de cada campo (las contraseñas, con puntos) */
+  private pintarCampos(): void {
+    for (const c of this.authCampos) {
+      const valor = c.input?.el.value ?? "";
+      const activo = c === this.campoActivo;
+      const visible = c.secreto ? "•".repeat(valor.length) : valor;
+      c.texto.setText(visible + (activo ? "▌" : ""));
+      c.fondo.setStrokeStyle(1, activo ? 0x8c7ce7 : 0x6d6d94, 1);
     }
   }
 
-  private closeLoginModal(): void {
-    this.loginModalOpen = false;
+  private enfocarCampo(c: CampoAuth): void {
+    this.campoActivo = c;
+    c.input?.focus();
+    this.pintarCampos();
+  }
 
-    // Cerrar sin guardar descarta los colores que se estaban probando.
-    if (this.loginPaletteOnOpen) {
-      this.palette = this.loginPaletteOnOpen;
-      this.loginPaletteOnOpen = null;
+  private enfocarSiguiente(): void {
+    const i = this.authCampos.indexOf(this.campoActivo as CampoAuth);
+    const siguiente = this.authCampos[(i + 1) % this.authCampos.length];
+    if (siguiente) this.enfocarCampo(siguiente);
+  }
+
+  private valorCampo(clave: CampoClave): string {
+    return this.authCampos.find((c) => c.clave === clave)?.input?.el.value ?? "";
+  }
+
+  private mensajeAuth(texto: string, color = "#ff6b6b"): void {
+    this.authError?.setText(texto).setColor(color);
+  }
+
+  private submitAuth(): void {
+    if (this.authMode === "profile") {
+      // Sólo aspecto: se manda al servidor, que lo guarda en la cuenta
+      net.look(this.palette);
+      this.applyPalette(this.palette);
+      this.paletaAlAbrir = null;
+      this.closeAuthModal();
+      return;
     }
-    this.loginError = null;
 
-    // Quitar SIEMPRE el listener: es lo que antes se acumulaba en cada
-    // apertura (tres aperturas = cada tecla escrita tres veces).
-    if (this.loginKeys) {
-      window.removeEventListener("keydown", this.loginKeys);
-      this.loginKeys = null;
+    const username = this.valorCampo("username").trim();
+    const password = this.valorCampo("password");
+    const nickname = this.valorCampo("nickname").trim();
+    const registro = this.authMode === "register";
+
+    if (username.length < USER_MIN) {
+      return this.mensajeAuth(`El usuario necesita al menos ${USER_MIN} caracteres.`);
+    }
+    if (password.length < PASS_MIN) {
+      return this.mensajeAuth(`La contraseña necesita al menos ${PASS_MIN} caracteres.`);
+    }
+    if (registro && nickname.length === 0) {
+      return this.mensajeAuth("Elige el nombre con el que te verán los demás.");
+    }
+    if (!net.isOnline) {
+      return this.mensajeAuth("Sin conexión con el servidor.");
     }
 
-    this.loginInput?.destroy(); // cierra también el teclado del móvil
-    this.loginInput = null;
+    this.mensajeAuth("Conectando...", "#9a9ad0");
+    net.auth({
+      mode: registro ? "register" : "login",
+      username,
+      password,
+      nickname: registro ? nickname : undefined,
+      look: registro ? this.palette : undefined,
+    });
+  }
 
-    for (const o of this.loginUI) {
+  private cerrarSesion(): void {
+    net.logout();
+    this.paletaAlAbrir = null;
+    this.closeAuthModal();
+    clearSave();
+    this.scene.restart();
+  }
+
+  private closeAuthModal(): void {
+    this.authModalOpen = false;
+
+    // Cerrar sin guardar descarta los colores que se estaban probando
+    if (this.paletaAlAbrir) {
+      this.palette = this.paletaAlAbrir;
+      this.paletaAlAbrir = null;
+    }
+    this.authError = null;
+    this.campoActivo = null;
+
+    // Los <input> viven en el DOM, fuera de Phaser: hay que quitarlos a mano
+    for (const c of this.authCampos) c.input?.destroy();
+    this.authCampos = [];
+
+    for (const o of this.authUI) {
       if (o.active) o.destroy();
     }
-    this.loginUI = [];
+    this.authUI = [];
 
-    // La preview tiene textura y animaciones propias: si no se liberan, cada
-    // apertura del perfil dejaba una textura y siete animaciones huérfanas.
-    // Va DESPUÉS de destruir los sprites, nunca antes.
+    // La preview tiene textura y animaciones propias. Va DESPUÉS de destruir
+    // los sprites que la usaban, nunca antes.
     destroyAvatarAssets(this, PREVIEW_KEY);
 
     this.setGameKeyboard(true);
   }
+
 
   /**
    * Apaga o enciende el teclado del juego. Mientras un modal escribe texto,
@@ -1825,7 +1860,7 @@ export class MainScene extends Phaser.Scene {
   private readonly MENU = { w: 216, h: 84 };
 
   private openPeerMenu(id: string): void {
-    if (this.loginModalOpen) return;
+    if (this.authModalOpen) return;
     this.closePeerMenu();
 
     const peer = this.peers.get(id);

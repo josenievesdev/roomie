@@ -101,6 +101,14 @@ export async function nicknameLibre(nickname: string): Promise<boolean> {
   return fila === undefined;
 }
 
+/** Guarda el aspecto en la cuenta, para que sobreviva al cierre de sesión */
+export async function guardarLook(accountId: string, look: Record<string, number>): Promise<void> {
+  await sql`
+    update avatars set look = ${sql.json(look)}
+     where account_id = ${accountId}
+  `;
+}
+
 // -------------------------------------------------------------------- Dinero
 
 export async function saldoDe(accountId: string): Promise<number> {

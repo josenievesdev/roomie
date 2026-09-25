@@ -26,44 +26,85 @@ const until = async (fn, ms = 4000, step = 50) => {
 
 function makeClient() {
   const sock = io(URL, { transports: ["websocket"], forceNew: true });
-  const c = { sock, id: "", players: [], chats: [] };
+  const c = { sock, id: "", players: [], chats: [], identidad: null, authError: null };
   sock.on("welcome", (p) => {
     c.id = p.id;
     c.players = p.players;
   });
   sock.on("players", (p) => (c.players = p.players));
   sock.on("chat", (m) => c.chats.push(m));
+  sock.on("authOk", (p) => {
+    c.identidad = p;
+    c.authError = null;
+  });
+  sock.on("authError", (e) => {
+    c.authError = e;
+  });
   return c;
 }
+
+// Cada ejecución crea sus propias cuentas, con un sufijo irrepetible: así el
+// test no depende de lo que haya en la base ni deja a nadie fuera si se
+// ejecuta dos veces seguidas.
+const SUFIJO = Date.now().toString(36).slice(-5);
+const CLAVE = "smoke-test-1234";
+const cuentaDe = (nombre) => ({
+  username: `sk${SUFIJO}${nombre}`.slice(0, 16),
+  nickname: `${nombre}${SUFIJO}`.slice(0, 16),
+});
+
+/** Crea la cuenta y espera la confirmación del servidor */
+const registrar = async (c, nombre) =>
+  new Promise((resolve, reject) => {
+    const { username, nickname } = cuentaDe(nombre);
+    const alOk = (p) => {
+      c.sock.off("authError", alError);
+      resolve(p);
+    };
+    const alError = (e) => {
+      c.sock.off("authOk", alOk);
+      reject(new Error(`no se pudo registrar ${username}: ${e.code} ${e.message}`));
+    };
+    c.sock.once("authOk", alOk);
+    c.sock.once("authError", alError);
+    c.sock.emit("auth", {
+      mode: "register",
+      username,
+      password: CLAVE,
+      nickname,
+      look: { shirt: 0x6c5ce7, hair: 0x4a3226 },
+    });
+  });
 const view = (c, id = c.id) => c.players.find((p) => p.id === id);
 const said = (c, text) => c.chats.some((m) => m.text.includes(text));
 
+// El nombre ya NO viaja en `join`: sale de la cuenta autenticada.
 const join = async (c, room, cell) =>
   new Promise((resolve) => {
     c.sock.once("welcome", (p) => {
       c.id = p.id;
       resolve(p);
     });
-    c.sock.emit("join", {
-      name: cell.name,
-      room,
-      col: cell.col,
-      row: cell.row,
-      facing: "down",
-      look: { shirt: 0x6c5ce7, hair: 0x4a3226 },
-    });
+    c.sock.emit("join", { room, col: cell.col, row: cell.row, facing: "down" });
   });
 
 const room1 = loadWorld("public/assets", "room1");
 const room2 = loadWorld("public/assets", "room2");
-const spawn = { ...room1.freeCell(), name: "Ana" };
+const spawn = room1.freeCell();
 
 // ---------- 1. Presencia ----------
 const A = makeClient();
 const B = makeClient();
+
+// Identificarse ANTES de entrar: sin cuenta, el servidor rechaza el join.
+await registrar(A, "Ana");
+await registrar(B, "Beto");
+check(A.identidad !== null && B.identidad !== null, "las dos cuentas se registran y entran");
+check(A.identidad.saldo === 500, "la cuenta nueva arranca con 500 monedas", String(A.identidad?.saldo));
+check(A.identidad.nickname !== B.identidad.nickname, "cada una con su nombre");
 await until(() => A.sock.connected && B.sock.connected, 3000);
 await join(A, "room1", spawn);
-await join(B, "room1", { ...room1.freeCell(), name: "Beto" });
+await join(B, "room1", room1.freeCell());
 check(A.id && B.id && A.id !== B.id, "dos clientes con id distintos (welcome)");
 check(
   await until(() => view(A, B.id) && view(B, A.id)),
@@ -169,11 +210,13 @@ if (desde) {
 
 // ---------- 6. Desconexión ----------
 const C = makeClient();
+await registrar(C, "Carla");
 await until(() => C.sock.connected, 3000);
-await join(C, "room1", { ...room1.freeCell(), name: "Carla" });
-check(await until(() => said(B, "Carla entró")), "aviso de entrada de C");
+await join(C, "room1", room1.freeCell());
+const nickC = C.identidad.nickname;
+check(await until(() => said(B, `${nickC} entró`)), "aviso de entrada de C");
 C.sock.disconnect();
-check(await until(() => said(B, "Carla salió")), "aviso de salida por desconexión");
+check(await until(() => said(B, `${nickC} salió`)), "aviso de salida por desconexión");
 
 // ---------- 7. Cambio de sala ----------
 A.sock.emit("room", { room: "room2", ...room2.freeCell(), facing: "up" });

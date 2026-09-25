@@ -1,6 +1,9 @@
 import { io, Socket } from "socket.io-client";
 import type { Cell } from "../utils/pathfinding.ts";
 import type {
+  AuthErrorPayload,
+  AuthOkPayload,
+  AuthPayload,
   ChatPayload,
   ClientEvents,
   JoinErrorPayload,
@@ -23,20 +26,31 @@ export type NetHandlers = {
   onChat?: (msg: ChatPayload) => void;
   onStatus?: (online: boolean) => void;
   onJoinError?: (err: JoinErrorPayload) => void;
+  onAuthOk?: (p: AuthOkPayload) => void;
+  onAuthError?: (err: AuthErrorPayload) => void;
 };
 
-const NAME_KEY = "roomie:name";
+/**
+ * Token de sesión. Es lo ÚNICO de tu identidad que guarda el navegador: el
+ * nombre, el aspecto y el saldo vienen siempre del servidor, que es quien los
+ * tiene en la base de datos.
+ */
+const TOKEN_KEY = "roomie:token";
 
-/** Nombre estable del jugador (persistido en localStorage) */
-export function playerName(): string {
-  const fallback = `Huésped-${Math.floor(100 + Math.random() * 900)}`;
+export function tokenGuardado(): string | null {
   try {
-    const saved = localStorage.getItem(NAME_KEY);
-    if (saved && saved.trim()) return saved.trim().slice(0, 16);
-    localStorage.setItem(NAME_KEY, fallback);
-    return fallback;
+    return localStorage.getItem(TOKEN_KEY);
   } catch {
-    return fallback;
+    return null; // modo privado
+  }
+}
+
+function guardarToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // sin almacenamiento: habrá que entrar cada vez
   }
 }
 
@@ -51,6 +65,12 @@ class NetClient {
 
   /** Tu id en el servidor (vacío si no hay conexión) */
   id = "";
+  /** Identidad confirmada por el servidor (null mientras no hayas entrado) */
+  identidad: AuthOkPayload | null = null;
+
+  get autenticado(): boolean {
+    return this.identidad !== null;
+  }
 
   get isOnline(): boolean {
     return this.online;
@@ -96,8 +116,10 @@ class NetClient {
     socket.on("connect", () => {
       this.online = true;
       this.id = socket.id ?? "";
-      // Reentrar con la última sala conocida (reconexión o primera entrada)
-      if (this.lastWhere) socket.emit("join", this.lastWhere);
+      // Al reconectar hay que volver a demostrar quién eres: el servidor
+      // guarda la sesión por socket, y este socket es nuevo.
+      const token = tokenGuardado();
+      if (token) socket.emit("resume", { token });
       this.handlers.onStatus?.(true);
     });
 
@@ -105,6 +127,10 @@ class NetClient {
       this.online = false;
       this.id = "";
       this.players = [];
+      // La identidad se revalida al reconectar, así que aquí se olvida: si no,
+      // el juego creería estar autenticado con un socket que ya no existe.
+      this.identidad = null;
+      this.joined = false;
       this.handlers.onStatus?.(false);
       this.handlers.onPlayers?.([]);
     });
@@ -118,6 +144,35 @@ class NetClient {
 
     socket.on("chat", (msg) => this.handlers.onChat?.(msg));
     socket.on("joinError", (err) => this.handlers.onJoinError?.(err));
+
+    socket.on("authOk", (p) => {
+      this.identidad = p;
+      guardarToken(p.token);
+      this.handlers.onAuthOk?.(p);
+    });
+
+    socket.on("authError", (err) => {
+      this.identidad = null;
+      // Un token caducado no sirve de nada: se tira para no reintentar con él
+      // en bucle en cada reconexión.
+      if (err.code === "BAD_CREDENTIALS") guardarToken(null);
+      this.handlers.onAuthError?.(err);
+    });
+  }
+
+  /** Crear cuenta o entrar con usuario y contraseña */
+  auth(p: AuthPayload): void {
+    this.socket?.emit("auth", p);
+  }
+
+  /** Cerrar sesión: se olvida el token aquí y en el servidor */
+  logout(): void {
+    this.socket?.emit("logout");
+    guardarToken(null);
+    this.identidad = null;
+    this.joined = false;
+    this.lastWhere = null;
+    this.players = [];
   }
 
   private setPlayers(list: PlayerView[]): void {
@@ -152,8 +207,7 @@ class NetClient {
   }
 
   look(look: Look): void {
-    if (!this.lastWhere) return;
-    this.lastWhere = { ...this.lastWhere, look };
+    if (this.identidad) this.identidad = { ...this.identidad, look };
     if (this.online) this.socket?.emit("look", look);
   }
 

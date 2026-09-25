@@ -12,19 +12,28 @@ import {
   KEYBOARD_SPEED,
   MAX_PATH_CELLS,
   NAME_MAX,
+  PASS_MAX,
+  PASS_MIN,
   ROOMS,
   TICK_MS,
+  USER_MAX,
+  USER_MIN,
   isRoomId,
+  type AuthErrorCode,
+  type AuthPayload,
   type ChatPayload,
   type ClientEvents,
   type JoinErrorPayload,
   type JoinPayload,
   type Look,
   type PlayerView,
+  type ResumePayload,
   type RoomId,
   type ServerEvents,
 } from "../../src/net/protocol.ts";
 import { cellKey, loadWorlds, type RoomWorld } from "./world.ts";
+import { cerrarSesion, entrar, purgar, reanudar, type Sesion } from "./db/auth.ts";
+import { crearCuenta, guardarLook, nicknameLibre, nombreLibre } from "./db/repo.ts";
 
 // Roomie — servidor multijugador (Fase 7).
 //
@@ -41,6 +50,8 @@ const ASSETS = join(HERE, "..", "..", "public", "assets");
 
 type Player = {
   id: string;
+  /** Cuenta autenticada. El nombre sale de aquí, no de lo que diga el cliente. */
+  accountId: string;
   name: string;
   room: RoomId;
   look: Look;
@@ -91,19 +102,12 @@ function sanitizeLook(v: unknown): Look {
   };
 }
 
-/**
- * Dos pestañas del mismo navegador comparten localStorage y llegarían con el
- * MISMO nombre (p. ej. "Huésped-123"): se desduplica aquí para poder distinguirlos.
- */
-let nameSeq = 0;
-function uniqueName(base: string): string {
-  const taken = new Set([...players.values()].map((p) => p.name));
-  if (!taken.has(base)) return base;
-  for (let i = 2; i < 100; i++) {
-    const candidate = `${base} ${i}`.slice(0, NAME_MAX);
-    if (!taken.has(candidate)) return candidate;
-  }
-  return `${base} ${++nameSeq}`.slice(0, NAME_MAX);
+/** Nombre de usuario: letras, números y guiones. Nada más. */
+function sanitizeUser(v: unknown): string {
+  return String(v ?? "")
+    .replace(/[^\p{L}\p{N}_.-]/gu, "")
+    .trim()
+    .slice(0, USER_MAX);
 }
 
 /** Celda de entrada: válida y libre, o la libre más cercana al centro */function spawnCell(world: RoomWorld, col: unknown, row: unknown): Cell {
@@ -230,23 +234,113 @@ const io = new Server<ClientEvents, ServerEvents>(httpServer, {
   serveClient: false,
 });
 
+/** Quién es cada socket. Sin entrada aquí, el socket no puede `join`. */
+const sesiones = new Map<string, Sesion>();
+
 io.on("connection", (socket) => {
   let me: Player | null = null;
 
+  const fallo = (code: AuthErrorCode, message: string): void => {
+    socket.emit("authError", { code, message });
+  };
+
+  /** Confirma la identidad al cliente y la deja lista para `join` */
+  const confirmar = (s: Sesion): void => {
+    sesiones.set(socket.id, s);
+    socket.emit("authOk", {
+      token: s.token,
+      username: s.account.username,
+      nickname: s.avatar.nickname,
+      look: sanitizeLook(s.avatar.look),
+      saldo: s.saldo,
+    });
+  };
+
+  socket.on("auth", async (p: AuthPayload) => {
+    try {
+      const username = sanitizeUser(p?.username);
+      const password = String(p?.password ?? "");
+
+      if (username.length < USER_MIN) {
+        return fallo("INVALID", `El usuario necesita al menos ${USER_MIN} caracteres.`);
+      }
+      if (password.length < PASS_MIN || password.length > PASS_MAX) {
+        return fallo("INVALID", `La contraseña necesita entre ${PASS_MIN} y ${PASS_MAX} caracteres.`);
+      }
+
+      if (p?.mode === "register") {
+        const nickname = sanitizeName(p?.nickname);
+        if (!(await nombreLibre(username))) {
+          return fallo("USERNAME_TAKEN", `El usuario "${username}" ya existe.`);
+        }
+        if (!(await nicknameLibre(nickname))) {
+          return fallo("NICKNAME_TAKEN", `El nombre "${nickname}" ya está cogido.`);
+        }
+        const creada = await crearCuenta(username, password, nickname, sanitizeLook(p?.look));
+        // Recién creada, se entra directo: no tiene sentido pedir la
+        // contraseña que acaba de escribir.
+        const s = await entrar(username, password);
+        if ("error" in s) return fallo(s.error, "No se pudo iniciar la sesión recién creada.");
+        console.log(`[roomie] alta: ${username} (${creada.avatar.nickname})`);
+        return confirmar(s);
+      }
+
+      const s = await entrar(username, password);
+      if ("error" in s) {
+        return s.error === "RATE_LIMITED"
+          ? fallo("RATE_LIMITED", "Demasiados intentos fallidos. Prueba dentro de un rato.")
+          : fallo("BAD_CREDENTIALS", "Usuario o contraseña incorrectos.");
+      }
+      confirmar(s);
+    } catch (e) {
+      console.error("[roomie] auth:", e);
+      fallo("NO_DB", "No se pudo hablar con la base de datos.");
+    }
+  });
+
+  socket.on("resume", async (p: ResumePayload) => {
+    try {
+      const datos = await reanudar(String(p?.token ?? ""));
+      if (!datos) return fallo("BAD_CREDENTIALS", "La sesión caducó.");
+      confirmar({ ...datos, token: String(p.token) });
+    } catch (e) {
+      console.error("[roomie] resume:", e);
+      fallo("NO_DB", "No se pudo hablar con la base de datos.");
+    }
+  });
+
+  socket.on("logout", async () => {
+    const s = sesiones.get(socket.id);
+    sesiones.delete(socket.id);
+    if (me) {
+      players.delete(me.id);
+      system(me.room, `${me.name} salió de la sala`);
+      me = null;
+    }
+    if (s) await cerrarSesion(s.token).catch(() => {});
+  });
+
   socket.on("join", (payload: JoinPayload) => {
     if (me) return; // ya estaba dentro
+
+    // Sin identidad no se entra. El nombre y el aspecto salen de la cuenta:
+    // el cliente ya no puede decir cómo se llama.
+    const sesion = sesiones.get(socket.id);
+    if (!sesion) {
+      socket.emit("authError", { code: "BAD_CREDENTIALS", message: "Entra con tu cuenta primero." });
+      return;
+    }
+
     const room = isRoomId(payload?.room) ? payload.room : ROOMS[0];
     const world = worlds.get(room)!;
-    const desiredName = sanitizeName(payload?.name);
+    const desiredName = sesion.avatar.nickname;
 
-    // Rechazar si el nombre ya está en uso en ESA sala
-    const nameTaken = [...players.values()].some(
-      (p) => p.room === room && p.name.toLowerCase() === desiredName.toLowerCase()
-    );
-    if (nameTaken) {
+    // La misma cuenta no puede estar dos veces dentro (dos pestañas)
+    const yaDentro = [...players.values()].some((p) => p.accountId === sesion.account.id);
+    if (yaDentro) {
       const err: JoinErrorPayload = {
         code: "DUPLICATE_NAME",
-        message: `El nombre "${desiredName}" ya está en uso en esta sala.`,
+        message: "Esa cuenta ya está conectada en otra pestaña.",
       };
       socket.emit("joinError", err);
       return;
@@ -256,9 +350,10 @@ io.on("connection", (socket) => {
 
     const player: Player = {
       id: socket.id,
+      accountId: sesion.account.id,
       name: desiredName,
       room,
-      look: sanitizeLook(payload?.look),
+      look: sanitizeLook(sesion.avatar.look),
       world,
       state: new AvatarState(
         { cols: world.cols, rows: world.rows, isBlocked: world.isBlocked },
@@ -299,7 +394,18 @@ io.on("connection", (socket) => {
   });
 
   socket.on("look", (look: Look) => {
-    if (me) me.look = sanitizeLook(look);
+    if (!me) return;
+    const limpio = sanitizeLook(look);
+    me.look = limpio;
+    // Y a la cuenta: si sólo viviera en memoria, al cerrar sesión volverías a
+    // salir con los colores por defecto.
+    const sesion = sesiones.get(socket.id);
+    if (sesion) {
+      sesion.avatar.look = limpio;
+      guardarLook(sesion.account.id, limpio).catch((e) =>
+        console.error("[roomie] guardar aspecto:", e),
+      );
+    }
   });
 
   socket.on("room", (p) => {
@@ -347,6 +453,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
+    sesiones.delete(socket.id);
     if (!me) return;
     players.delete(me.id);
     system(me.room, `${me.name} salió de la sala`);
@@ -410,6 +517,18 @@ httpServer.listen(PORT, () => {
   const rooms = ROOMS.join(", ");
   console.log(`[roomie] servidor en :${PORT} — salas: ${rooms}`);
 });
+
+// Sesiones caducadas e intentos viejos, una vez al arrancar y cada 6 h. No
+// hace falta un cron para esto.
+const limpiar = (): void => {
+  purgar()
+    .then(({ sesiones: s, intentos: i }) => {
+      if (s || i) console.log(`[roomie] purga: ${s} sesión(es), ${i} intento(s)`);
+    })
+    .catch((e) => console.error("[roomie] purga:", e));
+};
+limpiar();
+setInterval(limpiar, 6 * 60 * 60 * 1000).unref();
 
 // Cierre limpio (Ctrl+C / `npm stop`)
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
