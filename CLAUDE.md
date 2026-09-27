@@ -78,7 +78,8 @@ nueva: estilo en `src/state/look.ts` + forma en `tools/avatar/model.mjs` +
 **Los muebles también se generan.** Modelo en `tools/muebles/modelos.mjs` +
 entrada en el catálogo + `node tools/genmuebles.mjs` + su fila en la tienda
 (migración): `db:check` falla si el cliente dibuja algo que no se puede
-comprar. El color lo pone el tema de la sala, no el PNG.
+comprar. El color lo pone el tema de la sala, no el PNG. Lo que pone la
+ciudad (farolas, árboles, el monumento) lleva `mundo: true` y no se vende.
 
 **Todo texto pasa por el kit** (`texto()` de `src/ui/kit.ts`): la fuente
 pixel propia a 12 px (24 sólo el logo), nunca un `fontFamily` suelto. Las
@@ -133,10 +134,11 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
 
 ## Assets
 
-`node tools/genassets.mjs` regenera el tileset, las paredes **y los dos mapas**.
+`node tools/genassets.mjs` regenera el tileset, las paredes, las fachadas **y los
+tres mapas** (plaza, room1, room2).
 Si editas una sala en Tiled y luego lo ejecutas, la pierdes. Para retocar sólo
 el arte: `--solo=paredes` o `--solo=suelos` (los mapas no se tocan).
 
 `node tools/genavatar.mjs` regenera las 17 capas del avatar (~8 s);
-`node tools/genmuebles.mjs`, las 41 variantes del mobiliario (~1 s);
+`node tools/genmuebles.mjs`, las 47 variantes del mobiliario (~1 s);
 `node tools/genfuente.mjs`, la fuente pixel.

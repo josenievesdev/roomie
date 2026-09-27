@@ -125,10 +125,20 @@ export function crearLuz(scene: Phaser.Scene, tipo: string, col: number, row: nu
   const lado = ladoPared(col, row);
   const signo = lado === "izq" ? -1 : 1;
 
-  if (tipo === "lampara") {
+  if (tipo === "lampara" || tipo === "farola") {
+    // La farola alumbra más suelo: está más alta
+    const [rx, ry] = tipo === "farola" ? [66, 33] : [46, 23];
     scene.add
-      .image(pos.x, pos.y, halo(scene, `halo:suelo:${tema.nombre}`, 46, 23, luz))
+      .image(pos.x, pos.y, halo(scene, `halo:suelo:${tipo}:${tema.nombre}`, rx, ry, luz))
       .setDepth(LAYER.ALFOMBRA + 0.5)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    return;
+  }
+  if (tipo === "llave") {
+    // El rombo del ojo de la Llave brilla (a unos 103 px del suelo)
+    scene.add
+      .image(pos.x, pos.y - 103, halo(scene, `halo:llave:${tema.nombre}`, 26, 26, luz))
+      .setDepth(worldDepth(pos.y) + 0.05)
       .setBlendMode(Phaser.BlendModes.ADD);
     return;
   }

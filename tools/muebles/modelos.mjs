@@ -471,6 +471,160 @@ function poster() {
   };
 }
 
+// ================================================================= La ciudad
+//
+// Lo que amuebla La Manzana: el monumento, farolas, árboles, bancos y
+// jardineras. Son "del mundo" (ver `mundo` en el catálogo): la ciudad los
+// pone, no se venden. Todo mide una celda, como el resto del mobiliario.
+
+/** Dirección horizontal de la pantalla en el espacio del modelo (derecha) */
+const PANTALLA_X = norm(v3(1, 0, -1));
+
+/**
+ * La Llave: el monumento de la Plaza. Una llave dorada gigante clavada en un
+ * pedestal de piedra con forma de cerradura: todo el que llega a la ciudad
+ * viene a por las llaves de su casa. En el ojo de la llave, el rombo de
+ * Roomie, que brilla.
+ */
+function llave() {
+  const u = PANTALLA_X;
+  const Y = v3(0, 1, 0);
+  /** Normal del plano de la llave (hacia la cámara) */
+  const n = v3(-u.z, 0, u.x);
+  // Un punto de la llave: `a` a lo ancho de la pantalla, `y` hacia arriba
+  const en = (a, y, z = 0) => add(add(mul(u, a), v3(0, y, 0)), v3(0, 0, z));
+  /** Caja alineada con la llave (y no con la rejilla) */
+  const pieza = (a, y, hx, hy, hz) => boxAxes(en(a, y), u, Y, n, v3(hx, hy, hz), 0.9);
+  // El ojo: un aro vertical, de cara a la cámara, hecho de cápsulas
+  const aro = (cy, R, r, n = 18) =>
+    Array.from({ length: n }, (_, i) => {
+      const t0 = (i / n) * Math.PI * 2;
+      const t1 = ((i + 1) / n) * Math.PI * 2;
+      const p = (t) => add(mul(u, Math.cos(t) * R), add(v3(0, cy, 0), mul(Y, Math.sin(t) * R)));
+      return capsule(p(t0), p(t1), r);
+    });
+  const TOPE = 27; // altura de la cara de arriba del pedestal
+  const OJO = 118; // centro del ojo
+  return {
+    grupos: [
+      // Pedestal en tres cuerpos, cada vez más estrecho
+      grupo(M.PIEDRA, 1.2, [roundBox(v3(0, 4, 0), 20, 4, 20, 1.4)]),
+      grupo(M.PIEDRA, 1.2, [roundBox(v3(0, 13, 0), 16, 5, 16, 1.2)]),
+      grupo(M.PIEDRA_OSC, 0.8, [roundBox(v3(0, 22.5, 0), 12.5, 4.5, 12.5, 1)]),
+      // La cerradura del pedestal, en su cara de delante: donde entra la llave
+      grupo(M.OSCURO, 0.3, [roundBox(en(0, 21, 12.2), 2.2, 3, 0.6, 0.5), roundBox(en(0, 16.5, 12.2), 1.1, 2.5, 0.6, 0.4)]),
+      // La llave: paletón junto al pedestal, caña hacia arriba y el ojo arriba
+      grupo(M.ACENTO, 0.9, [
+        cylinder(v3(0, (TOPE + OJO - 18) / 2, 0), 3.2, (OJO - 18 - TOPE) / 2, 0.8),
+        roundBox(en(0, TOPE + 2, 0), 5.5, 2.2, 5.5, 1), // collarín sobre el pedestal
+        pieza(7, 44, 4.5, 4, 2.4), // dientes del paletón
+        pieza(6, 56, 3.5, 3.2, 2.4),
+        pieza(0, OJO - 22, 6, 2, 3), // anillo bajo el ojo
+        ...aro(OJO, 15, 3.3),
+      ]),
+      // El rombo de Roomie en el ojo, encendido
+      grupo(M.LUZ, 0.6, [boxAxes(v3(0, OJO, 0), norm(add(u, Y)), norm(add(mul(u, -1), Y)), n, v3(5.5, 5.5, 1.2), 0.6)], {
+        emisivo: true,
+      }),
+    ],
+    sombra: { rx: 26, ry: 12 },
+  };
+}
+
+/** Farola de hierro con farol, como las de las plazas de siempre */
+function farola() {
+  return {
+    grupos: [
+      grupo(M.METAL, 0.8, [
+        cylinder(v3(0, 3, 0), 3.6, 3, 0.6),
+        cylinder(v3(0, 8, 0), 2.2, 2.2, 0.5),
+        cylinder(v3(0, 48, 0), 1.3, 42, 0.3),
+        cylinder(v3(0, 89, 0), 2.6, 1.2, 0.4), // soporte del farol
+      ]),
+      grupo(M.LUZ, 0.5, [cappedCone(v3(0, 0, 0), 101, 90.5, 5.2, 3.6, 0.6)], { emisivo: true }),
+      grupo(M.METAL, 0.5, [cappedCone(v3(0, 0, 0), 106, 101, 1.4, 6.6, 0.5), sphere(v3(0, 107.5, 0), 1.4)]),
+    ],
+    sombra: { rx: 9, ry: 4 },
+  };
+}
+
+/** Árbol de plaza: tronco y copa de varias bolas, con alcorque de tierra */
+function arbol() {
+  const r = azar(21);
+  const copa = [];
+  const claras = [];
+  const bolas = [
+    [0, 74, 0, 19],
+    [11, 66, 5, 13],
+    [-11, 67, -4, 13],
+    [5, 86, -7, 13],
+    [-7, 82, 9, 12],
+    [2, 62, 12, 11],
+    [-3, 92, 2, 10],
+  ];
+  bolas.forEach(([x, y, z, radio], i) => {
+    const s = sphere(v3(x + r() * 2 - 1, y + r() * 2 - 1, z + r() * 2 - 1), radio);
+    (i % 3 === 1 ? claras : copa).push(s);
+  });
+  return {
+    grupos: [
+      grupo(M.TIERRA, 0.2, [cylinder(v3(0, 0.4, 0), 10, 0.4, 0)]),
+      grupo(M.MADERA_OSC, 1, [
+        cappedCone(v3(0, 0, 0), 64, 0.5, 2.4, 4.4, 0.8),
+        capsule(v3(0, 50, 0), v3(7, 62, 3), 1.6), // rama
+      ]),
+      grupo(M.PLANTA, 2.5, copa),
+      grupo(M.PLANTA_B, 2.5, claras),
+    ],
+    sombra: { rx: 28, ry: 13 },
+  };
+}
+
+/** Banco de listones de madera con patas de hierro; se mira a +Z */
+function banco() {
+  const listones = [5.5, 0.5, -4.5].map((z) => roundBox(v3(0, 13.4, z), 19, 1.2, 2.2, 0.6));
+  const respaldo = [19.5, 26].map((y) => roundBox(v3(0, y, -9.8), 19, 2.2, 1.1, 0.6));
+  const patas = [-15.5, 15.5].flatMap((x) => [
+    roundBox(v3(x, 6.4, 3.5), 1.1, 6.4, 1.1, 0.4),
+    roundBox(v3(x, 12, -9.8), 1.1, 12, 1.1, 0.4),
+    roundBox(v3(x, 12.2, -2), 1.1, 0.9, 8.8, 0.3), // travesaño
+  ]);
+  return {
+    grupos: [
+      grupo(M.MADERA, 0.4, listones),
+      grupo(M.MADERA, 0.4, respaldo),
+      grupo(M.METAL, 0.3, patas),
+    ],
+    sombra: { rx: 24, ry: 10 },
+  };
+}
+
+/** Jardinera de piedra con flores */
+function jardinera() {
+  const r = azar(33);
+  const flores = { rosa: [], sol: [] };
+  const hojas = [];
+  for (let i = 0; i < 18; i++) {
+    const a = i * 2.39996;
+    const d = 3 + (i % 5) * 2.3;
+    const x = Math.cos(a) * d;
+    const z = Math.sin(a) * d;
+    hojas.push(sphere(v3(x, 16 + r() * 2, z), 3.2 + r()));
+    if (i % 2 === 0) (i % 4 === 0 ? flores.rosa : flores.sol).push(sphere(v3(x + 0.5, 19.5 + r() * 2, z + 0.5), 1.6));
+  }
+  return {
+    grupos: [
+      grupo(M.PIEDRA, 1, [roundBox(v3(0, 7, 0), 16, 7, 16, 1.6)]),
+      grupo(M.PIEDRA_OSC, 0.5, [roundBox(v3(0, 14.2, 0), 16.6, 0.9, 16.6, 0.6)]),
+      grupo(M.TIERRA, 0.2, [roundBox(v3(0, 14.6, 0), 14, 0.6, 14, 0.2)]),
+      grupo(M.PLANTA, 1.4, hojas),
+      grupo(M.NEON_ROSA, 0.3, flores.rosa),
+      grupo(M.SOL, 0.3, flores.sol),
+    ],
+    sombra: { rx: 21, ry: 9 },
+  };
+}
+
 // ================================================================= Catálogo
 
 /**
@@ -482,6 +636,10 @@ export const VARIANTES = [
   ...["sofa", "mesa", "barra", "taburete", "planta", "lampara", "altavoz"].map((t) => ({ nombre: t, dir: 5, modelo: MODELOS_SUELO()[t] })),
   { nombre: "estanteria", dir: 5, modelo: estanteria },
   { nombre: "estanteria-se", dir: 3, modelo: estanteria },
+  // La ciudad
+  ...Object.entries({ llave, farola, arbol, jardinera }).map(([nombre, modelo]) => ({ nombre, dir: 5, modelo })),
+  { nombre: "banco", dir: 5, modelo: banco },
+  { nombre: "banco-se", dir: 3, modelo: banco },
   ...Array.from({ length: 16 }, (_, m) => ({ nombre: `alfombra-${m}`, dir: 5, modelo: () => alfombra(m) })),
   // De pared: "der" cuelga de la pared de la fila 0; "izq", de la columna 0
   ...Object.entries({ puerta, ventana, cuadro, reloj, aplique, estante, neon, poster }).flatMap(([t, modelo]) => [

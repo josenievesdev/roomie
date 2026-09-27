@@ -57,6 +57,9 @@ export const MAT_MUEBLE = {
   SOL: 61,
   NEON_ROSA: 62,
   NOCHE: 63,
+  /** Piedra de la ciudad: pedestales, jardineras */
+  PIEDRA: 64,
+  PIEDRA_OSC: 65,
 } as const;
 
 const M = MAT_MUEBLE;
@@ -78,6 +81,8 @@ const FIJOS: Record<number, Rampa> = {
   [M.SOL]: rampa(0xffd36b, { contraste: 0.5 }),
   [M.NEON_ROSA]: rampa(0xff6fb0, { contraste: 0.6 }),
   [M.NOCHE]: rampa(0x2c2450),
+  [M.PIEDRA]: rampa(0xc9c1b1, { contraste: 0.8 }),
+  [M.PIEDRA_OSC]: rampa(0x9a9282, { contraste: 0.8 }),
 };
 
 const cache = new WeakMap<RoomTheme, (mat: number) => Rampa>();

@@ -19,7 +19,12 @@ export type FurnitureDef = {
    * se apoya el trasero, y hacia dónde mira quien se sienta. Lo usan el
    * servidor (hacia dónde mira) y el cliente (a qué altura dibujarlo).
    */
-  sit?: { alto: number; dir: Facing };
+  sit?: {
+    alto: number;
+    dir: Facing;
+    /** Hacia dónde se mira si el mueble está girado (variante "se") */
+    dirGirado?: Facing;
+  };
   /**
    * Plano, sin altura (alfombras): se dibuja pegado al suelo, por debajo de
    * cualquier mueble o avatar, y cada celda elige su variante según qué
@@ -36,6 +41,11 @@ export type FurnitureDef = {
    * esa columna; si no, mira a +row como todos.
    */
   orientable?: true;
+  /**
+   * Del mundo: lo pone la ciudad (farolas, árboles, el monumento) y no se
+   * vende. `db:check` no exige que esté en la tienda.
+   */
+  mundo?: true;
   /** Sólo para leer el código: qué es */
   nombre: string;
 };
@@ -69,6 +79,14 @@ export const FURNITURE: Record<string, FurnitureDef> = {
   estante: { nombre: "Balda con libros", blocks: false, pared: true },
   neon: { nombre: "Neón", blocks: false, pared: true },
   poster: { nombre: "Póster", blocks: false, pared: true },
+
+  // --- La ciudad (del mundo, no se venden) ---
+  llave: { nombre: "La Llave (monumento)", blocks: true, mundo: true },
+  farola: { nombre: "Farola", blocks: true, mundo: true },
+  arbol: { nombre: "Árbol", blocks: true, mundo: true },
+  jardinera: { nombre: "Jardinera", blocks: true, mundo: true },
+  // El banco se mira al suroeste (5); girado ("se"), al sureste (3)
+  banco: { nombre: "Banco", blocks: true, orientable: true, mundo: true, sit: { alto: 13, dir: 5, dirGirado: 3 } },
 };
 
 export type FurnitureKind = keyof typeof FURNITURE;
@@ -82,9 +100,20 @@ export function isSeat(kind: string | undefined): boolean {
   return isFurniture(kind) && FURNITURE[kind].sit !== undefined;
 }
 
+/**
+ * ¿Va girado? Lo orientable se gira pegado a la pared de la columna 0, o si
+ * el mapa lo pide (propiedad `girado`). Cliente y servidor usan esta misma
+ * regla, así que los dos saben hacia dónde mira quien se sienta.
+ */
+export function vaGirado(kind: string | undefined, col: number, girado: boolean): boolean {
+  return isFurniture(kind) && FURNITURE[kind].orientable === true && (col === 0 || girado);
+}
+
 /** El asiento de un mueble en una celda, listo para `AvatarState` (o null) */
-export function seatAt(kind: string | undefined, col: number, row: number): SitTarget | null {
+export function seatAt(kind: string | undefined, col: number, row: number, girado = false): SitTarget | null {
   if (!isFurniture(kind)) return null;
   const s = FURNITURE[kind].sit;
-  return s ? { col, row, alto: s.alto, dir: s.dir } : null;
+  if (!s) return null;
+  const dir = vaGirado(kind, col, girado) && s.dirGirado !== undefined ? s.dirGirado : s.dir;
+  return { col, row, alto: s.alto, dir };
 }

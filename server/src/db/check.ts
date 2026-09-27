@@ -56,7 +56,8 @@ try {
   // El catálogo de la tienda tiene que casar con lo que el cliente sabe dibujar
   console.log("\n=== Catálogo ===");
   const enBd = (await sql<{ code: string }[]>`select code from catalog_items`).map((r) => r.code);
-  const enCodigo = Object.keys(FURNITURE);
+  // Lo que pone la ciudad (farolas, el monumento) no se vende
+  const enCodigo = Object.keys(FURNITURE).filter((c) => !FURNITURE[c].mundo);
   const faltan = enCodigo.filter((c) => !enBd.includes(c));
   const sobran = enBd.filter((c) => !enCodigo.includes(c));
   ok(faltan.length === 0, "todo lo que el cliente dibuja se puede comprar", faltan.join(", "));

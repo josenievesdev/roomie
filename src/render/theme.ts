@@ -27,6 +27,7 @@ export type RoomPalette = {
 };
 
 export type RoomTheme = {
+  /** Nombre de la sala, el que sale en el HUD */
   nombre: string;
   /** Frame de `walls.png` para la pared de la fila 0 (sube a la derecha) */
   wallRight: number;
@@ -40,9 +41,26 @@ export type RoomTheme = {
 const wallFrames = (tema: number) => ({ wallRight: tema * 2, wallLeft: tema * 2 + 1 });
 
 export const ROOM_THEMES: Record<RoomId, RoomTheme> = {
-  // Plaza / recibidor: terracota y crema, madera, latón y plantas
+  // La Plaza de la Llave: la calle. Piedra, hierro oscuro en las farolas,
+  // madera cálida en los bancos y el oro de la Llave. (Las paredes no se usan:
+  // al aire libre van fachadas, que dice el mapa.)
+  plaza: {
+    nombre: "Plaza de la Llave",
+    ...wallFrames(2),
+    door: { hoja: 0x6b4a32, marco: 0x3a2a1e, pomo: 0xf1c40f },
+    palette: {
+      tapizado: 0xb5484a,
+      madera: 0xa06a3c, // bancos
+      metal: 0x3f4654, // hierro de las farolas
+      acento: 0xf2c14e, // el oro de la Llave
+      alfombra: 0xb5484a,
+      planta: 0x4f9d57,
+      maceta: 0x9a9282,
+    },
+  },
+  // Recibidor: terracota y crema, madera, latón y plantas
   room1: {
-    nombre: "Plaza Central",
+    nombre: "Salón Central",
     ...wallFrames(0),
     door: { hoja: 0x8b5a2b, marco: 0x4a2f18, pomo: 0xf1c40f },
     palette: {

@@ -1,8 +1,11 @@
 // Genera los assets base de Roomie:
-//  - public/assets/tileset.png → suelos isométricos 64×32, 3 por tema
-//  - public/assets/walls.png   → caras de pared 32×112, 2 por tema (izq. y der.)
-//  - public/assets/room1.json  → sala 12×12 en formato Tiled (editable con Tiled)
-//  - public/assets/room2.json  → sala 14×10 en formato Tiled
+//  - public/assets/tileset.png  → suelos isométricos 64×32, 5 por tema
+//    (A, B, cenefa, césped y asfalto)
+//  - public/assets/walls.png    → caras de pared 32×112, 2 por tema (izq. y der.)
+//  - public/assets/fachadas.png → fachadas de edificio 32×168 para la calle
+//  - public/assets/plaza.json   → la Plaza de la Llave, 20×20, al aire libre
+//  - public/assets/room1.json   → sala 12×12 en formato Tiled (editable con Tiled)
+//  - public/assets/room2.json   → sala 14×10 en formato Tiled
 //
 // Todo se dibuja PÍXEL A PÍXEL, no con formas vectoriales: es lo que separa
 // "rombos planos de colores" de pixel art de verdad. Cada superficie lleva
@@ -119,7 +122,24 @@ const THEMES = [
     wallRail: hex("#5b7fd4"),
     wallBase: hex("#1b2540"),
   },
+  {
+    // La calle: adoquín de piedra clara con juntas, y mosaico dorado
+    key: "plaza",
+    nombre: "Plaza (exterior)",
+    floorA: hex("#c4bcae"),
+    floorB: hex("#a9a193"),
+    floorJoint: hex("#7c766c"),
+    floorAccent: hex("#e3b54f"),
+    wall: hex("#c9b89a"),
+    wallRail: hex("#8a7a5e"),
+    wallBase: hex("#5e5446"),
+    adoquin: true,
+  },
 ];
+
+/** Césped y asfalto: iguales en cualquier tema (son de la calle) */
+const CESPED = { a: hex("#6aa84f"), b: hex("#57913f"), brizna: hex("#8cc86a"), sombra: hex("#46783a") };
+const ASFALTO = { a: hex("#4a4d57"), b: hex("#40434c"), grano: hex("#5b5f6a"), junta: hex("#34363e") };
 
 /** Tramado ordenado 4×4: rompe el color plano sin ensuciar */
 const BAYER = [
@@ -131,8 +151,47 @@ const BAYER = [
 const dither = (x, y, fuerza) => (BAYER[y & 3][x & 3] / 15 - 0.5) * fuerza;
 
 // ---------- Suelo: rombo 64×32 ----------
-// variante 0 = baldosa A, 1 = baldosa B, 2 = cenefa decorativa
+// variante 0 = baldosa A, 1 = baldosa B, 2 = cenefa decorativa,
+// 3 = césped, 4 = asfalto (estos dos, iguales en todos los temas)
+const SUELO = { A: 0, B: 1, CENEFA: 2, CESPED: 3, ASFALTO: 4 };
+
+/** Césped: verde tramado con briznas sueltas; sin juntas, para que las celdas se fundan */
+function drawCesped(cv, ox) {
+  for (let y = 0; y < TILE_H; y++) {
+    for (let x = 0; x < TILE_W; x++) {
+      const nx = (x + 0.5 - TILE_W / 2) / (TILE_W / 2);
+      const ny = (y + 0.5 - TILE_H / 2) / (TILE_H / 2);
+      if (Math.abs(nx) + Math.abs(ny) > 1) continue;
+      let c = shade(BAYER[y & 3][x & 3] > 7 ? CESPED.a : CESPED.b, dither(x, y, 0.06));
+      // Briznas: puntos claros con su sombra debajo, repartidos sin patrón visible
+      const h = (x * 73856093) ^ (y * 19349663);
+      if ((h & 31) === 0) c = CESPED.brizna;
+      else if (((h >> 5) & 63) === 1) c = CESPED.sombra;
+      px(cv, ox + x, y, c);
+    }
+  }
+}
+
+/** Asfalto: gris oscuro con grano, junta suave en el borde */
+function drawAsfalto(cv, ox) {
+  for (let y = 0; y < TILE_H; y++) {
+    for (let x = 0; x < TILE_W; x++) {
+      const nx = (x + 0.5 - TILE_W / 2) / (TILE_W / 2);
+      const ny = (y + 0.5 - TILE_H / 2) / (TILE_H / 2);
+      const d = Math.abs(nx) + Math.abs(ny);
+      if (d > 1) continue;
+      let c = shade(ASFALTO.a, dither(x, y, 0.08));
+      const h = (x * 83492791) ^ (y * 2654435761);
+      if ((h & 15) === 0) c = ASFALTO.grano;
+      if (d > 0.95) c = ASFALTO.junta;
+      px(cv, ox + x, y, c);
+    }
+  }
+}
+
 function drawFloorTile(cv, ox, tema, variante) {
+  if (variante === SUELO.CESPED) return drawCesped(cv, ox);
+  if (variante === SUELO.ASFALTO) return drawAsfalto(cv, ox);
   const base = variante === 1 ? tema.floorB : tema.floorA;
   for (let y = 0; y < TILE_H; y++) {
     for (let x = 0; x < TILE_W; x++) {
@@ -142,10 +201,13 @@ function drawFloorTile(cv, ox, tema, variante) {
       if (d > 1) continue;
 
       let c = base;
+      // Adoquín: cada baldosa son cuatro piedras (juntas por el centro, en
+      // la dirección de los ejes de la rejilla)
+      const juntaAdoquin = tema.adoquin && variante !== 2 && (Math.abs(nx - ny) < 0.07 || Math.abs(nx + ny) < 0.07);
 
       // Relieve: la luz entra por arriba, así que el canto superior brilla
       // y el inferior queda en sombra. Es lo que da volumen a la baldosa.
-      if (d > 0.93) c = tema.floorJoint; // junta
+      if (d > 0.93 || juntaAdoquin) c = tema.floorJoint; // junta
       else if (d > 0.80) c = shade(base, ny < 0 ? 0.18 : -0.14);
       else c = shade(base, dither(x, y, 0.07));
 
@@ -200,6 +262,83 @@ function drawWallTile(cv, ox, tema, lado) {
   }
 }
 
+// ---------- Fachadas: pieza 32×168 (152 de cara + 16 de sesgo) ----------
+// Lo que en una sala es la pared, en la calle es la fachada de un edificio:
+// dos plantas, con cornisa, ventanas y un escaparate con toldo abajo. Se
+// colocan igual que las paredes (una pieza por celda en la fila 0 y en la
+// columna 0), así que se ordenan con los avatares igual de bien.
+const FACHADA_H = 152;
+const FACHADA_TILE_H = FACHADA_H + 16;
+
+/** Estilos de edificio: el muro, sus juntas, los remates y el toldo */
+const ESTILOS_FACHADA = [
+  { nombre: "ladrillo", muro: hex("#a8553a"), junta: hex("#7a3a28"), remate: hex("#e8dcc4"), toldo: hex("#2f8f6a") },
+  { nombre: "piedra", muro: hex("#cdbb98"), junta: hex("#a8956f"), remate: hex("#f1e9d6"), toldo: hex("#b5484a") },
+  { nombre: "moderno", muro: hex("#4e5d73"), junta: hex("#3b4658"), remate: hex("#aab7c9"), toldo: hex("#5fd3c0") },
+  { nombre: "pastel", muro: hex("#7cbfb0"), junta: hex("#5e9d8f"), remate: hex("#f4eee2"), toldo: hex("#e8896b") },
+];
+/** Tipo de pieza: 0 con escaparate; 1 lisa abajo (donde va una puerta) */
+const TIPOS_FACHADA = 2;
+
+/** Cristal que refleja el cielo: claro arriba, más hondo abajo, con un reflejo en diagonal */
+function cristal(u, v, alto) {
+  const t = v / alto;
+  let c = shade(hex("#a9dcf0"), -t * 0.45);
+  if ((u + v) % 11 < 2 && t < 0.7) c = shade(c, 0.25);
+  return c;
+}
+
+function drawFacadeTile(cv, ox, e, lado, tipo) {
+  const luz = lado === "izq" ? 0.02 : -0.08;
+  for (let u = 0; u < WALL_W; u++) {
+    const top = lado === "der" ? Math.floor(u / 2) : Math.floor((WALL_W - 1 - u) / 2);
+    for (let v = 0; v < FACHADA_H; v++) {
+      // El muro, con la textura de su estilo
+      let c = e.muro;
+      if (e.nombre === "ladrillo") {
+        const hilada = Math.floor(v / 6);
+        if (v % 6 === 0 || (u + (hilada % 2) * 4) % 8 === 0) c = e.junta;
+      } else if (e.nombre === "piedra") {
+        const hilada = Math.floor(v / 12);
+        if (v % 12 === 0 || (u + (hilada % 2) * 8) % 16 === 0) c = e.junta;
+      } else if (e.nombre === "moderno") {
+        if (u % 8 === 0) c = e.junta;
+      }
+      c = shade(c, dither(u, v, 0.05));
+
+      // Cornisa arriba, y su sombra
+      if (v < 2) c = shade(e.remate, 0.3);
+      else if (v < 8) c = e.remate;
+      else if (v < 10) c = shade(e.muro, -0.22);
+      // Ventana de la planta de arriba, centrada en la pieza
+      else if (u >= 8 && u <= 23 && v >= 22 && v <= 61) {
+        if (v >= 59) c = v === 59 ? shade(e.remate, 0.15) : e.remate; // alféizar
+        else if (u === 8 || u === 23 || v === 22 || v === 58) c = shade(e.remate, -0.1); // marco
+        else if (u === 15 || u === 16) c = shade(e.remate, -0.2); // parteluz
+        else c = cristal(u, v - 22, 36);
+      }
+      // Imposta entre las dos plantas
+      else if (v >= 74 && v <= 78) c = v === 74 ? shade(e.remate, 0.2) : e.remate;
+      // Planta baja: toldo y escaparate (o muro liso, donde va la puerta)
+      else if (tipo === 0 && v >= 84 && v <= 93 && u >= 2 && u <= 29) {
+        const franja = Math.floor((u - 2) / 4) % 2 === 0;
+        c = franja ? e.toldo : shade(e.toldo, 0.45);
+        if (v === 93) c = shade(e.toldo, -0.3); // borde del toldo
+        if (v >= 91 && (u - 2) % 4 === 3) c = shade(e.toldo, -0.35); // festón
+      } else if (tipo === 0 && v >= 96 && v <= 139 && u >= 4 && u <= 27) {
+        if (u === 4 || u === 27 || v === 96 || v === 139) c = shade(e.remate, -0.25);
+        else c = shade(cristal(u, v - 96, 70), -0.12);
+      }
+      // Zócalo
+      if (v >= FACHADA_H - 8) c = v === FACHADA_H - 8 ? shade(e.junta, 0.1) : shade(e.junta, -0.15);
+
+      c = shade(c, luz);
+      if (v === FACHADA_H - 1) c = shade(c, -0.25);
+      px(cv, ox + u, top + v, c);
+    }
+  }
+}
+
 // ---------- Montaje de las hojas ----------
 const outDir = path.resolve(process.cwd(), "public", "assets");
 const soloArg = process.argv.find((a) => a.startsWith("--solo="));
@@ -207,7 +346,7 @@ const solo = soloArg ? soloArg.slice(7).split(",") : null;
 const toca = (que) => !solo || solo.includes(que);
 fs.mkdirSync(outDir, { recursive: true });
 
-const FLOORS_POR_TEMA = 3;
+const FLOORS_POR_TEMA = 5;
 const tileset = canvas(TILE_W * FLOORS_POR_TEMA * THEMES.length, TILE_H);
 THEMES.forEach((tema, t) => {
   for (let v = 0; v < FLOORS_POR_TEMA; v++) {
@@ -224,6 +363,16 @@ THEMES.forEach((tema, t) => {
 });
 if (toca("paredes")) fs.writeFileSync(path.join(outDir, "walls.png"), encodePng(walls.w, walls.h, walls.buf));
 
+// Fachadas: frame = (estilo × 2 + tipo) × 2 + lado (0 = der, 1 = izq)
+const fachadaFrame = (estilo, tipo, lado) => (estilo * TIPOS_FACHADA + tipo) * 2 + (lado === "izq" ? 1 : 0);
+const fachadas = canvas(WALL_W * ESTILOS_FACHADA.length * TIPOS_FACHADA * 2, FACHADA_TILE_H);
+ESTILOS_FACHADA.forEach((e, estilo) => {
+  for (let tipo = 0; tipo < TIPOS_FACHADA; tipo++) {
+    for (const lado of ["der", "izq"]) drawFacadeTile(fachadas, fachadaFrame(estilo, tipo, lado) * WALL_W, e, lado, tipo);
+  }
+});
+if (toca("paredes")) fs.writeFileSync(path.join(outDir, "fachadas.png"), encodePng(fachadas.w, fachadas.h, fachadas.buf));
+
 // ---------- Salas en formato Tiled ----------
 const TILESET_DEF = {
   columns: FLOORS_POR_TEMA * THEMES.length,
@@ -239,22 +388,34 @@ const TILESET_DEF = {
   tilewidth: TILE_W,
 };
 
-function buildRoom({ id, width: W, height: H, theme, objects }) {
+/**
+ * Suelo de una sala interior: anillo detrás de las paredes, cenefa por dentro
+ * y damero en el centro.
+ */
+function sueloSala(W, H) {
+  return (col, row) => {
+    const ring = row === 0 || col === 0 || row === H - 1 || col === W - 1;
+    const cenefa = row === 1 || col === 1 || row === H - 2 || col === W - 2;
+    if (ring) return SUELO.A; // queda detrás de las paredes
+    if (cenefa) return SUELO.CENEFA; // marco decorativo interior
+    return (row + col) % 2 === 0 ? SUELO.A : SUELO.B;
+  };
+}
+
+/** El anillo exterior está bloqueado: paredes (o fachadas) y el borde */
+const anillo = (W, H) => (col, row) => row === 0 || col === 0 || row === H - 1 || col === W - 1;
+
+function buildRoom({ id, width: W, height: H, theme, objects, suelo = sueloSala(W, H), bloqueado = anillo(W, H), propiedades = [] }) {
   // gid = índice de frame + 1. Cada sala usa los suyos, así que el mapa se
   // sigue viendo bien en Tiled sin que el cliente tenga que desplazar nada.
   const primero = theme * FLOORS_POR_TEMA + 1;
-  const [A, B, CENEFA] = [primero, primero + 1, primero + 2];
 
   const floor = [];
   const collisions = [];
   for (let row = 0; row < H; row++) {
     for (let col = 0; col < W; col++) {
-      const ring = row === 0 || col === 0 || row === H - 1 || col === W - 1;
-      const cenefa = row === 1 || col === 1 || row === H - 2 || col === W - 2;
-      if (ring) floor.push(A); // queda detrás de las paredes
-      else if (cenefa) floor.push(CENEFA); // marco decorativo interior
-      else floor.push((row + col) % 2 === 0 ? A : B);
-      collisions.push(ring ? 1 : 0); // anillo exterior = muros
+      floor.push(primero + suelo(col, row));
+      collisions.push(bloqueado(col, row) ? 1 : 0);
     }
   }
 
@@ -292,6 +453,8 @@ function buildRoom({ id, width: W, height: H, theme, objects }) {
     ],
     nextlayerid: 4,
     nextobjectid: objects.length + 1,
+    // Propiedades de la sala (Tiled las edita en "Map Properties")
+    properties: propiedades,
     orientation: "isometric",
     renderorder: "right-down",
     tiledversion: "1.11.2",
@@ -349,11 +512,12 @@ const rooms = [
       { type: "cuadro", col: 0, row: 6 },
       { type: "ventana", col: 0, row: 8 },
       { type: "reloj", col: 0, row: 10 },
+      // Sale a la Plaza de la Llave: la sala es un edificio de la plaza
       {
         type: "puerta",
         col: 8,
         row: 0,
-        props: { target: "room2", targetCol: 1, targetRow: 1 },
+        props: { target: "plaza", targetCol: 6, targetRow: 1 },
       },
     ],
   },
@@ -390,17 +554,96 @@ const rooms = [
       { type: "poster", col: 0, row: 3 },
       { type: "aplique", col: 0, row: 5 },
       { type: "poster", col: 0, row: 8 },
+      // También da a la plaza
       {
         type: "puerta",
         col: 3,
         row: 0,
-        props: { target: "room1", targetCol: 9, targetRow: 1 },
+        props: { target: "plaza", targetCol: 1, targetRow: 12 },
       },
     ],
   },
+  plaza(),
 ];
 
+/**
+ * PLAZA DE LA LLAVE: la primera zona de La Manzana y la entrada del juego.
+ * Al aire libre: fachadas de edificios al fondo (sus puertas llevan a las
+ * salas), una calzada que la rodea por delante, adoquín con dos caminos en
+ * cruz hacia el monumento, cuatro parterres con árbol, farolas y bancos.
+ */
+function plaza() {
+  const W = 20;
+  const H = 20;
+  const C = 10; // el centro: la Llave
+  const PUERTA_SALON = 6; // en la fachada de la fila 0
+  const PUERTA_CLUB = 12; // en la fachada de la columna 0
+  const parterre = (col, row) =>
+    [3, 13].some((c0) => col >= c0 && col <= c0 + 3) && [3, 13].some((r0) => row >= r0 && row <= r0 + 3);
+  const suelo = (col, row) => {
+    if (row === H - 1 || col === W - 1) return SUELO.ASFALTO; // la calle de delante
+    if (row === 0 || col === 0) return SUELO.A; // bajo las fachadas
+    if (row === 1 || col === 1 || row === H - 2 || col === W - 2) return SUELO.B; // aceras
+    const dist = Math.max(Math.abs(col - C), Math.abs(row - C));
+    if (dist === 2) return SUELO.CENEFA; // mosaico dorado alrededor del monumento
+    if (dist < 2) return SUELO.A;
+    if (parterre(col, row)) return SUELO.CESPED;
+    if (col === row || col + row === W) return SUELO.B; // caminos en cruz
+    return SUELO.A;
+  };
+
+  // Qué edificio hay en cada celda de cada fachada (estilos de ESTILOS_FACHADA)
+  const tramo = (tramos, i) => tramos.find(([desde, hasta]) => i >= desde && i <= hasta)[2];
+  const der = Array.from({ length: W }, (_, col) =>
+    fachadaFrame(tramo([[0, 3, 0], [4, 8, 1], [9, 13, 3], [14, W - 1, 0]], col), col === PUERTA_SALON ? 1 : 0, "der"),
+  );
+  const izq = Array.from({ length: H }, (_, row) =>
+    fachadaFrame(tramo([[0, 4, 3], [5, 8, 1], [9, 14, 2], [15, H - 1, 0]], row), row === PUERTA_CLUB ? 1 : 0, "izq"),
+  );
+
+  return {
+    id: "plaza",
+    width: W,
+    height: H,
+    theme: 2,
+    suelo,
+    propiedades: [
+      { name: "exterior", type: "bool", value: true },
+      { name: "fachadaDer", type: "string", value: der.join(",") },
+      { name: "fachadaIzq", type: "string", value: izq.join(",") },
+    ],
+    objects: [
+      { type: "llave", col: C, row: C },
+      ...[[C - 2, C - 2], [C + 2, C - 2], [C - 2, C + 2], [C + 2, C + 2]].map(([col, row]) => ({ type: "jardinera", col, row })),
+      // Bancos mirando al monumento: los del norte al suroeste, los del oeste
+      // (girados) al sureste
+      { type: "banco", col: C - 1, row: C - 3 },
+      { type: "banco", col: C + 1, row: C - 3 },
+      { type: "banco", col: C - 3, row: C - 1, props: { girado: 1 } },
+      { type: "banco", col: C - 3, row: C + 1, props: { girado: 1 } },
+      // Farolas en las esquinas del monumento y junto a las fachadas
+      ...[[C - 3, C - 3], [C + 3, C - 3], [C - 3, C + 3], [C + 3, C + 3], [3, 2], [16, 2], [2, 9], [2, 16]].map(([col, row]) => ({
+        type: "farola",
+        col,
+        row,
+      })),
+      // Un árbol en cada parterre
+      ...[[4, 4], [15, 4], [4, 15], [15, 15]].map(([col, row]) => ({ type: "arbol", col, row })),
+      // Puertas a los edificios, con un aplique a cada lado
+      { type: "puerta", col: PUERTA_SALON, row: 0, props: { target: "room1", targetCol: 8, targetRow: 1 } },
+      { type: "aplique", col: PUERTA_SALON - 1, row: 0 },
+      { type: "aplique", col: PUERTA_SALON + 1, row: 0 },
+      { type: "puerta", col: 0, row: PUERTA_CLUB, props: { target: "room2", targetCol: 3, targetRow: 1 } },
+      { type: "neon", col: 0, row: PUERTA_CLUB - 1 },
+      { type: "neon", col: 0, row: PUERTA_CLUB + 1 },
+    ],
+  };
+}
+
 if (toca("salas")) for (const room of rooms) buildRoom(room);
-const hechos = [toca("suelos") && `tileset.png (${tileset.w}x${tileset.h})`, toca("paredes") && `walls.png (${walls.w}x${walls.h})`].filter(Boolean);
-if (toca("salas")) hechos.push("room1.json y room2.json");
+const hechos = [
+  toca("suelos") && `tileset.png (${tileset.w}x${tileset.h})`,
+  toca("paredes") && `walls.png (${walls.w}x${walls.h}) y fachadas.png (${fachadas.w}x${fachadas.h})`,
+].filter(Boolean);
+if (toca("salas")) hechos.push(rooms.map((r) => `${r.id}.json`).join(", "));
 console.log(`${hechos.join(", ")} en ${outDir}${toca("salas") ? "" : " (mapas sin tocar)"}`);

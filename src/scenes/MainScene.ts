@@ -17,7 +17,7 @@ import {
   mascaraAlfombra,
   preloadMuebles,
 } from "../entities/furniture";
-import { FURNITURE, isFurniture, seatAt, type FurnitureKind } from "../state/furniture-catalog";
+import { FURNITURE, isFurniture, seatAt, vaGirado, type FurnitureKind } from "../state/furniture-catalog";
 import { findPath, type Cell } from "../utils/pathfinding";
 import {
   AvatarState,
@@ -87,9 +87,11 @@ type TiledMap = {
   width: number;
   height: number;
   layers: TiledLayer[];
+  /** Propiedades de la sala: `exterior`, y las fachadas de cada celda */
+  properties?: { name: string; value: unknown }[];
 };
 
-type PlacedFurniture = { kind: FurnitureKind; col: number; row: number };
+type PlacedFurniture = { kind: FurnitureKind; col: number; row: number; girado: boolean };
 
 type Door = {
   col: number;
@@ -117,6 +119,11 @@ const HUECO_BURBUJA = HUECO_NOMBRE + ALTO_ETIQUETA + 5;
  * `puerta` en tools/muebles/modelos.mjs.)
  */
 const ALTO_PARED = 96;
+/**
+ * Al aire libre, en vez de paredes hay fachadas de edificio: IGUAL que
+ * `FACHADA_H` en tools/genassets.mjs (dos plantas).
+ */
+const ALTO_FACHADA = 152;
 
 /**
  * Los modos del modal de cuenta. "nacimiento" es para las cuentas de antes,
@@ -288,6 +295,8 @@ export class MainScene extends Phaser.Scene {
   private furniture: PlacedFurniture[] = [];
   private doors: Door[] = [];
   private transitioning = false;
+  /** Alto de lo que cierra la sala por detrás: pared dentro, fachada fuera */
+  private altoMuro = ALTO_PARED;
 
   // Aspecto
   private look: Look = DEFAULT_LOOK;
@@ -374,6 +383,10 @@ export class MainScene extends Phaser.Scene {
       frameWidth: 32,
       frameHeight: ALTO_PARED + 16,
     });
+    this.load.spritesheet("fachadas", "assets/fachadas.png", {
+      frameWidth: 32,
+      frameHeight: ALTO_FACHADA + 16,
+    });
     // Capas del avatar (cuerpo, peinados, prendas): se combinan en create()
     preloadAvatar(this);
     // Muebles generados en 3D: el manifiesto y, al llegar, sus imágenes
@@ -422,6 +435,7 @@ export class MainScene extends Phaser.Scene {
     // bordes de las baldosas se emborronan al escalar el lienzo.
     this.textures.get("tileset").setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.textures.get("walls").setFilter(Phaser.Textures.FilterMode.NEAREST);
+    this.textures.get("fachadas").setFilter(Phaser.Textures.FilterMode.NEAREST);
     this.theme = themeFor(this.roomId);
     this.buildRoom();
 
@@ -880,7 +894,7 @@ export class MainScene extends Phaser.Scene {
   private seatAtCell(col: number, row: number): SitTarget | null {
     for (const f of this.furniture) {
       if (f.col !== col || f.row !== row) continue;
-      const seat = seatAt(f.kind, col, row);
+      const seat = seatAt(f.kind, col, row, f.girado);
       if (seat) return seat;
     }
     return null;
@@ -897,7 +911,8 @@ export class MainScene extends Phaser.Scene {
     if (save && (ROOMS as readonly string[]).includes(save.room)) {
       return save.room as RoomId;
     }
-    return "room1";
+    // Quien llega por primera vez, llega a la ciudad: la Plaza de la Llave
+    return ROOMS[0];
   }
 
   /** Guarda la partida y reinicia la escena en la sala destino */
@@ -2236,8 +2251,17 @@ export class MainScene extends Phaser.Scene {
       }
     }
 
-    // Paredes traseras y luego mobiliario (la capa "objetos" de Tiled)
-    this.buildWalls();
+    // Paredes traseras (o, al aire libre, las fachadas de los edificios) y
+    // luego el mobiliario (la capa "objetos" de Tiled)
+    const prop = (nombre: string) => data.properties?.find((p) => p.name === nombre)?.value;
+    if (prop("exterior") === true) {
+      this.altoMuro = ALTO_FACHADA;
+      const frames = (v: unknown) => String(v ?? "").split(",").map(Number);
+      this.buildFachadas(frames(prop("fachadaDer")), frames(prop("fachadaIzq")));
+    } else {
+      this.altoMuro = ALTO_PARED;
+      this.buildWalls();
+    }
     crearSombraMuros(this, this.cols, this.rows);
 
     const objs = data.layers.find((l) => l.name === "objetos");
@@ -2272,19 +2296,21 @@ export class MainScene extends Phaser.Scene {
       if (!isFurniture(kind)) continue;
       const def = FURNITURE[kind];
       // Variante: la alfombra según sus vecinas, lo de pared según su pared,
-      // lo orientable girado si está pegado a la pared de la columna 0
+      // lo orientable girado si está pegado a la pared de la columna 0 o si
+      // el mapa lo pide (un banco mirando al sureste)
+      const girado = this.intProp(o.properties, "girado") === 1;
       let sufijo: string | number | undefined;
       if (def.plano) sufijo = mascaraAlfombra(col, row, esAlfombra);
       else if (def.pared) {
         const lado = ladoPared(col, row);
         if (!lado) continue; // colgado en mitad de la sala: no hay muro
         sufijo = lado;
-      } else if (def.orientable && col === 0) sufijo = "se";
+      } else if (vaGirado(kind, col, girado)) sufijo = "se";
       crearMueble(this, kind, sufijo, col, row, this.theme);
       crearLuz(this, kind, col, row, this.theme);
       // Qué estorba y qué se pisa lo decide el catálogo, no un `if` aquí
       if (def.blocks) this.blocked[row][col] = true;
-      this.furniture.push({ kind, col, row });
+      this.furniture.push({ kind, col, row, girado });
     }
   }
 
@@ -2309,6 +2335,29 @@ export class MainScene extends Phaser.Scene {
       const { x, y } = toScreen(0, row);
       this.add
         .image(x - 32, y - 16 - h, "walls", this.theme.wallLeft)
+        .setOrigin(0, 0)
+        .setDepth(worldDepth(y));
+    }
+  }
+
+  /**
+   * Al aire libre: las fachadas de los edificios, una pieza por celda en los
+   * dos bordes traseros, como las paredes (y por eso se ordenan igual con los
+   * avatares). Qué edificio va en cada celda lo dice el mapa.
+   */
+  private buildFachadas(der: number[], izq: number[]): void {
+    const h = ALTO_FACHADA;
+    for (let col = 0; col < this.cols; col++) {
+      const { x, y } = toScreen(col, 0);
+      this.add
+        .image(x, y - 16 - h, "fachadas", der[col] ?? 0)
+        .setOrigin(0, 0)
+        .setDepth(worldDepth(y));
+    }
+    for (let row = 0; row < this.rows; row++) {
+      const { x, y } = toScreen(0, row);
+      this.add
+        .image(x - 32, y - 16 - h, "fachadas", izq[row] ?? 1)
         .setOrigin(0, 0)
         .setDepth(worldDepth(y));
     }
@@ -2363,7 +2412,7 @@ export class MainScene extends Phaser.Scene {
     const minX = Math.min(...xs) - 32;
     // Por arriba, también las paredes: si no, la cámara no llega a enseñar
     // su remate cuando la sala es más alta que la ventana.
-    const minY = Math.min(...ys) - 16 - ALTO_PARED;
+    const minY = Math.min(...ys) - 16 - this.altoMuro;
     const maxX = Math.max(...xs) + 32;
     const maxY = Math.max(...ys) + 16;
     // Al menos el tamaño de la vista, centrado en la sala: si los límites

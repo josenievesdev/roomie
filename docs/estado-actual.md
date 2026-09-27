@@ -25,7 +25,10 @@ el teclado cruza puertas y se sienta, y hay zoom para mirar la sala de cerca.
 En la Fase 7 llegó lo más importante, porque en Roomie jugarán niños y niñas:
 la edad de cada cuenta (privada), el chat de frases para los niños, el filtro
 de datos personales y groserías, y bloquear y reportar
-(`docs/fase7-seguridad-menores.md`).
+(`docs/fase7-seguridad-menores.md`). Y en la Fase 8, la ciudad: la **Plaza de
+la Llave**, primera zona de La Manzana y entrada del juego, con su monumento,
+edificios, farolas, árboles y bancos; las dos salas son ahora edificios de la
+plaza (`docs/fase8-plaza-de-la-llave.md`).
 Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
 
@@ -82,6 +85,7 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Fuera teléfonos, redes, correos y fotos; groserías tapadas | `tools/prueba-normas.mjs` + smoke test |
 | Bloquear y reportar, con el contexto guardado | smoke test + `db:check` + navegador |
 | Fecha de nacimiento al registrarse (y en las cuentas de antes) | smoke test + navegador |
+| La Plaza de la Llave: entrada del juego, con puertas a las dos salas | smoke test (7b) + navegador |
 
 ## Las decisiones que no hay que deshacer
 
@@ -259,6 +263,7 @@ contenido y la cima, subiendo por hitos jugables:
 | `fase5-muebles-y-ui.md` | Alfombra que cortaba el sofá; muebles en 3D, paredes decoradas y luz; interfaz pixel art |
 | `fase6-interfaz-fina-teclado-zoom.md` | Interfaz fina y propia; teclado en puertas y asientos; zoom con la interfaz a tamaño fijo |
 | `fase7-seguridad-menores.md` | Niños seguros: edad privada, frases, filtro, bloquear y reportar |
+| `fase8-plaza-de-la-llave.md` | La primera zona de La Manzana: la plaza al aire libre, con la Llave |
 | `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
 | `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |

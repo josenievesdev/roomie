@@ -101,7 +101,8 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
     // qué celdas están libres.
     if (!isFurniture(kind)) continue;
     const def = FURNITURE[kind];
-    const seat = seatAt(kind, col, row);
+    // Girado (un banco mirando al sureste): el asiento mira hacia otro lado
+    const seat = seatAt(kind, col, row, intProp(o.properties, "girado") === 1);
     if (seat) {
       sitCells.add(cellKey(col, row));
       seats.set(cellKey(col, row), seat);

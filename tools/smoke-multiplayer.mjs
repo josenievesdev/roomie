@@ -585,6 +585,31 @@ check(
   "A se recibe a sí mismo en room2",
 );
 
+// ---------- 7b. La Plaza de la Llave ----------
+// La entrada del juego: quien pide una sala que no existe entra en la plaza.
+// Sus puertas llevan a las dos salas, y el banco girado (el del oeste del
+// monumento) sienta mirando al sureste, igual que lo dibuja el cliente.
+{
+  const plaza = loadWorld("public/assets", "plaza");
+  check(plaza.cols === 20 && plaza.rows === 20 && plaza.doorCells.size === 2, "la plaza (20×20) tiene sus dos puertas");
+  const P = makeClient();
+  await registrar(P, "Paseo");
+  await until(() => P.sock.connected, 3000);
+  await join(P, "no-existe", { col: 5, row: 9 });
+  check(await until(() => view(P)?.room === "plaza"), "quien pide una sala que no existe entra en la plaza");
+  const girado = [...plaza.seats.values()].find((s) => s.dir === 3);
+  check(!!girado, "en la plaza hay un banco girado");
+  if (girado) {
+    const camino = findPath(celda(view(P)), girado, plaza.cols, plaza.rows, plaza.isBlocked, true);
+    if (camino) P.sock.emit("path", camino);
+    check(
+      !!camino && (await until(() => view(P)?.sitting, 8000)) && view(P).facing === 3,
+      `sentado en el banco girado (${girado.col},${girado.row}) mira al sureste`,
+    );
+  }
+  P.sock.disconnect();
+}
+
 // ---------- 8. Las salas no se mezclan ----------
 check(
   view(A, B.id) === undefined,

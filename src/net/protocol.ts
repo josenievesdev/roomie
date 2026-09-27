@@ -14,7 +14,11 @@ import type { Cell } from "../utils/pathfinding.ts";
 //   demás con lo que llega del servidor.
 // - Mensajes con nombre de evento (socket.io), no con etiqueta "t".
 
-export const ROOMS = ["room1", "room2"] as const;
+/**
+ * Las salas. La primera es la entrada del juego: la Plaza de la Llave, la
+ * primera zona de La Manzana. Las otras dos son edificios de la plaza.
+ */
+export const ROOMS = ["plaza", "room1", "room2"] as const;
 export type RoomId = (typeof ROOMS)[number];
 
 export function isRoomId(v: unknown): v is RoomId {

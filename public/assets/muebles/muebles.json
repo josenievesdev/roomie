@@ -173,6 +173,42 @@
     "sombra": null,
     "contorno": true
   },
+  "arbol": {
+    "fichero": "arbol.png",
+    "w": 59,
+    "h": 105,
+    "ax": 29,
+    "ay": 90,
+    "sombra": {
+      "rx": 28,
+      "ry": 13
+    },
+    "contorno": true
+  },
+  "banco": {
+    "fichero": "banco.png",
+    "w": 51,
+    "h": 48,
+    "ax": 25,
+    "ay": 36,
+    "sombra": {
+      "rx": 24,
+      "ry": 10
+    },
+    "contorno": true
+  },
+  "banco-se": {
+    "fichero": "banco-se.png",
+    "w": 51,
+    "h": 48,
+    "ax": 25,
+    "ay": 36,
+    "sombra": {
+      "rx": 24,
+      "ry": 10
+    },
+    "contorno": true
+  },
   "barra": {
     "fichero": "barra.png",
     "w": 61,
@@ -236,6 +272,30 @@
     "sombra": null,
     "contorno": true
   },
+  "farola": {
+    "fichero": "farola.png",
+    "w": 21,
+    "h": 101,
+    "ax": 10,
+    "ay": 95,
+    "sombra": {
+      "rx": 9,
+      "ry": 4
+    },
+    "contorno": true
+  },
+  "jardinera": {
+    "fichero": "jardinera.png",
+    "w": 48,
+    "h": 36,
+    "ax": 24,
+    "ay": 25,
+    "sombra": {
+      "rx": 21,
+      "ry": 9
+    },
+    "contorno": true
+  },
   "lampara": {
     "fichero": "lampara.png",
     "w": 26,
@@ -245,6 +305,18 @@
     "sombra": {
       "rx": 11,
       "ry": 5
+    },
+    "contorno": true
+  },
+  "llave": {
+    "fichero": "llave.png",
+    "w": 58,
+    "h": 134,
+    "ax": 29,
+    "ay": 120,
+    "sombra": {
+      "rx": 26,
+      "ry": 12
     },
     "contorno": true
   },

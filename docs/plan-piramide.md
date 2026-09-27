@@ -287,6 +287,12 @@ Antes que nada, el cimiento C0: edades privadas, frases para los niños,
 filtro, bloquear y reportar. Con 61 comprobaciones del smoke test y 52 del
 filtro, que no pueden fallar nunca.
 
+### Adelanto — la Plaza de la Llave (hecha, fase 8)
+José quería ver ya la ciudad, así que la primera zona de La Manzana llegó
+antes de tiempo, sin romper la regla: se apoya en lo que ya había (una sala
+más, fachadas como paredes, mobiliario de una celda). Cuando lleguen C1
+(lugares como datos) y C2 (zonas conectadas), se muda sin rehacerse.
+
 ### Hito 1 — "Mi primer piso"
 El gancho: llegar, ganarse las llaves y tener algo tuyo.
 
