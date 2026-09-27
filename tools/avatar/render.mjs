@@ -86,6 +86,9 @@ function envolvente(grupos) {
  */
 function banda(n, L, H, ocl, g) {
   const nl = dot(n, L);
+  // Lo que da luz (pantallas de lámpara, neón) no tiene sombra propia: sólo
+  // brillo y luz, y sin oclusión.
+  if (g.emisivo) return nl > 0.2 ? 0 : 1;
   // Umbrales puestos LEJOS de las orientaciones típicas: la cara que mira a
   // la cámara da nl≈0.4 y cae holgada en la banda 1. Con el umbral encima
   // (como al principio), medio cuerpo bailaba entre dos bandas y salía a

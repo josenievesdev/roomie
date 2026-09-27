@@ -336,6 +336,19 @@ const rooms = [
       { type: "planta", col: 9, row: 9 },
       { type: "planta", col: 2, row: 9 },
       { type: "lampara", col: 6, row: 2 },
+      // Paredes vivas: ventanas con luz, cuadros, reloj, apliques y libros.
+      // Lo de pared va en la fila 0 (pared derecha) o en la columna 0
+      // (izquierda): el anillo de celdas junto al muro.
+      { type: "ventana", col: 2, row: 0 },
+      { type: "cuadro", col: 4, row: 0 },
+      { type: "ventana", col: 6, row: 0 },
+      { type: "aplique", col: 7, row: 0 },
+      { type: "estante", col: 10, row: 0 },
+      { type: "aplique", col: 0, row: 2 },
+      { type: "estanteria", col: 0, row: 4 },
+      { type: "cuadro", col: 0, row: 6 },
+      { type: "ventana", col: 0, row: 8 },
+      { type: "reloj", col: 0, row: 10 },
       {
         type: "puerta",
         col: 8,
@@ -367,6 +380,16 @@ const rooms = [
       { type: "sofa", col: 7, row: 1 },
       { type: "mesa", col: 12, row: 8 },
       { type: "lampara", col: 5, row: 8 },
+      // Neones y pósters: el club no tiene ventanas, tiene luz propia
+      { type: "aplique", col: 1, row: 0 },
+      { type: "poster", col: 5, row: 0 },
+      { type: "neon", col: 7, row: 0 },
+      { type: "poster", col: 9, row: 0 },
+      { type: "neon", col: 11, row: 0 },
+      { type: "aplique", col: 13, row: 0 },
+      { type: "poster", col: 0, row: 3 },
+      { type: "aplique", col: 0, row: 5 },
+      { type: "poster", col: 0, row: 8 },
       {
         type: "puerta",
         col: 3,
@@ -379,4 +402,5 @@ const rooms = [
 
 if (toca("salas")) for (const room of rooms) buildRoom(room);
 const hechos = [toca("suelos") && `tileset.png (${tileset.w}x${tileset.h})`, toca("paredes") && `walls.png (${walls.w}x${walls.h})`].filter(Boolean);
-console.log(`${hechos.join(" y ") || "nada"} en ${outDir}${toca("salas") ? "" : " (mapas sin tocar)"}`);
+if (toca("salas")) hechos.push("room1.json y room2.json");
+console.log(`${hechos.join(", ")} en ${outDir}${toca("salas") ? "" : " (mapas sin tocar)"}`);

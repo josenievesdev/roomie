@@ -65,7 +65,9 @@ export const ROOM_THEMES: Record<RoomId, RoomTheme> = {
       madera: 0x5c6c8c, // pizarra
       metal: 0x8f9bb3,
       acento: 0x7fe3d1, // neón menta
-      alfombra: 0x2f7f8c, // pista de baile
+      // Pista de baile violeta con líneas menta (el acento): turquesa, como
+      // antes, desaparecía sobre el suelo turquesa
+      alfombra: 0x5b3f9e,
       planta: 0x3fa08a,
       maceta: 0x2b3a63,
     },

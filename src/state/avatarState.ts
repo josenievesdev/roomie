@@ -144,6 +144,7 @@ export class AvatarState {
     let move = PATH_SPEED * dt;
     let moved = false;
     while (move > 0 && this.path.length > 0) {
+      this.skipPassed();
       // Dentro del bucle y no antes: en un mismo paso se puede llegar a la
       // penúltima celda y seguir hacia la última con lo que sobra.
       this.yieldIfTaken();
@@ -185,6 +186,27 @@ export class AvatarState {
     this.row = seat.row;
     this.sitting = seat;
     this.facing = seat.dir;
+  }
+
+  /**
+   * Descarta los puntos del camino que ya quedaron atrás: los que el avatar
+   * ha rebasado en la dirección del siguiente tramo.
+   *
+   * Andando sólo se llega a un punto pisándolo, pero la corrección del
+   * cliente (que arrastra hacia la posición del servidor) puede llevar al
+   * avatar MÁS ALLÁ del punto al que iba. Sin esto, el avatar seguía andando
+   * hacia ese punto, ya detrás, mientras la corrección tiraba hacia delante:
+   * los dos empataban y el avatar se quedaba clavado a media celda del
+   * servidor, con el camino sin gastar.
+   */
+  private skipPassed(): void {
+    while (this.path.length >= 2) {
+      const a = this.path[0];
+      const b = this.path[1];
+      const pasado = (this.col - a.col) * (b.col - a.col) + (this.row - a.row) * (b.row - a.row);
+      if (pasado <= 0) return;
+      this.path.shift();
+    }
   }
 
   /**

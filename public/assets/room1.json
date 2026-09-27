@@ -781,7 +781,247 @@
         },
         {
           "id": 20,
-          "name": "puerta-20",
+          "name": "ventana-20",
+          "type": "ventana",
+          "class": "ventana",
+          "x": 448,
+          "y": 48,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 2
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "name": "cuadro-21",
+          "type": "cuadro",
+          "class": "cuadro",
+          "x": 512,
+          "y": 80,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 4
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "name": "ventana-22",
+          "type": "ventana",
+          "class": "ventana",
+          "x": 576,
+          "y": 112,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 6
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 23,
+          "name": "aplique-23",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 608,
+          "y": 128,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 7
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 24,
+          "name": "estante-24",
+          "type": "estante",
+          "class": "estante",
+          "x": 704,
+          "y": 176,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 10
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 25,
+          "name": "aplique-25",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 320,
+          "y": 48,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "id": 26,
+          "name": "estanteria-26",
+          "type": "estanteria",
+          "class": "estanteria",
+          "x": 256,
+          "y": 80,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "id": 27,
+          "name": "cuadro-27",
+          "type": "cuadro",
+          "class": "cuadro",
+          "x": 192,
+          "y": 112,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 6
+            }
+          ]
+        },
+        {
+          "id": 28,
+          "name": "ventana-28",
+          "type": "ventana",
+          "class": "ventana",
+          "x": 128,
+          "y": 144,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 8
+            }
+          ]
+        },
+        {
+          "id": 29,
+          "name": "reloj-29",
+          "type": "reloj",
+          "class": "reloj",
+          "x": 64,
+          "y": 176,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 10
+            }
+          ]
+        },
+        {
+          "id": 30,
+          "name": "puerta-30",
           "type": "puerta",
           "class": "puerta",
           "x": 640,
@@ -827,7 +1067,7 @@
     }
   ],
   "nextlayerid": 4,
-  "nextobjectid": 21,
+  "nextobjectid": 31,
   "orientation": "isometric",
   "renderorder": "right-down",
   "tiledversion": "1.11.2",

@@ -155,3 +155,83 @@ export function halfspace(n, k) {
   const u = norm(n);
   return (x, y, z) => x * u.x + y * u.y + z * u.z - k;
 }
+
+// ---------- Piezas para muebles ----------
+
+/** Caja con esquinas redondeadas `r`, de semiejes hx·hy·hz (alineada con los ejes) */
+export function roundBox(c, hx, hy, hz, r = 0) {
+  return {
+    d: (x, y, z) => {
+      const qx = abs(x - c.x) - hx + r;
+      const qy = abs(y - c.y) - hy + r;
+      const qz = abs(z - c.z) - hz + r;
+      const ox = max(qx, 0);
+      const oy = max(qy, 0);
+      const oz = max(qz, 0);
+      return sqrt(ox * ox + oy * oy + oz * oz) + min(max(qx, max(qy, qz)), 0) - r;
+    },
+    bounds: { c, r: sqrt(hx * hx + hy * hy + hz * hz) },
+  };
+}
+
+/** Cilindro vertical de radio `r` y semialtura `h`, con cantos redondeados `rr` */
+export function cylinder(c, r, h, rr = 0) {
+  return {
+    d: (x, y, z) => {
+      const dx = sqrt((x - c.x) ** 2 + (z - c.z) ** 2) - (r - rr);
+      const dy = abs(y - c.y) - (h - rr);
+      const ox = max(dx, 0);
+      const oy = max(dy, 0);
+      return min(max(dx, dy), 0) + sqrt(ox * ox + oy * oy) - rr;
+    },
+    bounds: { c, r: sqrt(r * r + h * h) },
+  };
+}
+
+/** Cilindro entre dos puntos cualesquiera (discos de altavoz, esferas de reloj) */
+export function cylinderAB(a, b, r) {
+  const ba = sub(b, a);
+  const baba = dot(ba, ba) || 1e-9;
+  return {
+    d: (x, y, z) => {
+      const pax = x - a.x;
+      const pay = y - a.y;
+      const paz = z - a.z;
+      const paba = pax * ba.x + pay * ba.y + paz * ba.z;
+      const qx = pax * baba - ba.x * paba;
+      const qy = pay * baba - ba.y * paba;
+      const qz = paz * baba - ba.z * paba;
+      const xx = sqrt(qx * qx + qy * qy + qz * qz) - r * baba;
+      const yy = abs(paba - baba * 0.5) - baba * 0.5;
+      const x2 = xx * xx;
+      const y2 = yy * yy * baba;
+      const d = max(xx, yy) < 0 ? -min(x2, y2) : (xx > 0 ? x2 : 0) + (yy > 0 ? y2 : 0);
+      return (Math.sign(d) * sqrt(abs(d))) / baba;
+    },
+    bounds: { c: mul(add(a, b), 0.5), r: len(ba) / 2 + r },
+  };
+}
+
+/** Aro horizontal (en el plano XZ) de radio mayor R y grosor r */
+export function torus(c, R, r) {
+  return {
+    d: (x, y, z) => {
+      const qx = sqrt((x - c.x) ** 2 + (z - c.z) ** 2) - R;
+      const qy = y - c.y;
+      return sqrt(qx * qx + qy * qy) - r;
+    },
+    bounds: { c, r: R + r },
+  };
+}
+
+/** Caja orientada: ejes unitarios `ax, ay, az` y semiejes `h` (v3) */
+export function boxAxes(c, ax, ay, az, h, r = 0) {
+  const b = roundBox(v3(0, 0, 0), h.x, h.y, h.z, r);
+  return {
+    d: (x, y, z) => {
+      const p = v3(x - c.x, y - c.y, z - c.z);
+      return b.d(dot(p, ax), dot(p, ay), dot(p, az));
+    },
+    bounds: { c, r: sqrt(h.x * h.x + h.y * h.y + h.z * h.z) },
+  };
+}

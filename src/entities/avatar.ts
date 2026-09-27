@@ -11,6 +11,7 @@ import {
   type Anim,
   type Capa,
 } from "../render/avatarSheet";
+import { pixelesDe, texturaDesde } from "../render/texturas";
 import type { Facing } from "../state/avatarState";
 import { DEFAULT_LOOK, ESTILOS, PARTES, type Look } from "../state/look";
 
@@ -56,43 +57,8 @@ export function preloadAvatar(scene: Phaser.Scene): void {
   }
 }
 
-/**
- * Píxeles de una capa, leídos UNA vez y guardados. Las capas no son colores:
- * cada píxel lleva material, banda de luz y profundidad (ver avatarSheet.ts).
- * Los PNG no llevan perfil de color, así que el navegador no los retoca al
- * dibujarlos y los valores llegan intactos.
- */
-const pixeles = new Map<string, Capa>();
-
-function capa(scene: Phaser.Scene, nombre: string): Capa {
-  const hecha = pixeles.get(nombre);
-  if (hecha) return hecha;
-  const img = scene.textures.get(texCapa(nombre)).getSourceImage() as HTMLImageElement;
-  const lienzo = document.createElement("canvas");
-  lienzo.width = img.width;
-  lienzo.height = img.height;
-  const ctx = lienzo.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("sin contexto 2D");
-  ctx.drawImage(img, 0, 0);
-  const c: Capa = { width: img.width, height: img.height, data: ctx.getImageData(0, 0, img.width, img.height).data };
-  pixeles.set(nombre, c);
-  return c;
-}
-
-/** Vuelca RGBA en una textura de lienzo nueva (sustituye a la que hubiera) */
-function texturaDesde(scene: Phaser.Scene, key: string, rgba: Uint8ClampedArray, w: number, h: number) {
-  if (scene.textures.exists(key)) scene.textures.remove(key);
-  const tex = scene.textures.createCanvas(key, w, h);
-  if (!tex) throw new Error(`no se pudo crear la textura ${key}`);
-  const ctx = tex.getContext();
-  const img = ctx.createImageData(w, h);
-  img.data.set(rgba);
-  ctx.putImageData(img, 0, 0);
-  tex.refresh();
-  // Vecino más cercano: con muestreo lineal el pixel art se emborrona
-  tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
-  return tex;
-}
+/** Píxeles de una capa del avatar (material, luz y profundidad) */
+const capa = (scene: Phaser.Scene, nombre: string): Capa => pixelesDe(scene, texCapa(nombre));
 
 /**
  * (Re)genera la textura de un avatar con su aspecto y sus animaciones.

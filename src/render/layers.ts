@@ -12,7 +12,24 @@
 
 export const LAYER = {
   /**
-   * Mundo: suelo, paredes, muebles y avatares. La profundidad es la Y
+   * Suelo: las baldosas, por debajo de TODO lo que hay en la sala. Antes
+   * compartían banda con los muebles (la Y de su celda) y había que ir con
+   * cuidado para que la baldosa de una celda no tapara al avatar que estaba
+   * en ella.
+   */
+  SUELO: -20,
+
+  /**
+   * Lo que se pisa y no tiene altura: alfombras, charcos de luz, el marcador
+   * del clic. Encima del suelo y debajo de cualquier mueble o avatar, sea de
+   * la celda que sea. Antes la alfombra iba en la banda del mundo con la Y de
+   * su celda, y las celdas de alfombra que quedaban DELANTE del sofá se
+   * dibujaban encima de él y le cortaban la parte de abajo.
+   */
+  ALFOMBRA: -10,
+
+  /**
+   * Mundo: paredes, muebles y avatares. La profundidad es la Y
    * isométrica, que se ordena sola: lo que está más abajo en pantalla tapa a
    * lo que está más arriba.
    *

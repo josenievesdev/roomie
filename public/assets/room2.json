@@ -965,7 +965,223 @@
         },
         {
           "id": 28,
-          "name": "puerta-28",
+          "name": "aplique-28",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 352,
+          "y": 32,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 1
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 29,
+          "name": "poster-29",
+          "type": "poster",
+          "class": "poster",
+          "x": 480,
+          "y": 96,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 5
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 30,
+          "name": "neon-30",
+          "type": "neon",
+          "class": "neon",
+          "x": 544,
+          "y": 128,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 7
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 31,
+          "name": "poster-31",
+          "type": "poster",
+          "class": "poster",
+          "x": 608,
+          "y": 160,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 9
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 32,
+          "name": "neon-32",
+          "type": "neon",
+          "class": "neon",
+          "x": 672,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 11
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 33,
+          "name": "aplique-33",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 736,
+          "y": 224,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 13
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 34,
+          "name": "poster-34",
+          "type": "poster",
+          "class": "poster",
+          "x": 224,
+          "y": 64,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "id": 35,
+          "name": "aplique-35",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 160,
+          "y": 96,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 5
+            }
+          ]
+        },
+        {
+          "id": 36,
+          "name": "poster-36",
+          "type": "poster",
+          "class": "poster",
+          "x": 64,
+          "y": 144,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 8
+            }
+          ]
+        },
+        {
+          "id": 37,
+          "name": "puerta-37",
           "type": "puerta",
           "class": "puerta",
           "x": 416,
@@ -1011,7 +1227,7 @@
     }
   ],
   "nextlayerid": 4,
-  "nextobjectid": 29,
+  "nextobjectid": 38,
   "orientation": "isometric",
   "renderorder": "right-down",
   "tiledversion": "1.11.2",

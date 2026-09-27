@@ -6,8 +6,8 @@
 // tenía su propia lista de `if (kind === "sofa")`, y añadir un mueble obligaba
 // a tocar los dos y acordarse de los dos.
 //
-// Para añadir mobiliario nuevo: una entrada aquí + una función de dibujo en
-// `src/entities/furniture.ts`. Nada más.
+// Para añadir mobiliario nuevo: una entrada aquí + su modelo 3D en
+// `tools/muebles/modelos.mjs` + `node tools/genmuebles.mjs`. Nada más.
 
 import type { Facing, SitTarget } from "./avatarState.ts";
 
@@ -20,6 +20,22 @@ export type FurnitureDef = {
    * servidor (hacia dónde mira) y el cliente (a qué altura dibujarlo).
    */
   sit?: { alto: number; dir: Facing };
+  /**
+   * Plano, sin altura (alfombras): se dibuja pegado al suelo, por debajo de
+   * cualquier mueble o avatar, y cada celda elige su variante según qué
+   * vecinas son también alfombra (la cenefa sólo va por fuera).
+   */
+  plano?: true;
+  /**
+   * Cuelga de la pared: va en la fila 0 (pared derecha) o en la columna 0
+   * (pared izquierda), el anillo de celdas junto al muro. No ocupa sitio.
+   */
+  pared?: true;
+  /**
+   * Se pega a la pared de la columna 0 girado (mirando a +col) si está en
+   * esa columna; si no, mira a +row como todos.
+   */
+  orientable?: true;
   /** Sólo para leer el código: qué es */
   nombre: string;
 };
@@ -40,9 +56,19 @@ export const FURNITURE: Record<string, FurnitureDef> = {
   planta: { nombre: "Planta", blocks: true },
   lampara: { nombre: "Lámpara de pie", blocks: true },
   altavoz: { nombre: "Altavoz", blocks: true },
+  estanteria: { nombre: "Estantería", blocks: true, orientable: true },
 
   // --- Decoración que NO estorba (se pisa) ---
-  alfombra: { nombre: "Alfombra / pista", blocks: false },
+  alfombra: { nombre: "Alfombra / pista", blocks: false, plano: true },
+
+  // --- De pared ---
+  ventana: { nombre: "Ventana", blocks: false, pared: true },
+  cuadro: { nombre: "Cuadro", blocks: false, pared: true },
+  reloj: { nombre: "Reloj", blocks: false, pared: true },
+  aplique: { nombre: "Aplique", blocks: false, pared: true },
+  estante: { nombre: "Balda con libros", blocks: false, pared: true },
+  neon: { nombre: "Neón", blocks: false, pared: true },
+  poster: { nombre: "Póster", blocks: false, pared: true },
 };
 
 export type FurnitureKind = keyof typeof FURNITURE;

@@ -9,7 +9,14 @@ import {
   frameInicial,
   preloadAvatar,
 } from "../entities/avatar";
-import { createFurniture } from "../entities/furniture";
+import {
+  crearLuz,
+  crearMueble,
+  crearSombraMuros,
+  ladoPared,
+  mascaraAlfombra,
+  preloadMuebles,
+} from "../entities/furniture";
 import { FURNITURE, isFurniture, seatAt, type FurnitureKind } from "../state/furniture-catalog";
 import { findPath, type Cell } from "../utils/pathfinding";
 import {
@@ -86,10 +93,10 @@ const ALTO_NOMBRE = ALTO_AVATAR + 3;
 const ALTO_BURBUJA = ALTO_AVATAR + 24;
 /**
  * Alto de la cara de pared, IGUAL que `WALL_H` en tools/genassets.mjs: 1,5
- * veces el avatar. La puerta, algo más alta que él.
+ * veces el avatar. (La puerta, algo más alta que él, es un modelo 3D:
+ * `puerta` en tools/muebles/modelos.mjs.)
  */
 const ALTO_PARED = 96;
-const ALTO_PUERTA = 72;
 
 /** Los tres modos del modal de cuenta */
 type AuthModalMode = "login" | "register" | "profile";
@@ -302,6 +309,8 @@ export class MainScene extends Phaser.Scene {
     });
     // Capas del avatar (cuerpo, peinados, prendas): se combinan en create()
     preloadAvatar(this);
+    // Muebles generados en 3D: el manifiesto y, al llegar, sus imágenes
+    preloadMuebles(this);
   }
 
   create(): void {
@@ -745,62 +754,6 @@ export class MainScene extends Phaser.Scene {
   private finishTransition(): void {
     if (!this.transitioning) return;
     this.scene.restart();
-  }
-
-  /** Puerta dibujada sobre la pared trasera de su celda */
-  private drawDoor(col: number, row: number): void {
-    const { x: cx, y: cy } = toScreen(col, row);
-    let a: { x: number; y: number };
-    let b: { x: number; y: number };
-    if (row === 0) {
-      a = { x: cx, y: cy - 16 }; // borde inferior de la pared (izq)
-      b = { x: cx + 32, y: cy };
-    } else if (col === 0) {
-      a = { x: cx - 32, y: cy };
-      b = { x: cx, y: cy - 16 };
-    } else {
-      return; // sin pared trasera no hay puerta visual
-    }
-
-    const h = ALTO_PUERTA;
-    const lerp = (
-      p: { x: number; y: number },
-      q: { x: number; y: number },
-      t: number,
-    ) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
-    // Casi toda la celda de ancho: con la altura nueva, la mitad era una rendija
-    const p0 = lerp(a, b, 0.14);
-    const p1 = lerp(a, b, 0.86);
-    const quad = [
-      { x: p0.x, y: p0.y - h },
-      { x: p1.x, y: p1.y - h },
-      p1,
-      p0,
-    ];
-
-    const { hoja, marco, pomo } = this.theme.door;
-    const g = this.add.graphics().setDepth(worldDepth(cy)); // misma profundidad que su pared
-    g.fillStyle(hoja, 1);
-    g.fillPoints(quad, true);
-    g.lineStyle(1, marco, 1);
-    g.strokePoints(quad, true);
-    // Cuarterón: una línea interior para que no sea una tabla lisa
-    const c0 = lerp(p0, p1, 0.18);
-    const c1 = lerp(p0, p1, 0.82);
-    g.lineStyle(1, marco, 0.5);
-    g.strokePoints(
-      [
-        { x: c0.x, y: c0.y - h * 0.82 },
-        { x: c1.x, y: c1.y - h * 0.82 },
-        { x: c1.x, y: c1.y - h * 0.22 },
-        { x: c0.x, y: c0.y - h * 0.22 },
-      ],
-      true,
-    );
-    // Pomo
-    const knob = lerp(p0, p1, 0.72);
-    g.fillStyle(pomo, 1);
-    g.fillCircle(knob.x, knob.y - h * 0.5, 2);
   }
 
   // ---------- Aspecto ----------
@@ -1810,11 +1763,16 @@ export class MainScene extends Phaser.Scene {
     if (drift <= (atRest ? REST_DEADZONE : CORRECTION_DEADZONE)) return;
 
     // Divergencia real, no deriva: adoptar la posición autoritativa.
+    //
+    // La puerta pendiente NO se olvida: si me quedé atrás (pestaña congelada,
+    // un tirón) y el servidor ya me tiene en la puerta, el salto me deja en
+    // ella y hay que cruzar. Antes se borraba y el avatar se quedaba plantado
+    // en la puerta sin pasar a la otra sala. Si el salto me lleva a otro
+    // sitio no pasa nada: sólo se cruza estando EN la puerta.
     if (drift > CORRECTION_TELEPORT) {
       this.avatar.col = self.col;
       this.avatar.row = self.row;
       this.avatar.cancelPath();
-      this.pendingDoor = null;
       return;
     }
 
@@ -1994,7 +1952,7 @@ export class MainScene extends Phaser.Scene {
   private showClickMarker(x: number, y: number): void {
     const marker = this.add
       .image(x, y, "tileset", 0)
-      .setDepth(LAYER.WORLD_TOP)
+      .setDepth(LAYER.ALFOMBRA + 1) // en el suelo: los muebles y avatares lo tapan
       .setAlpha(0.75)
       .setScale(0.6);
     this.tweens.add({
@@ -2025,7 +1983,7 @@ export class MainScene extends Phaser.Scene {
         const gid = floor?.data?.[i] ?? 0;
         if (gid !== 0) {
           const pos = toScreen(col, row);
-          this.add.image(pos.x, pos.y, "tileset", gid - 1).setDepth(worldDepth(pos.y));
+          this.add.image(pos.x, pos.y, "tileset", gid - 1).setDepth(LAYER.SUELO);
         }
         this.blocked[row][col] = (colsLayer?.data?.[i] ?? 0) !== 0;
       }
@@ -2033,8 +1991,17 @@ export class MainScene extends Phaser.Scene {
 
     // Paredes traseras y luego mobiliario (la capa "objetos" de Tiled)
     this.buildWalls();
+    crearSombraMuros(this, this.cols, this.rows);
 
     const objs = data.layers.find((l) => l.name === "objetos");
+    // Primera pasada: dónde hay alfombra, para que cada celda sepa si es borde
+    const alfombras = new Set<string>();
+    for (const o of objs?.objects ?? []) {
+      if ((o.type || o.class) !== "alfombra") continue;
+      alfombras.add(`${this.intProp(o.properties, "col")},${this.intProp(o.properties, "row")}`);
+    }
+    const esAlfombra = (c: number, r: number) => alfombras.has(`${c},${r}`);
+
     for (const o of objs?.objects ?? []) {
       const kind = o.type || o.class;
       const col = this.intProp(o.properties, "col");
@@ -2049,14 +2016,27 @@ export class MainScene extends Phaser.Scene {
         if (!target || targetCol === undefined || targetRow === undefined) continue;
         const door: Door = { col, row, target, targetCol, targetRow };
         this.doors.push(door);
-        this.drawDoor(col, row);
+        // La puerta es un modelo 3D más, colgado de su pared
+        const lado = ladoPared(col, row);
+        if (lado) crearMueble(this, "puerta", lado, col, row, this.theme);
         continue; // el anillo de colisiones ya bloquea la celda
       }
 
       if (!isFurniture(kind)) continue;
-      createFurniture(this, kind, col, row, this.theme.palette);
+      const def = FURNITURE[kind];
+      // Variante: la alfombra según sus vecinas, lo de pared según su pared,
+      // lo orientable girado si está pegado a la pared de la columna 0
+      let sufijo: string | number | undefined;
+      if (def.plano) sufijo = mascaraAlfombra(col, row, esAlfombra);
+      else if (def.pared) {
+        const lado = ladoPared(col, row);
+        if (!lado) continue; // colgado en mitad de la sala: no hay muro
+        sufijo = lado;
+      } else if (def.orientable && col === 0) sufijo = "se";
+      crearMueble(this, kind, sufijo, col, row, this.theme);
+      crearLuz(this, kind, col, row, this.theme);
       // Qué estorba y qué se pisa lo decide el catálogo, no un `if` aquí
-      if (FURNITURE[kind].blocks) this.blocked[row][col] = true;
+      if (def.blocks) this.blocked[row][col] = true;
       this.furniture.push({ kind, col, row });
     }
   }
