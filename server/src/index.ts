@@ -15,6 +15,7 @@ import {
   modoChat,
   necesitaConsentimiento,
   parsearNacimiento,
+  puedeEntrarEnCasa,
   type Franja,
 } from "../../src/state/normas.ts";
 import { filtrarChat, type MotivoBloqueo } from "../../src/state/filtroChat.ts";
@@ -31,7 +32,10 @@ import {
   TICK_MS,
   USER_MAX,
   USER_MIN,
-  isRoomId,
+  esCasa,
+  esSalaFija,
+  type CasaId,
+  type CasaInfo,
   type AuthErrorCode,
   type AuthPayload,
   type ChatPayload,
@@ -41,16 +45,20 @@ import {
   type Look,
   type MotivoReporte,
   type PlayerView,
+  type MuebleColocado,
   type ResumePayload,
   type RoomId,
   type ServerEvents,
 } from "../../src/net/protocol.ts";
-import { cellKey, loadWorlds, type RoomWorld } from "./world.ts";
+import { cellKey, leerMapa, loadWorlds, mundoDesdeMapa, type RoomWorld, type TiledMap } from "./world.ts";
 import { cerrarSesion, entrar, purgar, reanudar, type Sesion } from "./db/auth.ts";
 import {
   bloquear,
   bloqueadosDe,
+  casaDe,
   crearCuenta,
+  darLlaves,
+  datosDeCasa,
   desbloquear,
   guardarLook,
   guardarNacimiento,
@@ -60,7 +68,9 @@ import {
   nombreLibre,
   purgarChat,
   registrarChat,
+  type Casa,
   type Consentimiento,
+  type MuebleInicial,
 } from "./db/repo.ts";
 
 // Roomie — servidor multijugador (Fase 7).
@@ -93,6 +103,37 @@ type Player = {
 };
 
 const worlds = loadWorlds(ASSETS, ROOMS);
+
+// ---------- Casas ----------
+//
+// Cada cuenta puede tener su piso: una sala suya, que se guarda en la base.
+// La portería de la plaza da las llaves (una sola vez) y un piso recién
+// mudado: la plantilla `piso.json` más estos muebles de regalo.
+
+/** La plantilla del piso: se copia en la casa de cada uno al darle las llaves */
+const PLANTILLA_PISO = leerMapa(ASSETS, "piso");
+/** El piso recién mudado: una cama contra la pared, un armario y las cajas */
+const MUEBLES_INICIALES: MuebleInicial[] = [
+  { code: "cama", col: 1, row: 0 },
+  { code: "armario", col: 0, row: 3 },
+  { code: "cajas", col: 4, row: 3 },
+  { code: "cajas", col: 5, row: 4 },
+];
+
+const idDeCasa = (c: Casa): CasaId => `casa:${c.id}`;
+const infoDeCasa = (c: Casa | null): CasaInfo | null => (c ? { id: idDeCasa(c), nombre: c.nombre } : null);
+
+/**
+ * Carga (o recarga) el mundo de una casa desde la base: su mapa y sus
+ * muebles. Devuelve también lo que necesita el cliente para dibujarla.
+ */
+async function cargarCasa(id: CasaId): Promise<{ dueno: string; mapa: unknown; muebles: MuebleColocado[] } | null> {
+  const datos = await datosDeCasa(id.slice(5));
+  if (!datos) return null;
+  const muebles = datos.muebles.map((m) => ({ id: m.id, code: m.code, col: m.col ?? 0, row: m.row ?? 0, rot: m.rot }));
+  worlds.set(id, mundoDesdeMapa(datos.mapa as TiledMap, muebles));
+  return { dueno: datos.dueno, mapa: datos.mapa, muebles };
+}
 const players = new Map<string, Player>();
 
 // ---------- Sanitizadores (NUNCA confíes en lo que llega por la red) ----------
@@ -327,6 +368,8 @@ type SesionViva = Sesion & {
   franja: Franja | null;
   /** Cuentas que tiene bloqueadas */
   bloqueados: Set<string>;
+  /** Su casa (null hasta que le den las llaves) */
+  casa: Casa | null;
 };
 
 const franjaDeCuenta = (nacimiento: string | null): Franja | null =>
@@ -424,7 +467,8 @@ io.on("connection", (socket) => {
   const confirmar = async (s: Sesion): Promise<void> => {
     const franja = franjaDeCuenta(s.account.nacimiento);
     const bloqueados = await bloqueadosDe(s.account.id);
-    sesiones.set(socket.id, { ...s, franja, bloqueados });
+    const casa = await casaDe(s.account.id);
+    sesiones.set(socket.id, { ...s, franja, bloqueados, casa });
     socket.emit("authOk", {
       token: s.token,
       username: s.account.username,
@@ -435,7 +479,22 @@ io.on("connection", (socket) => {
       modoChat: modoChat(franja ?? "nino"),
       necesitaNacimiento: franja === null,
       bloqueados: await nicknamesDe([...bloqueados]),
+      casa: infoDeCasa(casa),
     });
+  };
+
+  /**
+   * La sala a la que puede ir este jugador, o null. Las fijas, siempre; una
+   * casa, sólo si la norma le deja entrar (hoy: si es suya), y entonces se
+   * carga su mundo si aún no lo estaba.
+   */
+  const salaPermitida = async (room: unknown, s: SesionViva): Promise<RoomId | null> => {
+    if (esSalaFija(room)) return room;
+    if (!esCasa(room)) return null;
+    const suya = s.casa !== null && idDeCasa(s.casa) === room;
+    if (!puedeEntrarEnCasa(suya)) return null;
+    if (!worlds.has(room) && !(await cargarCasa(room))) return null;
+    return room;
   };
 
   socket.on("auth", async (p: AuthPayload) => {
@@ -541,7 +600,7 @@ io.on("connection", (socket) => {
     if (s) await cerrarSesion(s.token).catch(() => {});
   });
 
-  socket.on("join", (payload: JoinPayload) => {
+  socket.on("join", async (payload: JoinPayload) => {
     if (me) return; // ya estaba dentro
 
     // Sin identidad no se entra. El nombre y el aspecto salen de la cuenta:
@@ -557,7 +616,9 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const room = isRoomId(payload?.room) ? payload.room : ROOMS[0];
+    // Se entra donde se pide, si se puede; si no, a la plaza (la entrada)
+    const room = (await salaPermitida(payload?.room, sesion).catch(() => null)) ?? ROOMS[0];
+    if (me) return; // mientras se cargaba la casa llegó otro join
     const world = worlds.get(room)!;
     const desiredName = sesion.avatar.nickname;
 
@@ -593,7 +654,8 @@ io.on("connection", (socket) => {
     me = player;
     players.set(player.id, player);
     socket.join(room);
-    socket.emit("welcome", { id: player.id, players: allViews() });
+    // Sólo los de su sala: dónde está cada uno (y quién está en su casa) no es asunto de nadie más
+    socket.emit("welcome", { id: player.id, players: allViews().filter((v) => v.room === room) });
     system(room, `${player.name} entró a la sala`);
   });
 
@@ -635,10 +697,15 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("room", (p) => {
-    if (!me || !isRoomId(p?.room)) return;
-    const world = worlds.get(p.room)!;
+  socket.on("room", async (p) => {
+    const sesion = sesiones.get(socket.id);
+    if (!me || !sesion) return;
+    // A una casa ajena no se entra (la norma, en src/state/normas.ts)
+    const destino = await salaPermitida(p?.room, sesion).catch(() => null);
+    if (!destino || !me) return;
+    const world = worlds.get(destino)!;
     const player = me; // narrow for TS
+    p = { ...p, room: destino };
 
     // Rechazar si el nombre ya está en uso en la sala DESTINO
     const nameTaken = [...players.values()].some(
@@ -658,6 +725,35 @@ io.on("connection", (socket) => {
     const start = spawnCell(world, p?.col, p?.row, (c, r) => occupied(p.room, c, r, player.id));
     player.state = newState(player.id, p.room, start, normalizeFacing(p?.facing));
     player.input = { mx: 0, my: 0 };
+  });
+
+  // La portería: las llaves del piso, una sola vez. Si ya tenía casa, es la misma.
+  socket.on("llaves", async () => {
+    try {
+      const s = sesiones.get(socket.id);
+      if (!s || s.franja === null) return;
+      const { casa, nueva } = await darLlaves(s.account.id, "Tu casa", PLANTILLA_PISO, MUEBLES_INICIALES);
+      s.casa = casa;
+      if (nueva) console.log(`[roomie] llaves: ${s.avatar.nickname} ya tiene casa`);
+      socket.emit("casa", infoDeCasa(casa)!);
+    } catch (e) {
+      console.error("[roomie] llaves:", e);
+      aviso("La portería está cerrada ahora mismo. Inténtalo en un rato.");
+    }
+  });
+
+  // Ir a tu casa: se manda su mapa y sus muebles, y el cliente entra con `room`
+  socket.on("irACasa", async () => {
+    try {
+      const s = sesiones.get(socket.id);
+      if (!s?.casa) return aviso("Todavía no tienes casa: pasa por la portería de la plaza.");
+      const id = idDeCasa(s.casa);
+      const datos = await cargarCasa(id);
+      if (!datos) return;
+      socket.emit("salaDatos", { id, mapa: datos.mapa, muebles: datos.muebles });
+    } catch (e) {
+      console.error("[roomie] irACasa:", e);
+    }
   });
 
   socket.on("chat", (text: unknown) => {

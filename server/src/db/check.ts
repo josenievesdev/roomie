@@ -4,7 +4,9 @@ import {
   autenticar,
   bloquear,
   bloqueadosDe,
+  casaDe,
   comprar,
+  darLlaves,
   crearCuenta,
   desbloquear,
   guardarNacimiento,
@@ -204,8 +206,30 @@ try {
   const [sigue] = await sql<{ reporter_id: string | null }[]>`select reporter_id from reports where id = ${rep1.id}`;
   ok(sigue !== undefined && sigue.reporter_id === null, "el reporte sobrevive a que se borre quien lo hizo");
 
+  // ------------------------------------------------------ casas
+  console.log("\n=== Casas ===");
+  const plantilla = { width: 8, height: 8, layers: [] };
+  const regalo = [{ code: "cama", col: 1, row: 0 }, { code: "cajas", col: 4, row: 3 }];
+  const primera = await darLlaves(id, "Tu casa", plantilla, regalo);
+  ok(primera.nueva, "la portería da las llaves de una casa nueva");
+  const segunda = await darLlaves(id, "Tu casa", plantilla, regalo);
+  ok(!segunda.nueva && segunda.casa.id === primera.casa.id, "pedirlas otra vez devuelve la MISMA casa");
+  ok(
+    (await falla(() => sql`
+      insert into rooms (slug, name, kind, owner_id, cols, rows, layout)
+      values (${"otra-" + sufijo}, 'Otra', 'personal', ${id}, 8, 8, '{}'::jsonb)
+    `)) !== null,
+    "una cuenta no puede tener dos casas (ni saltándose al servidor)",
+  );
+  const [{ n: enCasa }] = await sql<{ n: number }[]>`select count(*)::int as n from items where room_id = ${primera.casa.id}`;
+  ok(enCasa === regalo.length, "los muebles de regalo están colocados en la casa", `${enCasa} colocados`);
+  ok((await falla(() => comprar(id, "cajas"))) !== null, "las cajas de la mudanza se regalan: no se pueden comprar");
+  ok((await casaDe(id))?.id === primera.casa.id, "la casa queda apuntada a su dueño");
+
   // ------------------------------------------------------ limpieza
   await sql`delete from accounts where id = ${id}`;
+  const [sinCasa] = await sql`select count(*)::int as n from rooms where id = ${primera.casa.id}`;
+  ok(sinCasa.n === 0, "borrar la cuenta se lleva su casa (cascade)");
   await sql`delete from reports where id = ${rep1.id}`;
   const [queda] = await sql`select count(*)::int as n from ledger where account_id = ${id}`;
   ok(queda.n === 0, "borrar la cuenta se lleva sus apuntes (cascade)");

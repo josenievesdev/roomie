@@ -471,6 +471,73 @@ function poster() {
   };
 }
 
+// ================================================================= El piso
+//
+// Lo que trae el piso recién mudado: una cama, un armario y las cajas de la
+// mudanza. Lo demás, jugando.
+
+/**
+ * Cama de dos celdas: el cabecero en esta celda (contra la pared, a -Z) y
+ * los pies en la de delante (+row). La huella la dice el catálogo.
+ */
+function cama() {
+  const L = 2 * H; // la cama mide dos celdas: de -H a 3H en Z
+  const cz = L / 2; // su centro en Z
+  const patas = [[-16, -19], [16, -19], [-16, L + 19], [16, L + 19]].map(([x, z]) =>
+    roundBox(v3(x, 2, z), 1.8, 2, 1.8, 0.5),
+  );
+  return {
+    grupos: [
+      grupo(M.MADERA_OSC, 0.3, patas),
+      grupo(M.MADERA, 0.8, [roundBox(v3(0, 7.5, cz), 18, 3.5, L / 2 + 20.5, 1.2)]), // somier
+      grupo(M.MADERA, 1, [roundBox(v3(0, 19, -20.5), 18.8, 19, 2.2, 1.6)]), // cabecero
+      grupo(M.BLANCO, 1.2, [roundBox(v3(0, 13.4, cz), 16.6, 3, L / 2 + 19, 2.2)]), // colchón
+      grupo(M.TAPIZADO, 1.2, [roundBox(v3(0, 16.2, cz + 10), 17.4, 2.4, L / 2 + 9.5, 2.2)]), // edredón
+      grupo(M.TAPIZADO_B, 0.6, [roundBox(v3(0, 18.2, cz - L / 2 + 1), 17.6, 1.3, 2.6, 1)]), // embozo
+      grupo(M.BLANCO, 1, [roundBox(v3(0, 18.6, -13), 12.5, 2.6, 5.2, 2.4)]), // almohada
+    ],
+    // Centro de la huella: media celda hacia +row, en pantalla (-16, +8)
+    sombra: { rx: 36, ry: 18, dx: -16, dy: 8 },
+  };
+}
+
+/** Armario de dos puertas, pegado a la pared (su espalda en -Z) */
+function armario() {
+  return {
+    grupos: [
+      grupo(M.MADERA_OSC, 0.3, [[-16, -18], [16, -18], [-16, 2], [16, 2]].map(([x, z]) => roundBox(v3(x, 1.5, z), 1.6, 1.5, 1.6, 0.4))),
+      grupo(M.MADERA, 0.8, [roundBox(v3(0, 38, -8), 18.5, 35, 11.5, 1.4)]),
+      grupo(M.MADERA_OSC, 0.5, [roundBox(v3(0, 74, -8), 19.8, 1.8, 12.6, 0.8)]), // remate
+      // Las dos puertas, un poco salidas, y sus tiradores
+      grupo(M.MADERA, 0.4, [roundBox(v3(-9.2, 38, 3.8), 8.6, 31.5, 0.8, 0.6), roundBox(v3(9.2, 38, 3.8), 8.6, 31.5, 0.8, 0.6)]),
+      grupo(M.METAL, 0.2, [capsule(v3(-1.8, 34, 5), v3(-1.8, 42, 5), 0.9), capsule(v3(1.8, 34, 5), v3(1.8, 42, 5), 0.9)]),
+    ],
+    sombra: { rx: 22, ry: 10 },
+  };
+}
+
+/** Cajas de la mudanza: tres, apiladas de cualquier manera, con su cinta */
+function cajas() {
+  const caja = (x, y, z, hx, hy, hz) => [
+    roundBox(v3(x, y, z), hx, hy, hz, 0.8),
+    // Cinta: una tira por encima y bajando por delante
+    roundBox(v3(x, y + hy + 0.05, z), hx + 0.1, 0.35, 1.9, 0.2),
+    roundBox(v3(x, y + hy * 0.35, z + hz + 0.05), hx * 0.14, hy * 0.7, 0.35, 0.2),
+  ];
+  const [a, ca1, ca2] = caja(-5, 7.5, 4, 11, 7.5, 10);
+  const [b, cb1, cb2] = caja(9, 6, -8, 8.5, 6, 8);
+  const [c, cc1, cc2] = caja(-4, 21, 3, 8, 6, 7.5);
+  return {
+    grupos: [
+      grupo(M.CARTON, 0.4, [a]),
+      grupo(M.CARTON, 0.4, [b]),
+      grupo(M.CARTON, 0.4, [c]),
+      grupo(M.CINTA, 0.1, [ca1, ca2, cb1, cb2, cc1, cc2]),
+    ],
+    sombra: { rx: 24, ry: 11 },
+  };
+}
+
 // ================================================================= La ciudad
 //
 // Lo que amuebla La Manzana: el monumento, farolas, árboles, bancos y
@@ -636,6 +703,9 @@ export const VARIANTES = [
   ...["sofa", "mesa", "barra", "taburete", "planta", "lampara", "altavoz"].map((t) => ({ nombre: t, dir: 5, modelo: MODELOS_SUELO()[t] })),
   { nombre: "estanteria", dir: 5, modelo: estanteria },
   { nombre: "estanteria-se", dir: 3, modelo: estanteria },
+  // El piso recién mudado
+  ...Object.entries({ cama, armario, cajas }).map(([nombre, modelo]) => ({ nombre, dir: 5, modelo })),
+  { nombre: "armario-se", dir: 3, modelo: armario },
   // La ciudad
   ...Object.entries({ llave, farola, arbol, jardinera }).map(([nombre, modelo]) => ({ nombre, dir: 5, modelo })),
   { nombre: "banco", dir: 5, modelo: banco },

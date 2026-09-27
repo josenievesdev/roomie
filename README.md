@@ -72,6 +72,7 @@ Hecho:
 - [x] **Interfaz fina y propia** (líneas de 1 px), teclado que cruza puertas y se sienta, y **zoom** (rueda, + / −, arrastrar)
 - [x] **Seguridad para niños y niñas**: edad privada, chat de frases, filtro de datos personales, bloquear y reportar
 - [x] **La Plaza de la Llave**: la primera zona de La Manzana, al aire libre, y la entrada del juego
+- [x] **Tu casa**: la portería da las llaves de un piso recién mudado; al volver, apareces en él
 
 Siguiente:
 

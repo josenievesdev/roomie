@@ -1441,6 +1441,93 @@
           "name": "puerta-25",
           "type": "puerta",
           "class": "puerta",
+          "x": 992,
+          "y": 192,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 11
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "target",
+              "type": "string",
+              "value": "casa"
+            },
+            {
+              "name": "targetCol",
+              "type": "int",
+              "value": 0
+            },
+            {
+              "name": "targetRow",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 26,
+          "name": "aplique-26",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 960,
+          "y": 176,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 10
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 27,
+          "name": "aplique-27",
+          "type": "aplique",
+          "class": "aplique",
+          "x": 1024,
+          "y": 208,
+          "width": 64,
+          "height": 32,
+          "rotation": 0,
+          "visible": true,
+          "properties": [
+            {
+              "name": "col",
+              "type": "int",
+              "value": 12
+            },
+            {
+              "name": "row",
+              "type": "int",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": 28,
+          "name": "puerta-28",
+          "type": "puerta",
+          "class": "puerta",
           "x": 256,
           "y": 208,
           "width": 64,
@@ -1476,8 +1563,8 @@
           ]
         },
         {
-          "id": 26,
-          "name": "neon-26",
+          "id": 29,
+          "name": "neon-29",
           "type": "neon",
           "class": "neon",
           "x": 288,
@@ -1500,8 +1587,8 @@
           ]
         },
         {
-          "id": 27,
-          "name": "neon-27",
+          "id": 30,
+          "name": "neon-30",
           "type": "neon",
           "class": "neon",
           "x": 224,
@@ -1532,7 +1619,7 @@
     }
   ],
   "nextlayerid": 4,
-  "nextobjectid": 28,
+  "nextobjectid": 31,
   "properties": [
     {
       "name": "exterior",
@@ -1542,7 +1629,7 @@
     {
       "name": "fachadaDer",
       "type": "string",
-      "value": "0,0,0,0,4,4,6,4,4,12,12,12,12,12,0,0,0,0,0,0"
+      "value": "0,0,0,0,4,4,6,4,4,12,12,14,12,12,0,0,0,0,0,0"
     },
     {
       "name": "fachadaIzq",
@@ -1557,15 +1644,15 @@
   "tilewidth": 64,
   "tilesets": [
     {
-      "columns": 15,
+      "columns": 20,
       "firstgid": 1,
       "image": "tileset.png",
       "imageheight": 32,
-      "imagewidth": 960,
+      "imagewidth": 1280,
       "margin": 0,
       "name": "floor",
       "spacing": 0,
-      "tilecount": 15,
+      "tilecount": 20,
       "tileheight": 32,
       "tilewidth": 64
     }

@@ -53,6 +53,9 @@ perdería el modelo anti-trampas.
   suelta en otro sitio.
 - **La edad es privada:** no viaja a ningún otro cliente, ni en `PlayerView`
   ni en ningún evento.
+- **Una casa es una sala de la base** (`casa:<uuid>`): su mapa y sus muebles
+  los manda el servidor (`salaDatos`), y quién entra lo decide
+  `puedeEntrarEnCasa` en `src/state/normas.ts`, en `join` Y en `room`.
 - Los niños hablan con frases (`src/state/frases.ts`) y no reciben texto
   libre; el texto libre de los demás pasa por `filtrarChat()`, y el chat se
   entrega uno a uno (`emitirChat` en el servidor), nunca con un `io.to(sala)`
@@ -63,7 +66,8 @@ constante de `src/render/layers.ts`. Las bandas están separadas a propósito
 (mundo < burbujas < HUD < paneles < modal).
 
 **Mobiliario: una entrada en `src/state/furniture-catalog.ts` y una función de
-dibujo.** El catálogo lo leen cliente Y servidor; si cada lado tuviera su lista,
+dibujo.** Si ocupa varias celdas, su `huella`; y todo lo que estorba bloquea
+TODAS las celdas de `celdasDe()`, en el cliente y en el servidor. El catálogo lo leen cliente Y servidor; si cada lado tuviera su lista,
 discreparían sobre qué celdas están libres.
 
 **El dinero sólo se mueve con `mover_saldo()`.** Nunca un `update balances`
@@ -135,10 +139,10 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
 ## Assets
 
 `node tools/genassets.mjs` regenera el tileset, las paredes, las fachadas **y los
-tres mapas** (plaza, room1, room2).
+tres mapas** (plaza, room1, room2) y la plantilla del piso (`piso.json`).
 Si editas una sala en Tiled y luego lo ejecutas, la pierdes. Para retocar sólo
 el arte: `--solo=paredes` o `--solo=suelos` (los mapas no se tocan).
 
 `node tools/genavatar.mjs` regenera las 17 capas del avatar (~8 s);
-`node tools/genmuebles.mjs`, las 47 variantes del mobiliario (~1 s);
+`node tools/genmuebles.mjs`, las 51 variantes del mobiliario (~1 s);
 `node tools/genfuente.mjs`, la fuente pixel.

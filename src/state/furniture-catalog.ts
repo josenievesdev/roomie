@@ -46,6 +46,11 @@ export type FurnitureDef = {
    * vende. `db:check` no exige que esté en la tienda.
    */
   mundo?: true;
+  /**
+   * Cuántas celdas ocupa, desde la suya hacia +col y +row (por defecto 1×1).
+   * La cama mide 1×2: su celda y la de delante (+row).
+   */
+  huella?: { col: number; row: number };
   /** Sólo para leer el código: qué es */
   nombre: string;
 };
@@ -80,6 +85,13 @@ export const FURNITURE: Record<string, FurnitureDef> = {
   neon: { nombre: "Neón", blocks: false, pared: true },
   poster: { nombre: "Póster", blocks: false, pared: true },
 
+  // --- El piso recién mudado ---
+  // La cama ocupa dos celdas: la del cabecero y la de los pies (+row)
+  cama: { nombre: "Cama", blocks: true, huella: { col: 1, row: 2 } },
+  // Pegado a la pared de la columna 0 se gira para mirar a +col, como la estantería
+  armario: { nombre: "Armario", blocks: true, orientable: true },
+  cajas: { nombre: "Cajas de mudanza", blocks: true },
+
   // --- La ciudad (del mundo, no se venden) ---
   llave: { nombre: "La Llave (monumento)", blocks: true, mundo: true },
   farola: { nombre: "Farola", blocks: true, mundo: true },
@@ -98,6 +110,20 @@ export function isFurniture(kind: string | undefined): kind is FurnitureKind {
 /** ¿Es un asiento? (lo usan el A* del cliente y la validación del servidor) */
 export function isSeat(kind: string | undefined): boolean {
   return isFurniture(kind) && FURNITURE[kind].sit !== undefined;
+}
+
+/**
+ * Las celdas que ocupa un mueble puesto en (col, row). Cliente y servidor
+ * bloquean exactamente éstas: si cada lado lo calculara a su manera,
+ * discreparían sobre qué celdas están libres.
+ */
+export function celdasDe(kind: string | undefined, col: number, row: number): { col: number; row: number }[] {
+  const h = isFurniture(kind) ? FURNITURE[kind].huella : undefined;
+  const w = h?.col ?? 1;
+  const l = h?.row ?? 1;
+  const out: { col: number; row: number }[] = [];
+  for (let r = 0; r < l; r++) for (let c = 0; c < w; c++) out.push({ col: col + c, row: row + r });
+  return out;
 }
 
 /**

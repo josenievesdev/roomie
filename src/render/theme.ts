@@ -9,7 +9,7 @@
 // tonos intermedios (luz y sombra de cada cara) se derivan en el dibujo, así
 // que añadir un mueble no obliga a inventar seis colores nuevos por sala.
 
-import type { RoomId } from "../net/protocol";
+import { esCasa, type RoomId, type SalaFija } from "../net/protocol.ts";
 
 export type RoomPalette = {
   /** Tela: sofás y taburetes */
@@ -40,7 +40,7 @@ export type RoomTheme = {
 /** En `walls.png` cada tema ocupa 2 frames seguidos: derecha, izquierda */
 const wallFrames = (tema: number) => ({ wallRight: tema * 2, wallLeft: tema * 2 + 1 });
 
-export const ROOM_THEMES: Record<RoomId, RoomTheme> = {
+export const ROOM_THEMES: Record<SalaFija | "piso", RoomTheme> = {
   // La Plaza de la Llave: la calle. Piedra, hierro oscuro en las farolas,
   // madera cálida en los bancos y el oro de la Llave. (Las paredes no se usan:
   // al aire libre van fachadas, que dice el mapa.)
@@ -56,6 +56,21 @@ export const ROOM_THEMES: Record<RoomId, RoomTheme> = {
       alfombra: 0xb5484a,
       planta: 0x4f9d57,
       maceta: 0x9a9282,
+    },
+  },
+  // El piso recién mudado: tarima clara, paredes crema, un edredón coral
+  piso: {
+    nombre: "Tu casa",
+    ...wallFrames(3),
+    door: { hoja: 0x9c6b3f, marco: 0x5e3f24, pomo: 0xf1c40f },
+    palette: {
+      tapizado: 0xe8896b, // el edredón
+      madera: 0xb58a5a,
+      metal: 0xb08d57,
+      acento: 0xf0c987,
+      alfombra: 0x7a9e7e,
+      planta: 0x4f9d57,
+      maceta: 0xb5623c,
     },
   },
   // Recibidor: terracota y crema, madera, latón y plantas
@@ -92,6 +107,7 @@ export const ROOM_THEMES: Record<RoomId, RoomTheme> = {
   },
 };
 
+/** El tema de una sala. Todas las casas usan el del piso. */
 export function themeFor(room: RoomId): RoomTheme {
-  return ROOM_THEMES[room];
+  return esCasa(room) ? ROOM_THEMES.piso : ROOM_THEMES[room];
 }

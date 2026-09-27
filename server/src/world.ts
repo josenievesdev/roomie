@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { FURNITURE, isFurniture, seatAt } from "../../src/state/furniture-catalog.ts";
+import { FURNITURE, celdasDe, isFurniture, seatAt } from "../../src/state/furniture-catalog.ts";
 import type { SitTarget } from "../../src/state/avatarState.ts";
 import type { RoomId } from "../../src/net/protocol.ts";
 import type { Cell } from "../../src/utils/pathfinding.ts";
@@ -7,6 +7,10 @@ import type { Cell } from "../../src/utils/pathfinding.ts";
 // Carga las salas de Tiled (los MISMOS JSON que usa el navegador) y construye
 // el mundo que necesita `AvatarState`: celdas, colisiones y celdas especiales.
 // Ni Phaser ni Tiled aquí: sólo JSON plano.
+//
+// Las salas fijas salen de sus ficheros; las casas, del mapa guardado en la
+// base (que es una copia de la plantilla `piso.json`) más los muebles del
+// jugador. Las dos cosas pasan por `mundoDesdeMapa`: mismas reglas.
 
 type TiledObject = {
   type?: string;
@@ -21,11 +25,14 @@ type TiledLayer = {
   objects?: TiledObject[];
 };
 
-type TiledMap = {
+export type TiledMap = {
   width: number;
   height: number;
   layers: TiledLayer[];
 };
+
+/** Un mueble que no viene en el mapa sino de la base (lo que tiene un jugador en su casa) */
+export type MuebleSuelto = { code: string; col: number; row: number };
 
 export type RoomWorld = {
   cols: number;
@@ -60,10 +67,22 @@ function intProp(
   return typeof p?.value === "number" ? p.value : undefined;
 }
 
+/** Lee el mapa de un fichero de Tiled */
+export function leerMapa(assetsDir: string, nombre: string): TiledMap {
+  return JSON.parse(readFileSync(`${assetsDir}/${nombre}.json`, "utf8")) as TiledMap;
+}
+
 /** Lee una sala de Tiled y devuelve el mundo del servidor */
 export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
-  const raw = readFileSync(`${assetsDir}/${roomId}.json`, "utf8");
-  const map = JSON.parse(raw) as TiledMap;
+  return mundoDesdeMapa(leerMapa(assetsDir, roomId));
+}
+
+/**
+ * El mundo de una sala a partir de su mapa y, si los hay, de los muebles que
+ * vienen de la base (los de una casa). Todo mueble bloquea TODAS las celdas
+ * de su huella (`celdasDe` en el catálogo, igual que en el cliente).
+ */
+export function mundoDesdeMapa(map: TiledMap, sueltos: MuebleSuelto[] = []): RoomWorld {
   const cols = map.width;
   const rows = map.height;
 
@@ -99,15 +118,23 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
     // aquí una lista de `if` propia y añadir un mueble obligaba a acordarse de
     // los dos lados; si se olvidaba uno, cliente y servidor discrepaban sobre
     // qué celdas están libres.
-    if (!isFurniture(kind)) continue;
-    const def = FURNITURE[kind];
     // Girado (un banco mirando al sureste): el asiento mira hacia otro lado
-    const seat = seatAt(kind, col, row, intProp(o.properties, "girado") === 1);
+    ponerMueble(kind, col, row, intProp(o.properties, "girado") === 1);
+  }
+  for (const m of sueltos) ponerMueble(m.code, m.col, m.row, false);
+
+  function ponerMueble(kind: string | undefined, col: number, row: number, girado: boolean): void {
+    if (!isFurniture(kind)) return;
+    const def = FURNITURE[kind];
+    const seat = seatAt(kind, col, row, girado);
     if (seat) {
       sitCells.add(cellKey(col, row));
       seats.set(cellKey(col, row), seat);
     }
-    if (def.blocks) blocked[row][col] = true;
+    if (!def.blocks) return;
+    for (const c of celdasDe(kind, col, row)) {
+      if (c.col >= 0 && c.row >= 0 && c.col < cols && c.row < rows) blocked[c.row][c.col] = true;
+    }
   }
 
   const isBlocked = (col: number, row: number): boolean => blocked[row][col];
@@ -148,7 +175,7 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
   return { cols, rows, blocked, sitCells, seats, doorCells, isBlocked, freeCell, nearestFree };
 }
 
-/** Carga todas las salas del juego */
+/** Carga todas las salas fijas del juego (las casas se cargan al entrar) */
 export function loadWorlds(
   assetsDir: string,
   rooms: readonly RoomId[],

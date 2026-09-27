@@ -60,6 +60,9 @@ export const MAT_MUEBLE = {
   /** Piedra de la ciudad: pedestales, jardineras */
   PIEDRA: 64,
   PIEDRA_OSC: 65,
+  /** Las cajas de la mudanza, y su cinta */
+  CARTON: 66,
+  CINTA: 67,
 } as const;
 
 const M = MAT_MUEBLE;
@@ -83,6 +86,8 @@ const FIJOS: Record<number, Rampa> = {
   [M.NOCHE]: rampa(0x2c2450),
   [M.PIEDRA]: rampa(0xc9c1b1, { contraste: 0.8 }),
   [M.PIEDRA_OSC]: rampa(0x9a9282, { contraste: 0.8 }),
+  [M.CARTON]: rampa(0xc49a6c),
+  [M.CINTA]: rampa(0xeadfbf, { contraste: 0.7 }),
 };
 
 const cache = new WeakMap<RoomTheme, (mat: number) => Rampa>();
@@ -128,8 +133,11 @@ export type EntradaMueble = {
   /** Píxel de la imagen que cae en el centro de la celda (el origen del sprite) */
   ax: number;
   ay: number;
-  /** Sombra elíptica en el suelo, centrada en el ancla (null = sin sombra) */
-  sombra: { rx: number; ry: number } | null;
+  /**
+   * Sombra elíptica en el suelo, centrada en el ancla más (dx, dy): en un
+   * mueble de varias celdas, el centro de su huella (null = sin sombra)
+   */
+  sombra: { rx: number; ry: number; dx?: number; dy?: number } | null;
   /** Contorno exterior (las alfombras no lo llevan: partiría la alfombra) */
   contorno: boolean;
 };
@@ -148,6 +156,6 @@ export const variante = (tipo: string, sufijo?: string | number): string =>
 /** Colorea una variante con los tonos de una sala. RGBA del tamaño de la entrada. */
 export function componerMueble(capa: Capa, e: EntradaMueble, tema: RoomTheme): Uint8ClampedArray {
   const out = combinar([capa], rampasDeTema(tema), { x: 0, y: 0, w: e.w, h: e.h }, { contorno: e.contorno });
-  if (e.sombra) sombraElipse(out, e.w, e.h, e.ax, e.ay, e.sombra.rx, e.sombra.ry);
+  if (e.sombra) sombraElipse(out, e.w, e.h, e.ax + (e.sombra.dx ?? 0), e.ay + (e.sombra.dy ?? 0), e.sombra.rx, e.sombra.ry);
   return out;
 }

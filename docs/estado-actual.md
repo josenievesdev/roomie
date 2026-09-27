@@ -28,7 +28,10 @@ de datos personales y groserías, y bloquear y reportar
 (`docs/fase7-seguridad-menores.md`). Y en la Fase 8, la ciudad: la **Plaza de
 la Llave**, primera zona de La Manzana y entrada del juego, con su monumento,
 edificios, farolas, árboles y bancos; las dos salas son ahora edificios de la
-plaza (`docs/fase8-plaza-de-la-llave.md`).
+plaza (`docs/fase8-plaza-de-la-llave.md`). En la Fase 9, **tu casa**: la
+portería de la plaza da las llaves de un piso recién mudado (cama, armario y
+cajas), sólo entra su dueño y al volver al juego apareces en él
+(`docs/fase9-mi-primer-piso.md`).
 Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
 
@@ -86,6 +89,8 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Bloquear y reportar, con el contexto guardado | smoke test + `db:check` + navegador |
 | Fecha de nacimiento al registrarse (y en las cuentas de antes) | smoke test + navegador |
 | La Plaza de la Llave: entrada del juego, con puertas a las dos salas | smoke test (7b) + navegador |
+| Tu casa: llaves una sola vez, piso recién mudado, sólo entra el dueño | smoke test (7c) + `db:check` + navegador |
+| Muebles de varias celdas (la cama, 1×2) | smoke test + navegador |
 
 ## Las decisiones que no hay que deshacer
 
@@ -200,7 +205,8 @@ contenido y la cima, subiendo por hitos jugables:
 
 0. **Seguros (hecho).** El cimiento más bajo: edades, frases para los niños,
    filtro, bloquear y reportar.
-1. **Mi primer piso.** Llegar a la terminal, ganarse las llaves con tres tareas
+1. **Mi primer piso** (a medias: ya hay casa; faltan la tienda, el inventario
+   y colocar muebles). Llegar a la terminal, ganarse las llaves con tres tareas
    cortas y tener un piso recién mudado (cama y clóset) que se decora con la
    tienda. Trae los cimientos grandes: lugares como datos con las puertas en el
    servidor, el estado del jugador en el servidor, objetos de todo tipo con
@@ -264,6 +270,7 @@ contenido y la cima, subiendo por hitos jugables:
 | `fase6-interfaz-fina-teclado-zoom.md` | Interfaz fina y propia; teclado en puertas y asientos; zoom con la interfaz a tamaño fijo |
 | `fase7-seguridad-menores.md` | Niños seguros: edad privada, frases, filtro, bloquear y reportar |
 | `fase8-plaza-de-la-llave.md` | La primera zona de La Manzana: la plaza al aire libre, con la Llave |
+| `fase9-mi-primer-piso.md` | Tu casa: la portería, las llaves, el piso recién mudado; casas como datos y muebles de varias celdas |
 | `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
 | `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |

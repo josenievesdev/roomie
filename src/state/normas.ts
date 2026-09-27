@@ -86,3 +86,14 @@ export function modoChat(f: Franja): ModoChat {
 export function leeTextoLibre(f: Franja): boolean {
   return f !== "nino";
 }
+
+// ---------------------------------------------------------------- Las casas
+
+/**
+ * ¿Puede alguien entrar en una casa? De momento, sólo su dueño: todavía no
+ * hay amigos. Cuando los haya, entrarán también ellos (y la casa de un niño
+ * seguirá siendo sólo para sus amigos, nunca para cualquiera).
+ */
+export function puedeEntrarEnCasa(esDueno: boolean): boolean {
+  return esDueno;
+}

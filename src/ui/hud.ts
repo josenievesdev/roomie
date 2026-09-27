@@ -21,6 +21,8 @@ export type AccionesHud = {
   chat: () => void;
   vestidor: () => void;
   perfil: () => void;
+  /** Ir a tu casa */
+  casa: () => void;
   /** +1 acerca, -1 aleja */
   zoom: (paso: number) => void;
 };
@@ -79,6 +81,7 @@ export class Hud {
     nuevo("persona", "Perfil", acciones.perfil);
     nuevo("camiseta", "Vestidor · C", acciones.vestidor);
     nuevo("chat", "Chat · Enter", acciones.chat);
+    nuevo("casa", "Ir a tu casa", acciones.casa);
 
     // ---- Monedas, a la izquierda de los botones
     this.finMonedas = x - HUECO;

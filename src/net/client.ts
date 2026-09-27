@@ -4,6 +4,7 @@ import type {
   AuthErrorPayload,
   AuthOkPayload,
   AuthPayload,
+  CasaInfo,
   ChatPayload,
   ClientEvents,
   JoinErrorPayload,
@@ -12,6 +13,7 @@ import type {
   MotivoReporte,
   PlayerView,
   RoomPayload,
+  SalaDatosPayload,
   ServerEvents,
 } from "./protocol.ts";
 
@@ -31,6 +33,10 @@ export type NetHandlers = {
   onAuthError?: (err: AuthErrorPayload) => void;
   /** Cambió tu lista de bloqueados */
   onBloqueos?: (nombres: string[]) => void;
+  /** Ya tienes casa (te acaban de dar las llaves) */
+  onCasa?: (casa: CasaInfo) => void;
+  /** El mapa y los muebles de tu casa: ya se puede entrar */
+  onSalaDatos?: (p: SalaDatosPayload) => void;
 };
 
 /**
@@ -146,6 +152,11 @@ class NetClient {
     socket.on("players", (p) => this.setPlayers(p.players));
 
     socket.on("chat", (msg) => this.handlers.onChat?.(msg));
+    socket.on("casa", (p) => {
+      if (this.identidad) this.identidad = { ...this.identidad, casa: p };
+      this.handlers.onCasa?.(p);
+    });
+    socket.on("salaDatos", (p) => this.handlers.onSalaDatos?.(p));
     socket.on("bloqueos", (p) => {
       if (this.identidad) this.identidad = { ...this.identidad, bloqueados: p.bloqueados };
       this.handlers.onBloqueos?.(p.bloqueados);
@@ -238,6 +249,16 @@ class NetClient {
 
   bloquear(jugador: string, si: boolean): void {
     if (this.online) this.socket?.emit(si ? "bloquear" : "desbloquear", jugador);
+  }
+
+  /** En la portería: pedir las llaves de tu piso */
+  llaves(): void {
+    if (this.online) this.socket?.emit("llaves");
+  }
+
+  /** Ir a tu casa (el servidor contesta con su mapa: `onSalaDatos`) */
+  irACasa(): void {
+    if (this.online) this.socket?.emit("irACasa");
   }
 
   /** ¿Tienes bloqueado a alguien con ese nombre? */

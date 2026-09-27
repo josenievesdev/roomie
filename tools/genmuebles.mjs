@@ -24,9 +24,13 @@ const arg = (nombre) => process.argv.find((a) => a.startsWith(`--${nombre}=`))?.
 const solo = arg("solo")?.split(",");
 const carpetaPreview = arg("preview");
 
-/** Lienzo de trazado: sobra sitio para el mueble más alto y la pared entera */
+/**
+ * Lienzo de trazado: sobra sitio para el mueble más alto, la pared entera y,
+ * por debajo del ancla, los muebles que ocupan más de una celda (la cama se
+ * alarga hacia +row, que en pantalla es abajo a la izquierda).
+ */
 const W = 144;
-const HF = 196;
+const HF = 216;
 const AX = 72;
 const AY = 164;
 
@@ -56,10 +60,14 @@ for (const v of VARIANTES) {
   }
   if (x1 < 0) throw new Error(`${v.nombre}: el modelo no se ve (¿fuera de cámara?)`);
   if (m.sombra) {
-    x0 = Math.min(x0, Math.floor(AX - m.sombra.rx));
-    x1 = Math.max(x1, Math.ceil(AX + m.sombra.rx));
-    y0 = Math.min(y0, Math.floor(AY - m.sombra.ry));
-    y1 = Math.max(y1, Math.ceil(AY + m.sombra.ry));
+    // La sombra va en el centro de la huella, que en un mueble de varias
+    // celdas no es el ancla (dx, dy en px de pantalla)
+    const cx = AX + (m.sombra.dx ?? 0);
+    const cy = AY + (m.sombra.dy ?? 0);
+    x0 = Math.min(x0, Math.floor(cx - m.sombra.rx));
+    x1 = Math.max(x1, Math.ceil(cx + m.sombra.rx));
+    y0 = Math.min(y0, Math.floor(cy - m.sombra.ry));
+    y1 = Math.max(y1, Math.ceil(cy + m.sombra.ry));
   }
   x0 = Math.max(0, x0 - 1);
   y0 = Math.max(0, y0 - 1);

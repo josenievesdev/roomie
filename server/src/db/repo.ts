@@ -277,10 +277,11 @@ export async function mueblesDeSala(roomId: string): Promise<Item[]> {
  */
 export async function comprar(accountId: string, code: string): Promise<Item> {
   return sql.begin(async (tx) => {
+    // Sólo lo que está a la venta: las cajas de la mudanza se regalan, no se compran
     const [art] = await tx<{ price: number }[]>`
-      select price from catalog_items where code = ${code}
+      select price from catalog_items where code = ${code} and for_sale
     `;
-    if (!art) throw new Error(`el catálogo no tiene "${code}"`);
+    if (!art) throw new Error(`el catálogo no vende "${code}"`);
 
     await tx`select mover_saldo(${accountId}::uuid, ${-art.price}::bigint, 'compra', 'item', ${code})`;
 
@@ -290,6 +291,70 @@ export async function comprar(accountId: string, code: string): Promise<Item> {
     `;
     return item;
   });
+}
+
+// ------------------------------------------------------------------- Casas
+
+/** La casa de una cuenta: el id de su fila en `rooms` y su nombre */
+export type Casa = { id: string; nombre: string };
+
+export async function casaDe(accountId: string): Promise<Casa | null> {
+  const [fila] = await sql<Casa[]>`
+    select id, name as nombre from rooms where owner_id = ${accountId} and kind = 'personal'
+  `;
+  return fila ?? null;
+}
+
+/** Lo que regala la portería al mudarse: un mueble y dónde va */
+export type MuebleInicial = { code: string; col: number; row: number };
+
+/**
+ * La portería da las llaves: crea la casa (copiando la plantilla del piso) y
+ * los muebles de regalo, colocados, en UNA transacción. Si ya tenía casa,
+ * devuelve la que tenía: las llaves se dan una sola vez (y el índice
+ * `rooms_una_casa_por_cuenta` lo garantiza aunque lleguen dos peticiones a la
+ * vez).
+ */
+export async function darLlaves(
+  accountId: string,
+  nombre: string,
+  plantilla: { width: number; height: number },
+  iniciales: MuebleInicial[],
+): Promise<{ casa: Casa; nueva: boolean }> {
+  const ya = await casaDe(accountId);
+  if (ya) return { casa: ya, nueva: false };
+  try {
+    const casa = await sql.begin(async (tx) => {
+      const [c] = await tx<Casa[]>`
+        insert into rooms (slug, name, kind, owner_id, theme, cols, rows, layout)
+        values (${`casa-${accountId}`}, ${nombre}, 'personal', ${accountId}, 'piso',
+                ${plantilla.width}, ${plantilla.height}, ${tx.json(plantilla as never)})
+        returning id, name as nombre
+      `;
+      for (const m of iniciales) {
+        await tx`
+          insert into items (code, owner_id, room_id, col, "row")
+          values (${m.code}, ${accountId}, ${c.id}, ${m.col}, ${m.row})
+        `;
+      }
+      return c;
+    });
+    return { casa, nueva: true };
+  } catch (e) {
+    // Dos peticiones a la vez: la otra ganó. La casa es la suya.
+    const otra = await casaDe(accountId);
+    if (otra) return { casa: otra, nueva: false };
+    throw e;
+  }
+}
+
+/** Lo que hace falta para montar una casa: de quién es, su mapa y sus muebles */
+export async function datosDeCasa(roomId: string): Promise<{ dueno: string; mapa: unknown; muebles: Item[] } | null> {
+  const [sala] = await sql<{ owner_id: string; layout: unknown }[]>`
+    select owner_id, layout from rooms where id = ${roomId} and kind = 'personal'
+  `;
+  if (!sala) return null;
+  return { dueno: sala.owner_id, mapa: sala.layout, muebles: await mueblesDeSala(roomId) };
 }
 
 /** Coloca un objeto del inventario en una sala */

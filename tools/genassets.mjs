@@ -135,6 +135,18 @@ const THEMES = [
     wallBase: hex("#5e5446"),
     adoquin: true,
   },
+  {
+    // El piso recién mudado: tarima de madera clara y paredes crema, sin nada
+    key: "piso",
+    nombre: "Piso",
+    floorA: hex("#c29a6b"),
+    floorB: hex("#b38b5e"),
+    floorJoint: hex("#8a6642"),
+    floorAccent: hex("#e8cf9a"),
+    wall: hex("#efe4d0"),
+    wallRail: hex("#c9a37a"),
+    wallBase: hex("#8f6a48"),
+  },
 ];
 
 /** Césped y asfalto: iguales en cualquier tema (son de la calle) */
@@ -564,7 +576,31 @@ const rooms = [
     ],
   },
   plaza(),
+  piso(),
 ];
+
+/**
+ * PISO: la plantilla del piso recién mudado. No es una sala del juego: al
+ * dar las llaves, el servidor copia este mapa en la fila de la casa (tabla
+ * `rooms`), y a partir de ahí esa casa es suya. Sólo lleva lo fijo (paredes,
+ * ventanas, la puerta); la cama, el armario y las cajas son objetos del
+ * jugador, que el servidor le regala al mudarse.
+ */
+function piso() {
+  return {
+    id: "piso",
+    width: 8,
+    height: 8,
+    theme: 3,
+    objects: [
+      { type: "ventana", col: 2, row: 0 },
+      { type: "ventana", col: 0, row: 5 },
+      { type: "aplique", col: 0, row: 2 },
+      // Sale a la plaza, delante de la portería
+      { type: "puerta", col: 5, row: 0, props: { target: "plaza", targetCol: 11, targetRow: 1 } },
+    ],
+  };
+}
 
 /**
  * PLAZA DE LA LLAVE: la primera zona de La Manzana y la entrada del juego.
@@ -577,6 +613,7 @@ function plaza() {
   const H = 20;
   const C = 10; // el centro: la Llave
   const PUERTA_SALON = 6; // en la fachada de la fila 0
+  const PUERTA_PISOS = 11; // la portería del edificio de pisos, en la misma fachada
   const PUERTA_CLUB = 12; // en la fachada de la columna 0
   const parterre = (col, row) =>
     [3, 13].some((c0) => col >= c0 && col <= c0 + 3) && [3, 13].some((r0) => row >= r0 && row <= r0 + 3);
@@ -595,7 +632,7 @@ function plaza() {
   // Qué edificio hay en cada celda de cada fachada (estilos de ESTILOS_FACHADA)
   const tramo = (tramos, i) => tramos.find(([desde, hasta]) => i >= desde && i <= hasta)[2];
   const der = Array.from({ length: W }, (_, col) =>
-    fachadaFrame(tramo([[0, 3, 0], [4, 8, 1], [9, 13, 3], [14, W - 1, 0]], col), col === PUERTA_SALON ? 1 : 0, "der"),
+    fachadaFrame(tramo([[0, 3, 0], [4, 8, 1], [9, 13, 3], [14, W - 1, 0]], col), col === PUERTA_SALON || col === PUERTA_PISOS ? 1 : 0, "der"),
   );
   const izq = Array.from({ length: H }, (_, row) =>
     fachadaFrame(tramo([[0, 4, 3], [5, 8, 1], [9, 14, 2], [15, H - 1, 0]], row), row === PUERTA_CLUB ? 1 : 0, "izq"),
@@ -633,6 +670,12 @@ function plaza() {
       { type: "puerta", col: PUERTA_SALON, row: 0, props: { target: "room1", targetCol: 8, targetRow: 1 } },
       { type: "aplique", col: PUERTA_SALON - 1, row: 0 },
       { type: "aplique", col: PUERTA_SALON + 1, row: 0 },
+      // La portería del edificio de pisos: "casa" no es una sala, es TU casa
+      // (el cliente pide al servidor la suya; si aún no tiene, la portera le
+      // da las llaves). El destino exacto lo pone la puerta del piso.
+      { type: "puerta", col: PUERTA_PISOS, row: 0, props: { target: "casa", targetCol: 0, targetRow: 0 } },
+      { type: "aplique", col: PUERTA_PISOS - 1, row: 0 },
+      { type: "aplique", col: PUERTA_PISOS + 1, row: 0 },
       { type: "puerta", col: 0, row: PUERTA_CLUB, props: { target: "room2", targetCol: 3, targetRow: 1 } },
       { type: "neon", col: 0, row: PUERTA_CLUB - 1 },
       { type: "neon", col: 0, row: PUERTA_CLUB + 1 },

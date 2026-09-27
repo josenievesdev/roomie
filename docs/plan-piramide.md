@@ -296,6 +296,15 @@ más, fachadas como paredes, mobiliario de una celda). Cuando lleguen C1
 ### Hito 1 — "Mi primer piso"
 El gancho: llegar, ganarse las llaves y tener algo tuyo.
 
+**Hecho (fase 9):**
+- la portería da las llaves de un piso recién mudado;
+- las casas son datos y sólo entra el dueño;
+- al volver al juego apareces en tu casa;
+- muebles de varias celdas (C6).
+
+**Falta:** la tienda y el inventario (con C4), colocar muebles y la interfaz
+que se adapta (C10).
+
 - **Cimientos:** C1 (lugares y puertas en el servidor), C3, C4 (objetos y dos
   monedas), C6 (al menos la cama de dos celdas), C10 (anclas).
 - **Las normas de C0 que trae:** la casa de un niño sólo la visitan sus

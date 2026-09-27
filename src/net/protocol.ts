@@ -19,10 +19,31 @@ import type { Cell } from "../utils/pathfinding.ts";
  * primera zona de La Manzana. Las otras dos son edificios de la plaza.
  */
 export const ROOMS = ["plaza", "room1", "room2"] as const;
-export type RoomId = (typeof ROOMS)[number];
+/** Una sala fija del juego: su mapa está en `public/assets/<id>.json` */
+export type SalaFija = (typeof ROOMS)[number];
+/**
+ * La casa de un jugador: "casa:" + el id de su fila en la tabla `rooms`. Su
+ * mapa no está en los ficheros del juego: lo manda el servidor (`salaDatos`).
+ */
+export type CasaId = `casa:${string}`;
+export type RoomId = SalaFija | CasaId;
 
-export function isRoomId(v: unknown): v is RoomId {
+export function esSalaFija(v: unknown): v is SalaFija {
   return typeof v === "string" && (ROOMS as readonly string[]).includes(v);
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function esCasa(v: unknown): v is CasaId {
+  return typeof v === "string" && v.startsWith("casa:") && UUID.test(v.slice(5));
+}
+
+/**
+ * ¿Tiene forma de sala? Ojo: que exista una casa no quiere decir que se
+ * pueda entrar en ella; eso lo decide el servidor con `src/state/normas.ts`.
+ */
+export function isRoomId(v: unknown): v is RoomId {
+  return esSalaFija(v) || esCasa(v);
 }
 
 /** px/s de pantalla para el teclado. Debe ser IGUAL en cliente y servidor. */
@@ -95,7 +116,21 @@ export type AuthOkPayload = {
   necesitaNacimiento: boolean;
   /** Nombres de quienes has bloqueado */
   bloqueados: string[];
+  /** Tu casa, o null si aún no te han dado las llaves */
+  casa: CasaInfo | null;
 };
+
+/** Tu casa: su sala y cómo se llama */
+export type CasaInfo = { id: CasaId; nombre: string };
+
+/** Un mueble puesto en una sala (una fila de la tabla `items`) */
+export type MuebleColocado = { id: string; code: string; col: number; row: number; rot: number };
+
+/**
+ * Lo que hace falta para dibujar una sala que no está en los ficheros del
+ * juego (una casa): su mapa, con el mismo formato de Tiled, y sus muebles.
+ */
+export type SalaDatosPayload = { id: RoomId; mapa: unknown; muebles: MuebleColocado[] };
 
 export type AuthErrorCode =
   | "BAD_CREDENTIALS"
@@ -172,6 +207,10 @@ export interface ClientEvents {
   /** Dejar de recibir lo que dice un jugador (por su id) */
   bloquear: (jugador: string) => void;
   desbloquear: (jugador: string) => void;
+  /** En la portería: recoger las llaves de tu piso (se da una sola vez) */
+  llaves: () => void;
+  /** Ir a tu casa: el servidor contesta con `salaDatos` y ya se puede entrar */
+  irACasa: () => void;
 }
 
 /** Eventos que el servidor emite y el cliente escucha */
@@ -190,4 +229,8 @@ export interface ServerEvents {
   chat: (p: ChatPayload) => void;
   /** Tu lista de bloqueados cambió */
   bloqueos: (p: { bloqueados: string[] }) => void;
+  /** Ya tienes casa (la portera te dio las llaves) */
+  casa: (p: CasaInfo) => void;
+  /** El mapa y los muebles de una sala que no está en los ficheros (tu casa) */
+  salaDatos: (p: SalaDatosPayload) => void;
 }

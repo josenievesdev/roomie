@@ -68,8 +68,11 @@ export function crearMueble(
   const pos = toScreen(col, row);
   const def = FURNITURE[tipo];
   // Lo plano va pegado al suelo; lo de pared, justo encima de su trozo de
-  // muro (que está en la Y de su celda); lo demás, en la Y de su celda.
-  const z = def?.plano ? LAYER.ALFOMBRA : def?.pared || tipo === "puerta" ? worldDepth(pos.y) + 0.1 : worldDepth(pos.y);
+  // muro (que está en la Y de su celda); lo demás, en la Y de su celda. Lo
+  // que ocupa varias celdas (la cama), en la de su celda más adelantada:
+  // si no, quien estuviera junto a los pies quedaría tapado por la cama.
+  const frente = toScreen(col + (def?.huella?.col ?? 1) - 1, row + (def?.huella?.row ?? 1) - 1);
+  const z = def?.plano ? LAYER.ALFOMBRA : def?.pared || tipo === "puerta" ? worldDepth(pos.y) + 0.1 : worldDepth(frente.y);
   return scene.add.image(pos.x, pos.y, key).setOrigin(e.ax / e.w, e.ay / e.h).setDepth(z);
 }
 

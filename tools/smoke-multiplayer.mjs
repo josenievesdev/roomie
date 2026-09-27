@@ -5,7 +5,7 @@
 // Uso (con el servidor ya corriendo: `npm run dev:server`):
 //   node tools/smoke-multiplayer.mjs
 import { io } from "socket.io-client";
-import { loadWorld } from "../server/src/world.ts";
+import { loadWorld, mundoDesdeMapa } from "../server/src/world.ts";
 import { findPath } from "../src/utils/pathfinding.ts";
 
 const URL = process.env.SERVER ?? "http://localhost:3001";
@@ -591,7 +591,7 @@ check(
 // monumento) sienta mirando al sureste, igual que lo dibuja el cliente.
 {
   const plaza = loadWorld("public/assets", "plaza");
-  check(plaza.cols === 20 && plaza.rows === 20 && plaza.doorCells.size === 2, "la plaza (20×20) tiene sus dos puertas");
+  check(plaza.cols === 20 && plaza.rows === 20 && plaza.doorCells.size === 3, "la plaza (20×20) tiene sus tres puertas: Salón, Club y la portería");
   const P = makeClient();
   await registrar(P, "Paseo");
   await until(() => P.sock.connected, 3000);
@@ -608,6 +608,64 @@ check(
     );
   }
   P.sock.disconnect();
+}
+
+// ---------- 7c. Tu casa ----------
+// La portería da las llaves una sola vez, el piso recién mudado trae su cama
+// (que ocupa dos celdas), su armario y sus cajas, y nadie más puede entrar.
+{
+  const once = (c, evento, ms = 4000) =>
+    new Promise((r) => {
+      const t = setTimeout(() => r(null), ms);
+      c.sock.once(evento, (p) => {
+        clearTimeout(t);
+        r(p);
+      });
+    });
+  const Q = makeClient();
+  await registrar(Q, "Casita");
+  check(Q.identidad.casa === null, "una cuenta nueva todavía no tiene casa");
+  await until(() => Q.sock.connected, 3000);
+  await join(Q, "plaza", { col: 11, row: 1 });
+  Q.sock.emit("llaves");
+  const casa = await once(Q, "casa");
+  check(!!casa && /^casa:[0-9a-f-]{36}$/.test(casa.id), "la portera da las llaves: la casa es una sala nueva");
+  Q.sock.emit("llaves");
+  const otraVez = await once(Q, "casa");
+  check(otraVez?.id === casa?.id, "pedir las llaves otra vez no crea otra casa");
+
+  Q.sock.emit("irACasa");
+  const datos = await once(Q, "salaDatos");
+  const codigos = (datos?.muebles ?? []).map((m) => m.code).sort().join(",");
+  check(datos?.id === casa?.id && codigos === "armario,cajas,cajas,cama", `el piso recién mudado trae cama, armario y cajas (${codigos})`);
+  Q.sock.emit("room", { room: casa.id, col: 5, row: 1, facing: 4 });
+  check(await until(() => view(Q)?.room === casa.id), "entra en su casa");
+
+  // La cama ocupa dos celdas: las dos bloquean, en el servidor y en el mundo compartido
+  const cama = datos.muebles.find((m) => m.code === "cama");
+  const mundo = mundoDesdeMapa(datos.mapa, datos.muebles);
+  check(mundo.isBlocked(cama.col, cama.row) && mundo.isBlocked(cama.col, cama.row + 1), "la cama bloquea sus dos celdas");
+  const antes = { ...view(Q) };
+  Q.sock.emit("path", [{ col: 4, row: 1 }, { col: 3, row: 1 }, { col: 2, row: 1 }, { col: cama.col, row: cama.row + 1 }]);
+  await sleep(600);
+  check(Math.hypot(view(Q).col - antes.col, view(Q).row - antes.row) < 0.05, "un camino que acaba en los pies de la cama se rechaza");
+
+  // Nadie más entra (hasta que haya amigos, la norma es ésa)
+  const salaB = view(B)?.room;
+  B.sock.emit("room", { room: casa.id, col: 5, row: 1, facing: 4 });
+  await sleep(600);
+  check(view(B)?.room === salaB && view(B)?.room !== casa.id, "nadie más puede entrar en tu casa");
+  check(!view(B, Q.id), "y quien está fuera no ve a nadie de dentro");
+
+  // Al volver a entrar, el servidor recuerda la casa
+  Q.sock.disconnect();
+  const Q2 = makeClient();
+  await until(() => Q2.sock.connected, 3000);
+  const { username } = cuentaDe("Casita");
+  Q2.sock.emit("auth", { mode: "login", username, password: CLAVE });
+  const ok = await once(Q2, "authOk");
+  check(ok?.casa?.id === casa.id, "al volver a entrar, el servidor dice cuál es tu casa");
+  Q2.sock.disconnect();
 }
 
 // ---------- 8. Las salas no se mezclan ----------

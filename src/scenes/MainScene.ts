@@ -17,7 +17,7 @@ import {
   mascaraAlfombra,
   preloadMuebles,
 } from "../entities/furniture";
-import { FURNITURE, isFurniture, seatAt, vaGirado, type FurnitureKind } from "../state/furniture-catalog";
+import { FURNITURE, celdasDe, isFurniture, seatAt, vaGirado, type FurnitureKind } from "../state/furniture-catalog";
 import { findPath, type Cell } from "../utils/pathfinding";
 import {
   AvatarState,
@@ -56,7 +56,11 @@ import {
   PASS_MAX,
   ROOMS,
   USER_MIN,
+  esCasa,
+  isRoomId,
   type ChatPayload,
+  type MuebleColocado,
+  type SalaDatosPayload,
   type JoinErrorPayload,
   type AuthErrorPayload,
   type AuthOkPayload,
@@ -102,6 +106,16 @@ type Door = {
 };
 
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
+
+/**
+ * Los muebles de las casas que ha mandado el servidor, por sala. Viven fuera
+ * de la escena porque ésta se reinicia al cruzar una puerta, y la casa se
+ * dibuja DESPUÉS del reinicio. (El mapa va a la caché de JSON de Phaser, que
+ * también sobrevive.)
+ */
+const mueblesDeCasas = new Map<string, MuebleColocado[]>();
+/** Al entrar al juego se va a casa una sola vez; si no, cada reconexión te llevaría */
+let llegadaHecha = false;
 
 /** Cuánto dura el saludo del avatar cuando alguien manda 👋 */
 const SALUDO_MS = 1600;
@@ -297,6 +311,12 @@ export class MainScene extends Phaser.Scene {
   private transitioning = false;
   /** Alto de lo que cierra la sala por detrás: pared dentro, fachada fuera */
   private altoMuro = ALTO_PARED;
+  /** Ya se pidió la casa al servidor (esperando su mapa) */
+  private pidiendoCasa = false;
+  /** La celda de puerta en la que se está (para reaccionar al llegar, no cada frame) */
+  private puertaPisada = "";
+  /** Panel de la portería abierto */
+  private porteria: Phaser.GameObjects.GameObject[] = [];
 
   // Aspecto
   private look: Look = DEFAULT_LOOK;
@@ -373,7 +393,9 @@ export class MainScene extends Phaser.Scene {
 
   preload(): void {
     this.roomId = this.resolveRoom();
-    this.load.json(this.roomId, `assets/${this.roomId}.json`);
+    // Las salas fijas tienen su fichero; el mapa de una casa ya lo trajo el
+    // servidor y está en la caché
+    if (!this.cache.json.exists(this.roomId)) this.load.json(this.roomId, `assets/${this.roomId}.json`);
     this.load.spritesheet("tileset", "assets/tileset.png", {
       frameWidth: 64,
       frameHeight: 32,
@@ -423,6 +445,8 @@ export class MainScene extends Phaser.Scene {
     this.camaraLibre = false;
     this.ruedaAcum = 0;
     this.arrastre = null;
+    this.pidiendoCasa = false;
+    this.porteria = [];
     this.menuFrases = null;
     this.chatFrasesBtn = [];
 
@@ -488,6 +512,7 @@ export class MainScene extends Phaser.Scene {
       chat: () => this.alternarChat(),
       vestidor: () => this.abrirVestidor(),
       perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
+      casa: () => this.irACasa(),
       zoom: (paso) => this.cambiarZoom(paso),
     });
     this.hud.nivelZoom(this.nivelZoom, 0, ZOOMS.length - 1);
@@ -553,6 +578,10 @@ export class MainScene extends Phaser.Scene {
         }
         if (key === "Escape" && this.menuFrases) {
           this.cerrarFrases();
+          return;
+        }
+        if (key === "Escape" && this.porteria.length > 0) {
+          this.cerrarPorteria();
           return;
         }
         // Con el vestidor abierto, el teclado sólo lo cierra o gira la vista
@@ -624,6 +653,10 @@ export class MainScene extends Phaser.Scene {
       }
       if (this.menuFrases) {
         this.cerrarFrases();
+        return;
+      }
+      if (this.porteria.length > 0) {
+        this.cerrarPorteria();
         return;
       }
       this.handleWorldClick(pointer);
@@ -712,10 +745,13 @@ export class MainScene extends Phaser.Scene {
     // ¿Está en una puerta sin camino por delante? → cruzar. Da igual cómo
     // llegara: al final de un camino, con el teclado o por una corrección
     // del servidor (que sólo te pone en una puerta si ibas hacia ella).
-    if (this.avatar.path.length === 0) {
-      const d = this.doorAt(Math.round(this.avatar.col), Math.round(this.avatar.row));
-      if (d) this.transitionTo(d);
-    }
+    const enPuerta = this.avatar.path.length === 0 ? this.doorAt(Math.round(this.avatar.col), Math.round(this.avatar.row)) : undefined;
+    const clave = enPuerta ? `${enPuerta.col},${enPuerta.row}` : "";
+    if (enPuerta?.target === "casa") {
+      // La portería: sólo al LLEGAR a la puerta, no en cada frame que se está en ella
+      if (clave !== this.puertaPisada) this.alLlegarAPorteria();
+    } else if (enPuerta) this.transitionTo(enPuerta);
+    this.puertaPisada = clave;
 
     // Estado -> render
     const p = this.avatar.screen();
@@ -911,6 +947,9 @@ export class MainScene extends Phaser.Scene {
     if (save && (ROOMS as readonly string[]).includes(save.room)) {
       return save.room as RoomId;
     }
+    // Una casa, sólo si el servidor ya mandó su mapa (al recargar la página no
+    // lo hay: se empieza en la plaza y, al entrar, se va a casa)
+    if (save && esCasa(save.room) && this.cache.json.exists(save.room)) return save.room;
     // Quien llega por primera vez, llega a la ciudad: la Plaza de la Llave
     return ROOMS[0];
   }
@@ -918,7 +957,7 @@ export class MainScene extends Phaser.Scene {
   /** Guarda la partida y reinicia la escena en la sala destino */
   private transitionTo(d: Door): void {
     if (this.transitioning) return;
-    if (!(ROOMS as readonly string[]).includes(d.target)) return;
+    if (!isRoomId(d.target)) return;
     // Guardar el destino ANTES de marcar la transición: a partir de aquí
     // saveGame() ignora los guardados automáticos para que no sobrescriban
     // la sala destino con la posición vieja de la sala actual.
@@ -938,6 +977,91 @@ export class MainScene extends Phaser.Scene {
   private finishTransition(): void {
     if (!this.transitioning) return;
     this.scene.restart();
+  }
+
+  // ---------- Tu casa ----------
+
+  /** Al llegar a la puerta de la portería: a casa si ya tienes, o a por las llaves */
+  private alLlegarAPorteria(): void {
+    if (net.identidad?.casa) this.irACasa();
+    else this.abrirPorteria();
+  }
+
+  /** Pide la casa al servidor; cuando llega su mapa (`onSalaDatos`), se entra */
+  private irACasa(): void {
+    if (!net.identidad?.casa) {
+      this.pushChatLine("Aún no tienes casa: pasa por la portería del Edificio Roomie, en la plaza.", CHAT_COLORS.system);
+      return;
+    }
+    if (this.pidiendoCasa || this.transitioning || this.roomId === net.identidad.casa.id) return;
+    this.pidiendoCasa = true;
+    net.irACasa();
+  }
+
+  /** El servidor mandó el mapa y los muebles de tu casa: a la caché, y dentro */
+  private onSalaDatos(p: SalaDatosPayload): void {
+    this.pidiendoCasa = false;
+    if (this.cache.json.exists(p.id)) this.cache.json.remove(p.id);
+    this.cache.json.add(p.id, p.mapa);
+    mueblesDeCasas.set(p.id, p.muebles);
+    // Se aparece delante de la puerta del piso
+    const objetos = (p.mapa as TiledMap).layers.find((l) => l.name === "objetos")?.objects ?? [];
+    const puerta = objetos.find((o) => (o.type || o.class) === "puerta");
+    const col = this.intProp(puerta?.properties, "col") ?? 1;
+    const row = this.intProp(puerta?.properties, "row") ?? 1;
+    const dentro = row === 0 ? { col, row: 1 } : { col: 1, row };
+    this.transitionTo({ col, row, target: p.id, targetCol: dentro.col, targetRow: dentro.row });
+  }
+
+  /** La portería del Edificio Roomie: Rita, la portera, da las llaves del piso */
+  private abrirPorteria(): void {
+    if (this.porteria.length > 0 || this.authModalOpen || this.vestidor) return;
+    this.closeChat();
+    this.cerrarFrases();
+    this.closePeerMenu();
+    const W = 320;
+    const lineas = partirTexto(
+      "¡Hola! Soy Rita, la portera. ¿Te acabas de mudar a La Manzana? Tu piso ya está listo: es pequeño, pero es tuyo. Aquí tienes las llaves.",
+      W - 28,
+    );
+    const H = 34 + lineas.length * 16 + 12 + 26 + 14;
+    const X = 480 - W / 2;
+    const Y = Math.round(270 - H / 2);
+    const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(o: T, capa = 1): T => {
+      o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
+      this.porteria.push(o);
+      return o;
+    };
+    add(pieza(this, "panel", X, Y, W, H).setInteractive(), 0);
+    add(icono(this, "casa", X + 14, Y + 11));
+    add(texto(this, X + 32, yCentrada(Y + 8, 16), "Portería · Edificio Roomie", { color: UI.titulo }));
+    add(texto(this, X + 14, Y + 32, lineas.join("\n"), { interlineado: 1 }));
+    const yb = Y + H - 14 - 26;
+    this.porteria.push(
+      ...boton(this, X + 14, yb, W - 28 - 108, 26, "Recoger las llaves", () => this.recogerLlaves(), {
+        primario: true,
+        capa: LAYER.UI_PANEL + 2,
+      }).objetos,
+      ...boton(this, X + W - 14 - 100, yb, 100, 26, "Ahora no", () => this.cerrarPorteria(), { capa: LAYER.UI_PANEL + 2 }).objetos,
+    );
+  }
+
+  private cerrarPorteria(): void {
+    for (const o of this.porteria) o.destroy();
+    this.porteria = [];
+  }
+
+  private recogerLlaves(): void {
+    if (!net.isOnline) return;
+    net.llaves();
+  }
+
+  /** Ya tienes casa: si estabas en la portería, se entra directamente */
+  private onCasa(): void {
+    const enPorteria = this.porteria.length > 0;
+    this.cerrarPorteria();
+    this.pushChatLine("¡Ya tienes casa! Rita te da las llaves de tu piso.", CHAT_COLORS.mine);
+    if (enPorteria) this.irACasa();
   }
 
   // ---------- Aspecto ----------
@@ -1265,6 +1389,12 @@ export class MainScene extends Phaser.Scene {
         if (!this.alive) return;
         this.onAuthError(err);
       },
+      onCasa: () => {
+        if (this.alive) this.onCasa();
+      },
+      onSalaDatos: (p) => {
+        if (this.alive) this.onSalaDatos(p);
+      },
     });
     net.connect();
     this.netOnline = net.isOnline;
@@ -1408,6 +1538,13 @@ export class MainScene extends Phaser.Scene {
     this.pushChatLine(`Hola, ${p.nickname}. Tienes ${p.saldo} monedas.`, CHAT_COLORS.mine);
     this.sendWhere();
     this.updateStatusHud();
+    // Al entrar al juego se aparece en casa, si la hay (una vez por visita:
+    // no en cada reconexión). Quien aún no tiene, empieza en la plaza.
+    if (!llegadaHecha) {
+      llegadaHecha = true;
+      if (p.casa && this.roomId !== p.casa.id) this.irACasa();
+      else if (!p.casa) this.pushChatLine("Tu piso te espera: pasa por la portería del Edificio Roomie, en la plaza.", CHAT_COLORS.system);
+    }
     // Cuenta recién creada: lo primero, elegir cómo te van a ver
     if (this.recienRegistrado) {
       this.recienRegistrado = false;
@@ -1780,6 +1917,8 @@ export class MainScene extends Phaser.Scene {
   }
 
   private cerrarSesion(): void {
+    llegadaHecha = false; // quien entre después llegará a SU casa
+    mueblesDeCasas.clear();
     net.logout();
     this.closeAuthModal();
     clearSave();
@@ -2306,12 +2445,29 @@ export class MainScene extends Phaser.Scene {
         if (!lado) continue; // colgado en mitad de la sala: no hay muro
         sufijo = lado;
       } else if (vaGirado(kind, col, girado)) sufijo = "se";
-      crearMueble(this, kind, sufijo, col, row, this.theme);
-      crearLuz(this, kind, col, row, this.theme);
-      // Qué estorba y qué se pisa lo decide el catálogo, no un `if` aquí
-      if (def.blocks) this.blocked[row][col] = true;
-      this.furniture.push({ kind, col, row, girado });
+      this.ponerMueble(kind, sufijo, col, row, girado);
     }
+
+    // Los muebles de una casa no vienen en el mapa: son del jugador, y los
+    // mandó el servidor al entrar
+    for (const m of mueblesDeCasas.get(this.roomId) ?? []) {
+      if (!isFurniture(m.code) || !this.inBounds(m.col, m.row)) continue;
+      this.ponerMueble(m.code, vaGirado(m.code, m.col, false) ? "se" : undefined, m.col, m.row, false);
+    }
+  }
+
+  /**
+   * Dibuja un mueble y marca lo que estorba: TODAS las celdas de su huella
+   * (`celdasDe`, la misma regla que el servidor). Qué estorba y qué se pisa
+   * lo decide el catálogo, no un `if` aquí.
+   */
+  private ponerMueble(kind: FurnitureKind, sufijo: string | number | undefined, col: number, row: number, girado: boolean): void {
+    crearMueble(this, kind, sufijo, col, row, this.theme);
+    crearLuz(this, kind, col, row, this.theme);
+    if (FURNITURE[kind].blocks) {
+      for (const c of celdasDe(kind, col, row)) if (this.inBounds(c.col, c.row)) this.blocked[c.row][c.col] = true;
+    }
+    this.furniture.push({ kind, col, row, girado });
   }
 
   /**
