@@ -1,6 +1,6 @@
 # Guía de estilo visual
 
-**Última actualización:** 26 de septiembre de 2026
+**Última actualización:** 26 de septiembre de 2026 (fase 5)
 
 Roomie tiene que parecer un solo juego, no piezas de sitios distintos. Estas
 reglas son las que hacen que un avatar, un sofá y una pared encajen. Casi
@@ -20,7 +20,8 @@ suyo era el doble de gordo que los de la sala: se notaba enseguida.
 | Baldosa | 64×32 (rombo 2:1) | `src/utils/iso.ts` |
 | Avatar de pie | ~64 px de alto | `tools/avatar/model.mjs` (`P`) |
 | Pared | 96 px de cara (1,5 avatares) | `WALL_H` en `tools/genassets.mjs` y `ALTO_PARED` en `MainScene.ts` |
-| Puerta | 72 px (algo más que el avatar) | `ALTO_PUERTA` en `MainScene.ts` |
+| Puerta | ~75 px (algo más que el avatar) | `puerta` en `tools/muebles/modelos.mjs` |
+| Barra | ~40 px: a la altura del pecho | `barra` en `tools/muebles/modelos.mjs` |
 | Asiento del sofá | 14 px sobre el suelo | `sit.alto` en `src/state/furniture-catalog.ts` |
 | Asiento del taburete | 30 px | ídem |
 
@@ -97,13 +98,31 @@ no la lleva: su sombra caería sobre el asiento.
 ## 8. Profundidad con nombre
 
 Ningún `setDepth` con un número suelto (`src/render/layers.ts`):
-mundo < nombres < burbujas < HUD < paneles < modal. Dentro del mundo manda la
-Y de pantalla, y dos avatares en la misma celda se desempatan por lo
-adelantado que está cada uno (`avatarDepth`).
+suelo < lo que se pisa (alfombras, luz) < mundo < nombres < burbujas < HUD <
+paneles < modal. Dentro del mundo manda la Y de pantalla, y dos avatares en la
+misma celda se desempatan por lo adelantado que está cada uno
+(`avatarDepth`). Lo que no tiene altura va SIEMPRE en su banda, nunca en la
+del mundo: una alfombra con la Y de su celda tapaba el sofá de detrás.
 
 ## 9. Interfaz
 
-Fuente monoespaciada. Paleta de la interfaz:
+**Una fuente:** "Roomie Pixel" (`tools/fuente/glifos.mjs`), siempre a través
+de `texto()` del kit (`src/ui/kit.ts`), nunca un `fontFamily` suelto.
+Tamaños en múltiplos de 8 px, que es lo que mantiene la letra nítida:
+
+| Dónde | Tamaño |
+|---|---|
+| Nombres sobre los avatares, chuleta de teclas | 8 px (1×) |
+| Interfaz: HUD, paneles, botones, chat, burbujas | 16 px (2×) |
+| Logo | 32 px (4×) |
+
+**Unas piezas:** paneles, botones, campos, chips y burbujas son las de 9
+porciones del kit (`pieza()`, `boton()`), con su contorno, su bisel y sus
+esquinas a píxel. En la interfaz cada píxel de pieza son 2 del lienzo, igual
+que la letra a 16 px. Un botón tiene tres estados (normal, encima, pulsado) y
+actúa al soltar. Las coordenadas se redondean: medio píxel emborrona el texto.
+
+Paleta de la interfaz:
 
 | Uso | Color |
 |---|---|
@@ -129,14 +148,22 @@ Los paneles fijos a la cámara se hacen con objetos sueltos, nunca con un
 3. `node tools/genavatar.mjs --solo=torso/nueva --preview=<carpeta>` y mirar
    la vista previa en las 8 direcciones y las poses.
 
-**Un mueble:** una entrada en `src/state/furniture-catalog.ts` y su dibujo en
-`src/entities/furniture.ts`, con la luz del punto 3 y el contorno del punto 5.
-Si es un asiento, su `alto` y hacia dónde se mira.
+**Un mueble** (de suelo o de pared):
+1. Su entrada en `src/state/furniture-catalog.ts`: si estorba, si es un asiento
+   (con su `alto` y hacia dónde se mira), si es plano o si cuelga de la pared.
+2. Su modelo en `tools/muebles/modelos.mjs`, con materiales de `MAT_MUEBLE`
+   (el color lo pondrá la sala) y su variante en `VARIANTES`.
+3. `node tools/genmuebles.mjs --solo=nuevo --preview=<carpeta>` y mirar el
+   resultado con los dos temas.
+4. Su fila en la tienda: una migración en `db/migrations/`. `db:check` falla si
+   el cliente dibuja algo que no se puede comprar.
+
+**Un tema de sala:** una entrada en `ROOM_THEMES` (`src/render/theme.ts`). Los
+muebles toman sus tonos de ahí; no hay que redibujar ninguno.
 
 ## Lo que todavía no sigue la guía
 
-- **Los muebles** se dibujan con polígonos vectoriales (`Graphics`), no con el
-  generador 3D. Siguen la luz y el contorno, pero con otra técnica. El paso
-  natural es modelarlos como los avatares: misma cámara, misma luz, mismas
-  rampas. Tener objetos comprables en la tienda lo pedirá igualmente.
-- **La puerta** también es vectorial.
+- **El suelo y las paredes** son pixel art dibujado píxel a píxel
+  (`tools/genassets.mjs`), no modelado en 3D. Siguen la luz y la paleta, pero
+  con otra técnica.
+- **El marcador del clic** reutiliza una baldosa del suelo.

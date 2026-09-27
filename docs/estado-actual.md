@@ -17,8 +17,11 @@ servidor autoritativo y una base de datos Postgres real en Supabase.
 
 Desde la Fase 4 el avatar es de verdad: por capas (cuerpo, pelo, torso,
 piernas, calzado), en 8 direcciones y a la misma escala que la sala, y cada
-jugador ocupa su baldosa. Las reglas visuales que hacen que todo encaje están
-en `docs/guia-de-estilo.md`.
+jugador ocupa su baldosa. En la Fase 5 los muebles pasaron a la misma técnica
+3D (con el color del tema de cada sala), las paredes se llenaron de ventanas,
+cuadros, apliques y neones, y la interfaz entera es pixel art con una fuente
+propia. Las reglas visuales que hacen que todo encaje están en
+`docs/guia-de-estilo.md`.
 
 Lo que **no** existe todavía: tienda, inventario visible, salas propias,
 trabajos ni economía. Las tablas están y probadas, pero sin interfaz.
@@ -60,6 +63,9 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Vestidor: estilos y colores, guardado en la cuenta | navegador real + smoke test (aspecto) |
 | Cada jugador en su baldosa (también en los asientos) | smoke test (convivencia) |
 | Cambiar de destino andando sin tirones | smoke test (puente de caminos) |
+| Muebles en 3D coloreados por el tema de la sala | vistas previas del generador + navegador |
+| Paredes decoradas y luz de ambiente | navegador, en las dos salas |
+| Interfaz pixel art con fuente propia | navegador (HUD, login, chat, vestidor, menús) |
 
 ## Las decisiones que no hay que deshacer
 
@@ -98,6 +104,20 @@ viven en `src/state/look.ts`, compartido; el servidor corrige campo a campo lo
 que no esté ahí. Si el cliente pudiera mandar colores sueltos, cualquiera
 podría pedir prendas que nadie sabe dibujar (y la tienda no tendría nada que
 vender).
+
+**Los muebles también se generan, y el color lo pone la sala.** Igual que
+el avatar: `public/assets/muebles/` guarda material, luz y profundidad, y
+`src/render/muebleSheet.ts` los colorea con el tema. Pintar un PNG de colores
+a mano rompería los temas; se toca el modelo y se regenera.
+
+**Lo que no tiene altura va en su banda.** Suelo (`LAYER.SUELO`) y
+alfombras, luz y marcador (`LAYER.ALFOMBRA`) quedan por debajo de todo el
+mundo. Con la Y de su celda, una alfombra delante del sofá lo tapaba.
+
+**Una fuente, cargada antes que Phaser.** Todo el texto pasa por `texto()`
+del kit (`src/ui/kit.ts`) en la fuente pixel propia, a múltiplos de 8 px.
+Phaser mide cada fuente una sola vez: si arrancara antes de que llegue,
+mediría la de reserva y todo el texto quedaría descolocado.
 
 **La ocupación de baldosas vive en `AvatarState`.** Cliente y servidor
 ejecutan la misma regla ("si la celda final la ocupa alguien, renuncio"), cada
@@ -141,7 +161,8 @@ comprado. Es lo que da sentido al saldo. **La ropa ya es un catálogo**
 servidor compruebe, al validar el aspecto, que la prenda es tuya. El vestidor
 ya existe; sólo le faltaría separar "lo que tienes" de "lo que hay en la tienda".
 
-**2. Colocar muebles en una sala.** `items.room_id/col/row/stack` ya lo
+**2. Colocar muebles en una sala.** Los muebles ya son modelos coloreados por
+tema y la tienda los conoce todos (incluidos los de pared). `items.room_id/col/row/stack` ya lo
 soporta, incluido apilar (alfombra debajo, sofá encima). Falta el modo de
 edición en el cliente y que el servidor valide la celda.
 
@@ -159,9 +180,9 @@ dónde apoyarse.
 
 ## Deuda conocida
 
-- **Los muebles no usan el generador 3D** de los avatares: son polígonos
-  vectoriales. Siguen la luz y el contorno de la guía de estilo, pero con otra
-  técnica. Con la tienda, modelarlos como los avatares es lo coherente.
+- **Todos los muebles miden una celda y miran hacia un solo lado.** Un sofá de
+  dos plazas o una cama piden cortar el sprite por celdas para ordenarlo, y
+  girar muebles (la tabla `items` ya tiene `rot`) pide generar más variantes.
 - **Cada avatar en pantalla ocupa 1,8 MB de GPU** (hoja de 672×672). Con
   decenas de jugadores por sala habrá que generar sólo las direcciones en uso.
 - **El teclado no respeta la ocupación**: con las flechas se puede atravesar a
@@ -194,6 +215,7 @@ dónde apoyarse.
 | `fase2-11-decoracion.md` | Catálogo de mobiliario compartido |
 | `fase3-login-real.md` | Cuentas, sesiones y la identidad en el servidor |
 | `fase4-avatar-y-convivencia.md` | Clics en marcha, orden de dibujo, cada uno en su baldosa; avatar por capas y vestidor |
+| `fase5-muebles-y-ui.md` | Alfombra que cortaba el sofá; muebles en 3D, paredes decoradas y luz; interfaz pixel art |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |
 
 `reporte-proyecto.md` es anterior a todo esto y está desfasado; se conserva

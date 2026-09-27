@@ -62,6 +62,15 @@ combina y colorea las capas por jugador (`src/render/avatarSheet.ts`). Prenda
 nueva: estilo en `src/state/look.ts` + forma en `tools/avatar/model.mjs` +
 `node tools/genavatar.mjs --preview=<dir>` (y MIRAR las imágenes).
 
+**Los muebles también se generan.** Modelo en `tools/muebles/modelos.mjs` +
+entrada en el catálogo + `node tools/genmuebles.mjs` + su fila en la tienda
+(migración): `db:check` falla si el cliente dibuja algo que no se puede
+comprar. El color lo pone el tema de la sala, no el PNG.
+
+**Todo texto pasa por el kit** (`texto()` de `src/ui/kit.ts`): la fuente
+pixel propia a 8/16/24 px, nunca un `fontFamily` suelto. Las piezas de
+interfaz (paneles, botones, campos) también salen del kit.
+
 **El aspecto sólo se valida con `sanitizeLook()`** (`src/state/look.ts`,
 compartido). El servidor corrige campo a campo contra el catálogo.
 
@@ -91,6 +100,9 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
 - **Vite en Windows a veces se pierde la última de varias escrituras seguidas**
   y sirve un módulo a medias (código nuevo mezclado con viejo). `touch` al
   fichero y recargar.
+- **Phaser mide cada fuente UNA vez.** Si se crea un texto antes de que la
+  fuente pixel haya cargado, mide la de reserva y se queda con esa medida: por
+  eso `main.ts` espera a `document.fonts.load` antes de crear el juego.
 - **El servidor con `--watch` se reinicia al tocar cualquier módulo
   compartido**: los clientes de prueba conectados pierden la partida (socket.io
   reconecta, pero no vuelve a hacer `auth` ni `join`).
@@ -101,4 +113,6 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
 Si editas una sala en Tiled y luego lo ejecutas, la pierdes. Para retocar sólo
 el arte: `--solo=paredes` o `--solo=suelos` (los mapas no se tocan).
 
-`node tools/genavatar.mjs` regenera las 17 capas del avatar (~8 s).
+`node tools/genavatar.mjs` regenera las 17 capas del avatar (~8 s);
+`node tools/genmuebles.mjs`, las 41 variantes del mobiliario (~1 s);
+`node tools/genfuente.mjs`, la fuente pixel.

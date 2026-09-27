@@ -46,6 +46,8 @@ node tools/genassets.mjs                 # regenera tileset, paredes y mapas (¡
 node tools/genassets.mjs --solo=paredes  # sólo el arte, sin tocar los mapas
 node tools/genavatar.mjs                 # regenera las capas del avatar
 node tools/genavatar.mjs --preview=dir   # ...y vistas previas ampliadas en dir/
+node tools/genmuebles.mjs                # regenera el mobiliario (--preview=dir igual)
+node tools/genfuente.mjs                 # regenera la fuente pixel (roomie.ttf)
 ```
 
 ## Roadmap
@@ -64,6 +66,8 @@ Hecho:
 - [x] **Avatar nuevo**: por capas, 8 direcciones, a la escala de la sala, con vestidor
 - [x] **Convivencia**: cada uno en su baldosa, clics en marcha sin tirones
 - [x] **Guía de estilo** (`docs/guia-de-estilo.md`): una escala, una cámara, una luz
+- [x] **Muebles en 3D** con el color del tema de cada sala, paredes decoradas y luz de ambiente
+- [x] **Interfaz pixel art**: fuente propia, HUD, login, chat y vestidor rehechos
 
 Siguiente:
 
@@ -91,9 +95,12 @@ src/
 ├── render/
 │   ├── layers.ts            # bandas de profundidad (mundo / HUD / modal)
 │   ├── theme.ts             # paleta y piezas de atlas por sala
-│   └── avatarSheet.ts       # PURO — combina y colorea las capas del avatar
+│   ├── capas.ts             # PURO — combina y colorea capas generadas en 3D
+│   ├── avatarSheet.ts       # PURO — hoja del avatar
+│   ├── muebleSheet.ts       # PURO — materiales y color de los muebles por tema
+│   └── texturas.ts          # capas → texturas de Phaser
 ├── entities/                # avatar (texturas por jugador) y mobiliario
-├── ui/                      # <input> real (móvil) y vestidor
+├── ui/                      # kit pixel art, HUD, vestidor, <input> real (móvil)
 └── utils/                   # iso, A*, guardado local, rampas de color
 
 server/                      # paquete Node aparte
@@ -104,7 +111,9 @@ server/                      # paquete Node aparte
 
 db/migrations/*.sql          # esquema, en orden
 tools/                       # generadores de assets y smoke test E2E
-└── avatar/                  #   modelo 3D del avatar → capas de pixel art
+├── avatar/                  #   modelo 3D del avatar → capas de pixel art
+├── muebles/                 #   modelos 3D del mobiliario
+└── fuente/                  #   glifos de la fuente pixel
 docs/                        # estado-actual.md + informe de cada tanda
 ```
 
