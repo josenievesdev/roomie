@@ -53,8 +53,17 @@ const cuentaDe = (nombre) => ({
   nickname: `${nombre}${SUFIJO}`.slice(0, 16),
 });
 
+/** "AAAA-MM-DD" de alguien que cumplió `n` años ayer */
+const fechaConEdad = (n) => {
+  const d = new Date();
+  d.setUTCFullYear(d.getUTCFullYear() - n);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+};
+const ADULTO = fechaConEdad(30);
+
 /** Crea la cuenta y espera la confirmación del servidor */
-const registrar = async (c, nombre) =>
+const registrar = async (c, nombre, nacimiento = ADULTO) =>
   new Promise((resolve, reject) => {
     const { username, nickname } = cuentaDe(nombre);
     const alOk = (p) => {
@@ -73,7 +82,24 @@ const registrar = async (c, nombre) =>
       password: CLAVE,
       nickname,
       look: { shirt: 0x6c5ce7, hair: 0x4a3226 },
+      nacimiento,
     });
+  });
+
+/** Intenta registrarse y devuelve el error (o null si entró) */
+const intentarRegistro = (c, nombre, nacimiento) =>
+  new Promise((resolve) => {
+    const { username, nickname } = cuentaDe(nombre);
+    const listo = (r) => {
+      c.sock.off("authOk", alOk);
+      c.sock.off("authError", alError);
+      resolve(r);
+    };
+    const alOk = () => listo(null);
+    const alError = (e) => listo(e);
+    c.sock.once("authOk", alOk);
+    c.sock.once("authError", alError);
+    c.sock.emit("auth", { mode: "register", username, password: CLAVE, nickname, nacimiento });
   });
 const view = (c, id = c.id) => c.players.find((p) => p.id === id);
 const said = (c, text) => c.chats.some((m) => m.text.includes(text));
@@ -296,6 +322,104 @@ check(
 B.sock.emit("chat", "spam");
 await sleep(300);
 check(!said(A, "spam"), "segundo mensaje <400 ms descartado (anti-spam)");
+
+// ---------- 4b. Chat seguro ----------
+// La regla que más protege: un niño habla con frases del menú y nunca lee el
+// texto libre de nadie. Y para todos: datos personales fuera, groserías
+// tapadas, y bloquear funciona.
+{
+  const X = makeClient();
+  await until(() => X.sock.connected, 3000);
+  const sinFecha = await intentarRegistro(X, "Nofecha", undefined);
+  check(sinFecha?.code === "INVALID", "sin fecha de nacimiento no se crea la cuenta");
+  const peque = await intentarRegistro(X, "Peque", fechaConEdad(5));
+  check(peque?.code === "UNDER_AGE", "por debajo de la edad mínima no se crea la cuenta");
+  X.sock.disconnect();
+
+  const K = makeClient();
+  await registrar(K, "Kiki", fechaConEdad(10));
+  check(K.identidad.modoChat === "frases" && A.identidad.modoChat === "libre", "un niño habla con frases; un adulto escribe");
+  await until(() => K.sock.connected, 3000);
+  await join(K, "room1", room1.freeCell());
+  await until(() => view(A, K.id) && view(K, A.id), 3000);
+  const vk = view(A, K.id);
+  check(vk && !("nacimiento" in vk) && !("franja" in vk) && !("modoChat" in vk), "la edad de nadie viaja a los demás");
+
+  const recibio = (c, texto, desde = 0) => c.chats.slice(desde).some((m) => m.text === texto);
+  const espera = () => sleep(450); // el freno anti-spam es de 400 ms por jugador
+
+  let marca = A.chats.length;
+  K.sock.emit("chat", "hola, esto es texto libre");
+  await sleep(500);
+  check(!recibio(A, "hola, esto es texto libre", marca), "el texto libre de un niño no se envía");
+
+  K.sock.emit("frase", "hola");
+  check(
+    await until(() => A.chats.slice(marca).some((m) => m.text === "¡Hola!" && m.frase === "hola" && m.from === K.id)),
+    "la frase de un niño le llega a los demás, con el texto que pone el servidor",
+  );
+  K.sock.emit("frase", "frase-inventada");
+  await sleep(300);
+
+  await espera();
+  let mk = K.chats.length;
+  let mb = B.chats.length;
+  A.sock.emit("chat", "¿qué tal todos?");
+  check(await until(() => recibio(B, "¿qué tal todos?", mb)), "el texto libre de un adulto le llega a otro adulto");
+  await sleep(300);
+  check(!recibio(K, "¿qué tal todos?", mk), "pero a un niño no le llega nunca");
+
+  await espera();
+  A.sock.emit("frase", "que-tal");
+  check(await until(() => recibio(K, "¿Qué tal?", mk)), "las frases sí le llegan a un niño");
+
+  await espera();
+  mb = B.chats.length;
+  marca = A.chats.length;
+  A.sock.emit("chat", "escríbeme al 312 345 6789");
+  check(
+    await until(() => A.chats.slice(marca).some((m) => m.system && m.text.includes("no compartas"))),
+    "un teléfono no se envía, y a quien lo escribió se le explica por qué",
+  );
+  check(!B.chats.slice(mb).some((m) => m.text.includes("345")), "y a nadie le llega");
+
+  await espera();
+  A.sock.emit("chat", "eres un idiota");
+  check(await until(() => recibio(B, "eres un ★★★★★★", mb)), "las groserías llegan tapadas");
+
+  // B bloquea a A: ya no le llega nada suyo, ni texto ni frases
+  B.sock.emit("bloquear", A.id);
+  const bloqueado = await new Promise((r) => {
+    B.sock.once("bloqueos", (p) => r(p.bloqueados));
+    setTimeout(() => r(null), 3000);
+  });
+  check(Array.isArray(bloqueado) && bloqueado.includes(A.identidad.nickname), "B bloquea a A y su lista lo dice");
+  await espera();
+  mb = B.chats.length;
+  A.sock.emit("frase", "hola");
+  await sleep(500);
+  check(!B.chats.slice(mb).some((m) => m.from === A.id), "a quien bloqueó no le llega nada del bloqueado");
+  B.sock.emit("desbloquear", A.id);
+  await until(() => B.chats.slice(mb).some((m) => m.system && m.text.includes("desbloqueado")), 3000);
+  await espera();
+  A.sock.emit("frase", "adios");
+  check(await until(() => recibio(B, "¡Adiós!", mb)), "al desbloquear vuelve a llegar");
+
+  // Un niño puede reportar
+  mk = K.chats.length;
+  K.sock.emit("reportar", { jugador: A.id, motivo: "lenguaje" });
+  check(
+    await until(() => K.chats.slice(mk).some((m) => m.system && m.text.startsWith("Gracias por avisar"))),
+    "un niño puede reportar a alguien, y se le da las gracias",
+  );
+  K.sock.emit("reportar", { jugador: A.id, motivo: "lenguaje" });
+  check(
+    await until(() => K.chats.slice(mk).some((m) => m.system && m.text.startsWith("Ya nos avisaste"))),
+    "reportar dos veces seguidas a la misma persona no duplica el reporte",
+  );
+  K.sock.disconnect();
+  await until(() => !view(A, K.id), 3000);
+}
 
 // ---------- 5. Camino trampa rechazado ----------
 // Un hueco de 2-3 celdas es retraso y se salva con un puente (3b); uno de 5

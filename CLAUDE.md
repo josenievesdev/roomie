@@ -26,6 +26,7 @@ obligatoria y no hay modo sin base de datos.
 ```bash
 npm run typecheck                  # cliente + servidor
 npm run build
+node tools/prueba-normas.mjs       # filtro del chat y edades, sin servidor
 node tools/smoke-multiplayer.mjs   # E2E: registra cuentas reales y juega
 npm --prefix server run db:check   # ejerce los invariantes de la base
 ```
@@ -44,6 +45,18 @@ Si metes Phaser ahí, rompes el servidor. Phaser sólo vive en `scenes/`,
 **El servidor es la autoridad.** Posiciones, colisiones, nombre y dinero los
 decide él. El navegador nunca habla con la base de datos; si lo hiciera, se
 perdería el modelo anti-trampas.
+
+**En Roomie juegan niños: la seguridad va primero** (`docs/fase7-seguridad-menores.md`).
+- Toda interacción entre dos jugadores (chat, mensajes privados, amistades,
+  regalos, comercio, visitas, ubicación) pasa por una regla de
+  `src/state/normas.ts`, y la aplica el servidor. Nunca una regla de edad
+  suelta en otro sitio.
+- **La edad es privada:** no viaja a ningún otro cliente, ni en `PlayerView`
+  ni en ningún evento.
+- Los niños hablan con frases (`src/state/frases.ts`) y no reciben texto
+  libre; el texto libre de los demás pasa por `filtrarChat()`, y el chat se
+  entrega uno a uno (`emitirChat` en el servidor), nunca con un `io.to(sala)`
+  directo.
 
 **Ningún `setDepth` con un número suelto.** O es `worldDepth(...)` o es una
 constante de `src/render/layers.ts`. Las bandas están separadas a propósito
@@ -99,6 +112,11 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
   (`C:\...` frente a `file:///C:/...`). Usa `pathToFileURL`.
 - **El cliente no puede decir cómo se llama.** Si añades un campo `name` a algún
   evento, lo estás deshaciendo.
+- **Las cuentas nuevas necesitan fecha de nacimiento.** Un cliente de prueba
+  que se registre sin `nacimiento` ("AAAA-MM-DD") recibe `INVALID`; las cuentas
+  de antes reciben `necesitaNacimiento` y el servidor no las deja entrar.
+- **Probar el control de edad deja una marca en el navegador**
+  (`roomie:edad-rechazada`, 24 h) que impide registrarse: bórrala al acabar.
 - **Con la ventana de Chrome oculta** el juego va a 2 fps, los `setTimeout` se
   frenan a 1 por segundo y los clics reales no llegan. Para probar, mover el
   bucle a mano cediendo con `MessageChannel` y simular `PointerEvent` sobre el

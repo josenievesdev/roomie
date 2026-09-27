@@ -1,5 +1,6 @@
 import type { Facing } from "../state/avatarState.ts";
 import type { Look } from "../state/look.ts";
+import type { ModoChat } from "../state/normas.ts";
 import type { Cell } from "../utils/pathfinding.ts";
 
 // Protocolo cliente ↔ servidor. Módulo PURO (sin Phaser, sin Node): lo importa
@@ -67,6 +68,8 @@ export type AuthPayload = {
   /** Sólo al registrarse */
   nickname?: string;
   look?: Look;
+  /** Sólo al registrarse, y obligatoria: "AAAA-MM-DD" (ver `src/state/normas.ts`) */
+  nacimiento?: string;
 };
 
 /** Reanudar con el token guardado, sin volver a teclear la contraseña */
@@ -79,6 +82,15 @@ export type AuthOkPayload = {
   nickname: string;
   look: Look;
   saldo: number;
+  /**
+   * Cómo hablas: con frases del menú o con texto propio. Lo decide el
+   * servidor por tu edad; tu edad en sí no viaja nunca.
+   */
+  modoChat: ModoChat;
+  /** Cuenta de antes: falta la fecha de nacimiento y no se entra sin ella */
+  necesitaNacimiento: boolean;
+  /** Nombres de quienes has bloqueado */
+  bloqueados: string[];
 };
 
 export type AuthErrorCode =
@@ -87,7 +99,9 @@ export type AuthErrorCode =
   | "NICKNAME_TAKEN"
   | "INVALID"
   | "RATE_LIMITED"
-  | "NO_DB";
+  | "NO_DB"
+  /** Por debajo de la edad mínima: no se puede crear la cuenta */
+  | "UNDER_AGE";
 
 export type AuthErrorPayload = { code: AuthErrorCode; message: string };
 
@@ -107,6 +121,17 @@ export type ChatPayload = {
   room: RoomId;
   text: string;
   system: boolean;
+  /** Si es una frase del menú, su id (`src/state/frases.ts`) */
+  frase?: string;
+};
+
+/** Por qué se reporta a alguien (lo que ve quien reporta, en palabras sencillas) */
+export type MotivoReporte = "acoso" | "lenguaje" | "datos" | "otro";
+
+export type ReportePayload = {
+  /** id del jugador reportado (el de `PlayerView`) */
+  jugador: string;
+  motivo: MotivoReporte;
 };
 
 /** Error al unirse (nickname duplicado, sala llena, etc.) */
@@ -132,8 +157,17 @@ export interface ClientEvents {
   look: (look: Look) => void;
   /** Cruzó una puerta: cambia de sala en el servidor */
   room: (p: RoomPayload) => void;
-  /** Mensaje de chat */
+  /** Mensaje de chat con texto propio (los niños no pueden: ver `frase`) */
   chat: (text: string) => void;
+  /** Una frase o un gesto del menú, por su id */
+  frase: (id: string) => void;
+  /** Cuenta de antes: la fecha de nacimiento que faltaba ("AAAA-MM-DD") */
+  nacimiento: (fecha: string) => void;
+  /** Reportar a un jugador de la sala */
+  reportar: (p: ReportePayload) => void;
+  /** Dejar de recibir lo que dice un jugador (por su id) */
+  bloquear: (jugador: string) => void;
+  desbloquear: (jugador: string) => void;
 }
 
 /** Eventos que el servidor emite y el cliente escucha */
@@ -150,4 +184,6 @@ export interface ServerEvents {
   players: (p: { players: PlayerView[] }) => void;
   /** Chat de sala (incluido el eco de tu propio mensaje) + avisos de sistema */
   chat: (p: ChatPayload) => void;
+  /** Tu lista de bloqueados cambió */
+  bloqueos: (p: { bloqueados: string[] }) => void;
 }

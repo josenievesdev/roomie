@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { sql } from "./index.ts";
-import { autenticar, saldoDe, type Account, type Avatar } from "./repo.ts";
+import { autenticar, cuentaPorId, saldoDe, type Account, type Avatar } from "./repo.ts";
 
 // Sesiones e intentos de entrada.
 //
@@ -45,9 +45,7 @@ export async function reanudar(token: string): Promise<Omit<Sesion, "token"> | n
 
   await sql`update sessions set last_seen_at = now() where id = ${fila.id}`;
 
-  const [cuenta] = await sql<{ id: string; username: string }[]>`
-    select id, username from accounts where id = ${fila.account_id}
-  `;
+  const cuenta = await cuentaPorId(fila.account_id);
   if (!cuenta) return null;
 
   const [avatar] = await sql<Avatar[]>`

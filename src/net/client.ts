@@ -9,6 +9,7 @@ import type {
   JoinErrorPayload,
   JoinPayload,
   Look,
+  MotivoReporte,
   PlayerView,
   RoomPayload,
   ServerEvents,
@@ -28,6 +29,8 @@ export type NetHandlers = {
   onJoinError?: (err: JoinErrorPayload) => void;
   onAuthOk?: (p: AuthOkPayload) => void;
   onAuthError?: (err: AuthErrorPayload) => void;
+  /** Cambió tu lista de bloqueados */
+  onBloqueos?: (nombres: string[]) => void;
 };
 
 /**
@@ -143,6 +146,10 @@ class NetClient {
     socket.on("players", (p) => this.setPlayers(p.players));
 
     socket.on("chat", (msg) => this.handlers.onChat?.(msg));
+    socket.on("bloqueos", (p) => {
+      if (this.identidad) this.identidad = { ...this.identidad, bloqueados: p.bloqueados };
+      this.handlers.onBloqueos?.(p.bloqueados);
+    });
     socket.on("joinError", (err) => this.handlers.onJoinError?.(err));
 
     socket.on("authOk", (p) => {
@@ -213,6 +220,34 @@ class NetClient {
 
   chat(text: string): void {
     if (this.online) this.socket?.emit("chat", text);
+  }
+
+  /** Una frase o un gesto del menú, por su id */
+  frase(id: string): void {
+    if (this.online) this.socket?.emit("frase", id);
+  }
+
+  /** Cuenta de antes: la fecha de nacimiento que faltaba ("AAAA-MM-DD") */
+  nacimiento(fecha: string): void {
+    this.socket?.emit("nacimiento", fecha);
+  }
+
+  reportar(jugador: string, motivo: MotivoReporte): void {
+    if (this.online) this.socket?.emit("reportar", { jugador, motivo });
+  }
+
+  bloquear(jugador: string, si: boolean): void {
+    if (this.online) this.socket?.emit(si ? "bloquear" : "desbloquear", jugador);
+  }
+
+  /** ¿Tienes bloqueado a alguien con ese nombre? */
+  tieneBloqueado(nombre: string): boolean {
+    return this.identidad?.bloqueados.includes(nombre) ?? false;
+  }
+
+  /** ¿Hablas con frases del menú (y no con texto propio)? Lo decide el servidor por tu edad. */
+  get hablaConFrases(): boolean {
+    return this.identidad?.modoChat === "frases";
   }
 }
 

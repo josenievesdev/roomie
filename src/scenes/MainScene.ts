@@ -28,10 +28,22 @@ import {
   type SitTarget,
 } from "../state/avatarState";
 import { DEFAULT_LOOK, mismoLook, sanitizeLook } from "../state/look";
+import { frasePorId, GESTOS, GESTO_SALUDO } from "../state/frases";
+import { parsearNacimiento } from "../state/normas";
 import { Vestidor } from "../ui/vestidor";
+import { MenuFrases } from "../ui/menuFrases";
 import { Hud } from "../ui/hud";
 import { boton, centrar, crearTexturasUI, icono, partirTexto, pieza, texto, UI, UI_HEX, yCentrada } from "../ui/kit";
-import { loadSave, writeSave, clearSave, cargarZoom, guardarZoom, type SaveData } from "../utils/storage";
+import {
+  loadSave,
+  writeSave,
+  clearSave,
+  cargarZoom,
+  guardarZoom,
+  edadRechazadaReciente,
+  marcarEdadRechazada,
+  type SaveData,
+} from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
 import { themeFor, type RoomTheme } from "../render/theme";
 import { createTextInput, textInputFocused, type TextInput } from "../ui/textInput";
@@ -49,6 +61,7 @@ import {
   type AuthErrorPayload,
   type AuthOkPayload,
   type Look,
+  type MotivoReporte,
   type PlayerView,
   type RoomId,
 } from "../net/protocol";
@@ -105,9 +118,12 @@ const HUECO_BURBUJA = HUECO_NOMBRE + ALTO_ETIQUETA + 5;
  */
 const ALTO_PARED = 96;
 
-/** Los tres modos del modal de cuenta */
-type AuthModalMode = "login" | "register" | "profile";
-type CampoClave = "username" | "password" | "nickname";
+/**
+ * Los modos del modal de cuenta. "nacimiento" es para las cuentas de antes,
+ * que aún no dijeron su fecha de nacimiento: sin ella no se entra.
+ */
+type AuthModalMode = "login" | "register" | "profile" | "nacimiento";
+type CampoClave = "username" | "password" | "nickname" | "dia" | "mes" | "anio";
 
 /** Un campo de texto del modal: lo dibuja Phaser, lo escribe un <input> real */
 type CampoAuth = {
@@ -116,7 +132,17 @@ type CampoAuth = {
   texto: Phaser.GameObjects.Text;
   secreto: boolean;
   input: TextInput | null;
+  /** Lo que se ve, apagado, mientras está vacío ("Día", "Mes", "Año") */
+  placeholder?: string;
 };
+
+/** Motivos de reporte, con palabras que entiende un niño */
+const MOTIVOS_REPORTE: { motivo: MotivoReporte; texto: string }[] = [
+  { motivo: "acoso", texto: "Me está molestando" },
+  { motivo: "lenguaje", texto: "Dice groserías" },
+  { motivo: "datos", texto: "Pide datos o fotos" },
+  { motivo: "otro", texto: "Otra cosa" },
+];
 
 /**
  * Panel de chat de la esquina inferior izquierda: historial a la vista que
@@ -157,9 +183,6 @@ const CHAT_COLORS = {
 
 /** Una línea ya partida del historial */
 type ChatLine = { text: string; color: string; at: number };
-
-/** Gestos rápidos del menú de avatar. Viajan como mensajes de chat normales. */
-const EMOTES = ["👋", "😀", "😂", "❤️", "👍", "🎉"] as const;
 
 /**
  * Pieza del menú de avatar con su desplazamiento respecto al ancla.
@@ -312,6 +335,12 @@ export class MainScene extends Phaser.Scene {
   private peerMenuItems: MenuItem[] = [];
   /** Id del jugador al que pertenece el menú abierto */
   private peerMenuFor = "";
+  /** Medidas del menú de avatar abierto (el de reportar es más alto) */
+  private menuTam = { w: 180, h: 118 };
+  /** Menú de frases abierto (null = cerrado) */
+  private menuFrases: MenuFrases | null = null;
+  /** Botón "Frases" de la barra del chat, mientras está abierta */
+  private chatFrasesBtn: Phaser.GameObjects.GameObject[] = [];
 
   // Cámara
   /**
@@ -381,6 +410,8 @@ export class MainScene extends Phaser.Scene {
     this.camaraLibre = false;
     this.ruedaAcum = 0;
     this.arrastre = null;
+    this.menuFrases = null;
+    this.chatFrasesBtn = [];
 
     const save = loadSave();
     // Con sesión, el aspecto es el de la cuenta; sin ella, el último guardado
@@ -440,7 +471,7 @@ export class MainScene extends Phaser.Scene {
     // Interfaz: piezas pixel art (una vez) y el HUD
     crearTexturasUI(this);
     this.hud = new Hud(this, {
-      chat: () => (this.chatOpen ? this.closeChat() : this.openChat()),
+      chat: () => this.alternarChat(),
       vestidor: () => this.abrirVestidor(),
       perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
       zoom: (paso) => this.cambiarZoom(paso),
@@ -486,8 +517,11 @@ export class MainScene extends Phaser.Scene {
     //
     // Si todavía no ha llegado la respuesta al `resume`, no se abre el modal:
     // lo hará `onAuthError` si el token no valía.
-    if (net.autenticado) this.sendWhere();
-    else if (!net.isOnline || !tokenGuardado()) this.showAuthModal("login");
+    if (net.autenticado) {
+      // Cuenta de antes sin fecha de nacimiento: primero eso
+      if (net.identidad?.necesitaNacimiento) this.showAuthModal("nacimiento");
+      else this.sendWhere();
+    } else if (!net.isOnline || !tokenGuardado()) this.showAuthModal("login");
 
     const kb = this.input.keyboard;
     if (kb) {
@@ -503,6 +537,10 @@ export class MainScene extends Phaser.Scene {
           this.closePeerMenu();
           return;
         }
+        if (key === "Escape" && this.menuFrases) {
+          this.cerrarFrases();
+          return;
+        }
         // Con el vestidor abierto, el teclado sólo lo cierra o gira la vista
         if (this.vestidor) {
           if (key === "Escape" || key === "c" || key === "C") this.cerrarVestidor();
@@ -511,7 +549,7 @@ export class MainScene extends Phaser.Scene {
           return;
         }
         if (!this.chatOpen) {
-          if (key === "Enter") this.openChat();
+          if (key === "Enter") this.alternarChat();
           else if (key === "c" || key === "C") this.abrirVestidor();
           else if (key === "+" || key === "=") this.cambiarZoom(1);
           else if (key === "-" || key === "_") this.cambiarZoom(-1);
@@ -565,9 +603,13 @@ export class MainScene extends Phaser.Scene {
       this.arrastre = null;
       if (!a || a.activo || this.authModalOpen || this.vestidor) return;
       if (sobre.length > 0) return; // se soltó encima de un botón: es suyo
-      // Un clic en el mundo con el menú de avatar abierto sólo lo cierra
+      // Un clic en el mundo con un menú abierto (de avatar, de frases) sólo lo cierra
       if (this.peerMenuItems.length > 0) {
         this.closePeerMenu();
+        return;
+      }
+      if (this.menuFrases) {
+        this.cerrarFrases();
         return;
       }
       this.handleWorldClick(pointer);
@@ -617,6 +659,8 @@ export class MainScene extends Phaser.Scene {
       for (const peer of this.peers.values()) destroyAvatarAssets(this, peer.textureKey);
       this.vestidor?.destroy();
       this.vestidor = null;
+      this.menuFrases?.destroy();
+      this.menuFrases = null;
     });
   }
 
@@ -891,6 +935,7 @@ export class MainScene extends Phaser.Scene {
     if (this.vestidor || this.authModalOpen) return;
     this.closeChat();
     this.closePeerMenu();
+    this.cerrarFrases();
     this.avatar.cancelPath();
     this.vestidor = new Vestidor(this, {
       look: this.look,
@@ -981,8 +1026,54 @@ export class MainScene extends Phaser.Scene {
 
   // ---------- Chat ----------
 
+  /** El botón y la tecla del chat: texto propio, o el menú de frases si hablas con frases */
+  private alternarChat(): void {
+    if (net.hablaConFrases) {
+      if (this.menuFrases) this.cerrarFrases();
+      else this.abrirFrases();
+      return;
+    }
+    if (this.chatOpen) this.closeChat();
+    else this.openChat();
+  }
+
+  /** Menú de frases (el chat de los niños, y el rápido de todos) */
+  private abrirFrases(): void {
+    if (this.authModalOpen || this.vestidor) return;
+    this.closeChat();
+    this.closePeerMenu();
+    this.menuFrases?.destroy();
+    this.menuFrases = new MenuFrases(this, {
+      alElegir: (id) => {
+        this.enviarFrase(id);
+        this.cerrarFrases();
+      },
+      alCerrar: () => this.cerrarFrases(),
+    });
+  }
+
+  private cerrarFrases(): void {
+    this.menuFrases?.destroy();
+    this.menuFrases = null;
+  }
+
+  /** Una frase o un gesto: el texto lo pone el servidor a partir del id */
+  private enviarFrase(id: string): void {
+    const f = frasePorId(id);
+    if (!f) return;
+    if (net.isOnline) {
+      net.frase(id);
+    } else {
+      this.showBubble("me", f.texto);
+      this.pushChatLine(`Tú: ${f.texto}`, CHAT_COLORS.mine);
+    }
+  }
+
   private openChat(): void {
     if (this.authModalOpen) return; // el modal se lleva la entrada
+    // Quien habla con frases no tiene barra de texto
+    if (net.hablaConFrases) return this.abrirFrases();
+    this.cerrarFrases();
     this.chatOpen = true;
     this.chatText = "";
     this.avatar.cancelPath();
@@ -1003,6 +1094,19 @@ export class MainScene extends Phaser.Scene {
       onCancel: () => this.closeChat(),
     });
     this.chatInput.focus();
+
+    // Las frases, a mano también para quien escribe (rápidas, y en el móvil)
+    const anchoBtn = 56;
+    this.chatFrasesBtn = boton(
+      this,
+      CHAT_PANEL.x + CHAT_PANEL.w - 3 - anchoBtn,
+      CHAT_BARRA.y + 3,
+      anchoBtn,
+      CHAT_BARRA.h - 6,
+      "Frases",
+      () => this.abrirFrases(),
+      { capa: LAYER.UI_PANEL + 2 },
+    ).objetos;
   }
 
   private closeChat(): void {
@@ -1010,6 +1114,8 @@ export class MainScene extends Phaser.Scene {
     this.chatText = "";
     this.chatBg.setVisible(false);
     this.chatLabel.setVisible(false);
+    for (const o of this.chatFrasesBtn) o.destroy();
+    this.chatFrasesBtn = [];
     this.chatInput?.destroy();
     this.chatInput = null;
     this.renderChatPanel(); // al cerrar vuelve el modo "sólo lo reciente"
@@ -1157,7 +1263,8 @@ export class MainScene extends Phaser.Scene {
    * cuenta y el servidor lo saca de la base de datos.
    */
   private sendWhere(): void {
-    if (!net.autenticado) return;
+    // Sin fecha de nacimiento el servidor no deja entrar: se pide antes
+    if (!net.autenticado || net.identidad?.necesitaNacimiento) return;
     const where = {
       room: this.roomId,
       col: Math.round(this.avatar.col),
@@ -1196,7 +1303,7 @@ export class MainScene extends Phaser.Scene {
     }
     this.showBubble(quien, msg.text);
     // El gesto de saludar también se ve en el cuerpo, no sólo en la burbuja
-    if (msg.text === "👋") this.saludos.set(quien, this.time.now + SALUDO_MS);
+    if (msg.frase === GESTO_SALUDO || msg.text === "👋") this.saludos.set(quien, this.time.now + SALUDO_MS);
     // Burbuja sobre la cabeza Y línea en el panel: la burbuja se va en 4 s,
     // el panel conserva la conversación.
     this.pushChatLine(`${msg.name}: ${msg.text}`, mio ? CHAT_COLORS.mine : CHAT_COLORS.other);
@@ -1272,6 +1379,13 @@ export class MainScene extends Phaser.Scene {
    * guardado local. A partir de aquí ya se puede entrar al mundo.
    */
   private onAuthOk(p: AuthOkPayload): void {
+    // Cuenta de antes: sin fecha de nacimiento no hay normas que aplicarle, y
+    // el servidor no deja entrar. Se pide y, al darla, llega otro authOk.
+    if (p.necesitaNacimiento) {
+      this.closeAuthModal();
+      this.showAuthModal("nacimiento");
+      return;
+    }
     this.look = sanitizeLook(p.look);
     this.applyLookLocal();
     this.closeAuthModal();
@@ -1287,6 +1401,9 @@ export class MainScene extends Phaser.Scene {
   }
 
   private onAuthError(err: AuthErrorPayload): void {
+    // Por debajo de la edad mínima: este navegador no vuelve a intentarlo en
+    // un día. Si no, bastaría con cambiar el año y darle otra vez.
+    if (err.code === "UNDER_AGE") marcarEdadRechazada();
     // Si el modal está abierto, el mensaje va dentro. Si no (p. ej. el token
     // guardado caducó al reconectar), hay que volver a pedir credenciales.
     if (this.authModalOpen) {
@@ -1326,6 +1443,7 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.closeChat();
     this.closePeerMenu();
+    this.cerrarFrases();
     this.cerrarVestidor();
     // El teclado del juego se apaga entero: si no, escribir una "c" abre el
     // vestidor y Enter abre el chat detrás del modal.
@@ -1333,6 +1451,7 @@ export class MainScene extends Phaser.Scene {
 
     const registro = modo === "register";
     const perfil = modo === "profile";
+    const nacimiento = modo === "nacimiento";
 
     // La altura se CALCULA a partir de lo que va dentro, no se elige a ojo.
     // Puesta a mano, el botón acababa montado encima de lo de arriba.
@@ -1347,9 +1466,11 @@ export class MainScene extends Phaser.Scene {
     const INFO = 44; // datos de la cuenta en el perfil
     const ALTO_BOTON = 26;
     const BOTONES = ALTO_BOTON + 8 + ALTO_BOTON;
-    const nCampos = perfil ? 0 : registro ? 3 : 2;
+    // Filas de campos: usuario, contraseña, nombre y fecha de nacimiento
+    const nCampos = perfil ? 0 : nacimiento ? 1 : registro ? 4 : 2;
+    const EXPLICA = nacimiento ? 40 : 0; // por qué se pide la fecha
     const W = 300;
-    const H = PAD + TITULO + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
+    const H = PAD + TITULO + EXPLICA + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
     // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro)
     const LOGO = perfil ? 0 : 64;
     const X = 480 - W / 2;
@@ -1384,7 +1505,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     add(pieza(this, "panel", X, Y, W, H).setInteractive(), 1);
-    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : "Entrar";
+    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : nacimiento ? "Un último paso" : "Entrar";
     const tituloTxt = texto(this, 0, yCentrada(Y + PAD, 16), titulo, { color: UI.titulo });
     const rombo = icono(this, "rombo", 0, 0);
     const anchoTitulo = rombo.width + 6 + tituloTxt.width;
@@ -1394,6 +1515,12 @@ export class MainScene extends Phaser.Scene {
     add(tituloTxt, 2);
 
     let cursorY = Y + PAD + TITULO;
+
+    if (nacimiento) {
+      const explica = partirTexto("Para cuidar a todo el mundo en Roomie, dinos cuándo naciste. Nadie más lo verá.", 268);
+      add(texto(this, 480, cursorY, explica.join("\n"), { color: UI.suave, alinear: "center" }).setOrigin(0.5, 0), 2);
+      cursorY += EXPLICA;
+    }
 
     // ---------- Campos de texto ----------
     this.authCampos = [];
@@ -1419,11 +1546,53 @@ export class MainScene extends Phaser.Scene {
       cursorY += CAMPO;
     };
 
-    if (!perfil) {
+    // Fecha de nacimiento: día, mes y año en tres cajas. No se dice para qué
+    // edad hay límite: un control de edad que lo anuncia invita a mentir.
+    const campoFecha = (): void => {
+      add(texto(this, colX, cursorY, "Fecha de nacimiento", { color: UI.suave }), 2);
+      const yCaja = cursorY + 18;
+      const cajas: [CampoClave, string, number, number, string][] = [
+        ["dia", "Día", 2, 52, "bday-day"],
+        ["mes", "Mes", 2, 52, "bday-month"],
+        ["anio", "Año", 4, 76, "bday-year"],
+      ];
+      let x = colX;
+      for (const [clave, placeholder, max, ancho, autocomplete] of cajas) {
+        const fondo = add(pieza(this, "campo", x, yCaja, ancho, ALTO_CAMPO).setInteractive({ useHandCursor: true }), 1);
+        const txt = add(texto(this, x + 8, yCentrada(yCaja, ALTO_CAMPO), ""), 2);
+        const c: CampoAuth = { clave, fondo, texto: txt, secreto: false, input: null, placeholder };
+        c.input = createTextInput({
+          maxLength: max,
+          autocomplete,
+          onChange: (v) => {
+            // Sólo cifras; al llenar una caja se salta a la siguiente
+            const limpio = v.replace(/\D/g, "").slice(0, max);
+            if (limpio !== v) c.input?.setValue(limpio);
+            if (limpio.length === max && clave !== "anio") this.enfocarSiguiente();
+            this.pintarCampos();
+          },
+          onSubmit: () => this.submitAuth(),
+          // Sin fecha no se juega: en ese paso Esc no cierra nada
+          onCancel: () => {
+            if (!nacimiento) this.closeAuthModal();
+          },
+          onNext: () => this.enfocarSiguiente(),
+        });
+        // En el móvil, el teclado de números
+        c.input.el.inputMode = "numeric";
+        fondo.on("pointerdown", () => this.enfocarCampo(c));
+        this.authCampos.push(c);
+        x += ancho + 8;
+      }
+      cursorY += CAMPO;
+    };
+
+    if (!perfil && !nacimiento) {
       campo("username", "Usuario", false, "username");
       campo("password", "Contraseña", true, registro ? "new-password" : "current-password");
     }
     if (registro) campo("nickname", "Tu nombre en el juego", false, "nickname");
+    if (registro || nacimiento) campoFecha();
 
     // ---------- Mensaje (errores, "Conectando…") ----------
     // Una o dos líneas centradas en su hueco (ver `mensajeAuth`)
@@ -1456,7 +1625,7 @@ export class MainScene extends Phaser.Scene {
 
     // ---------- Botones ----------
     // Los botones cuelgan del final del contenido, no de una altura fija
-    const principal = perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : "Entrar";
+    const principal = perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : nacimiento ? "Seguir" : "Entrar";
     const b1 = boton(
       this,
       colX,
@@ -1471,7 +1640,7 @@ export class MainScene extends Phaser.Scene {
       },
       { primario: true, icono: perfil ? "camiseta" : undefined, capa: LAYER.UI_MODAL + 2 },
     );
-    const segundo = perfil ? "Cerrar sesión" : registro ? "Ya tengo cuenta" : "Crear una cuenta nueva";
+    const segundo = perfil || nacimiento ? "Cerrar sesión" : registro ? "Ya tengo cuenta" : "Crear una cuenta nueva";
     const b2 = boton(
       this,
       colX,
@@ -1480,7 +1649,7 @@ export class MainScene extends Phaser.Scene {
       ALTO_BOTON,
       segundo,
       () => {
-        if (perfil) return this.cerrarSesion();
+        if (perfil || nacimiento) return this.cerrarSesion();
         this.closeAuthModal();
         this.showAuthModal(registro ? "login" : "register");
       },
@@ -1492,13 +1661,14 @@ export class MainScene extends Phaser.Scene {
     if (this.authCampos[0]) this.enfocarCampo(this.authCampos[0]);
   }
 
-  /** Dibuja el contenido de cada campo (las contraseñas, con puntos) */
+  /** Dibuja el contenido de cada campo (las contraseñas, con puntos; vacío, su pista apagada) */
   private pintarCampos(): void {
     for (const c of this.authCampos) {
       const valor = c.input?.el.value ?? "";
       const activo = c === this.campoActivo;
       const visible = c.secreto ? "•".repeat(valor.length) : valor;
-      c.texto.setText(visible + (activo ? "▌" : ""));
+      const pista = !valor && !activo && c.placeholder;
+      c.texto.setText(pista ? (c.placeholder ?? "") : visible + (activo ? "▌" : "")).setColor(pista ? UI.tenue : UI.texto);
       c.fondo.setTexture(activo ? "ui:campo-activo" : "ui:campo");
     }
   }
@@ -1532,8 +1702,28 @@ export class MainScene extends Phaser.Scene {
     this.authError.setY(lineas.length > 1 ? y0 : y0 + 8);
   }
 
+  /** La fecha de las tres cajas como "AAAA-MM-DD", o null si no es una fecha real */
+  private fechaEscrita(): string | null {
+    const dia = this.valorCampo("dia");
+    const mes = this.valorCampo("mes");
+    const anio = this.valorCampo("anio");
+    if (!dia || !mes || anio.length !== 4) return null;
+    return parsearNacimiento(`${anio}-${mes.padStart(2, "0")}-${dia.padStart(2, "0")}`);
+  }
+
+  /** Cuenta de antes: manda la fecha que faltaba (el servidor contesta con otro authOk) */
+  private submitNacimiento(): void {
+    const fecha = this.fechaEscrita();
+    if (!fecha) return this.mensajeAuth("Revisa la fecha: día, mes y año.");
+    if (edadRechazadaReciente()) return this.mensajeAuth("Lo sentimos: todavía no puedes usar esta cuenta.");
+    if (!net.isOnline) return this.mensajeAuth("Sin conexión con el servidor.");
+    this.mensajeAuth("Un momento…", UI.suave);
+    net.nacimiento(fecha);
+  }
+
   private submitAuth(): void {
     if (this.authMode === "profile") return; // el perfil no envía nada
+    if (this.authMode === "nacimiento") return this.submitNacimiento();
 
     const username = this.valorCampo("username").trim();
     const password = this.valorCampo("password");
@@ -1549,6 +1739,13 @@ export class MainScene extends Phaser.Scene {
     if (registro && nickname.length === 0) {
       return this.mensajeAuth("Elige el nombre con el que te verán los demás.");
     }
+    const fecha = registro ? this.fechaEscrita() : null;
+    if (registro && !fecha) {
+      return this.mensajeAuth("Revisa tu fecha de nacimiento: día, mes y año.");
+    }
+    if (registro && edadRechazadaReciente()) {
+      return this.mensajeAuth("Lo sentimos: todavía no puedes crear una cuenta.");
+    }
     if (!net.isOnline) {
       return this.mensajeAuth("Sin conexión con el servidor.");
     }
@@ -1563,6 +1760,7 @@ export class MainScene extends Phaser.Scene {
       password,
       nickname: registro ? nickname : undefined,
       look: registro ? this.look : undefined,
+      nacimiento: fecha ?? undefined,
     });
   }
 
@@ -1847,20 +2045,83 @@ export class MainScene extends Phaser.Scene {
   // ---------- Menú de avatar ----------
 
   /**
-   * Menú que sale al tocar a otro jugador: gestos rápidos y abrir el chat
-   * dirigido a él. Los gestos son mensajes de chat normales, así que no hacen
-   * falta eventos nuevos en el protocolo.
+   * Menú que sale al tocar a otro jugador: gestos, hablarle, bloquear y
+   * reportar. Los gestos son frases del menú: los ve toda la sala, niños
+   * incluidos. Bloquear y reportar están SIEMPRE a mano, a un toque.
    */
-  private readonly MENU = { w: 180, h: 92 };
-
   private openPeerMenu(id: string): void {
     if (this.authModalOpen || this.vestidor) return;
     this.closePeerMenu();
+    this.cerrarFrases();
 
     const peer = this.peers.get(id);
     if (!peer) return;
 
-    const { w: W, h: H } = this.MENU;
+    this.menuTam = { w: 180, h: 118 };
+    const { w: W, h: H } = this.menuTam;
+    const m = this.piezasMenu();
+    m.fondo(W, H);
+    m.cabecera(peer.view.name);
+
+    // Gestos: el emoji lo pinta la fuente del sistema
+    GESTOS.forEach((g, i) => {
+      const dx = 8 + i * 28;
+      m.boton("", dx, 28, 24, 24, () => {
+        this.closePeerMenu();
+        this.enviarFrase(g.id);
+      });
+      m.add(this.add.text(0, 0, g.texto, { fontSize: "13px" }).setOrigin(0.5), dx + 12, 40, LAYER.UI_PANEL + 1);
+    });
+
+    // Hablarle: con texto propio, o con frases si hablas con frases
+    if (net.hablaConFrases) {
+      m.boton("Decir algo", 8, 60, W - 16, 24, () => this.abrirFrases(), true);
+    } else {
+      m.boton(`Escribir a ${peer.view.name}`, 8, 60, W - 16, 24, () => this.chatTo(peer.view.name), true);
+    }
+
+    const bloqueado = net.tieneBloqueado(peer.view.name);
+    const mitad = Math.floor((W - 16 - 4) / 2);
+    m.boton(bloqueado ? "Desbloquear" : "Bloquear", 8, 90, mitad, 20, () => {
+      this.closePeerMenu();
+      net.bloquear(peer.view.id, !bloqueado);
+    });
+    m.boton("Reportar", 8 + mitad + 4, 90, mitad, 20, () => this.abrirReporte(peer.view.id));
+
+    this.peerMenuItems = m.items;
+    this.peerMenuFor = id;
+    this.movePeerMenu();
+  }
+
+  /** Reportar: por qué, con palabras que entiende cualquiera */
+  private abrirReporte(id: string): void {
+    const peer = this.peers.get(id);
+    this.closePeerMenu();
+    if (!peer) return;
+    const W = 220;
+    const H = 30 + (MOTIVOS_REPORTE.length + 1) * 26 + 4;
+    this.menuTam = { w: W, h: H };
+    const m = this.piezasMenu();
+    m.fondo(W, H);
+    m.cabecera(`¿Qué pasa con ${peer.view.name}?`);
+    MOTIVOS_REPORTE.forEach((r, i) => {
+      m.boton(r.texto, 8, 30 + i * 26, W - 16, 22, () => {
+        this.closePeerMenu();
+        net.reportar(peer.view.id, r.motivo);
+      });
+    });
+    m.boton("Cancelar", 8, 30 + MOTIVOS_REPORTE.length * 26, W - 16, 22, () => this.closePeerMenu());
+    this.peerMenuItems = m.items;
+    this.peerMenuFor = id;
+    this.movePeerMenu();
+  }
+
+  /**
+   * Piezas de un menú que sigue a un avatar. Se colocan por desplazamiento
+   * desde la esquina del menú (ver `MenuItem`), así que los botones se hacen
+   * aquí a mano: los del kit no se pueden mover una vez creados.
+   */
+  private piezasMenu() {
     const items: MenuItem[] = [];
     const add = <T extends MenuItem["o"] & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
       o: T,
@@ -1872,36 +2133,29 @@ export class MainScene extends Phaser.Scene {
       items.push({ o, dx, dy });
       return o;
     };
-
-    // El fondo es interactivo para que un toque DENTRO del menú no lo cierre
-    add(pieza(this, "panel", 0, 0, W, H).setInteractive(), 0, 0);
-    add(icono(this, "rombo", 0, 0), 8, 10, LAYER.UI_PANEL + 1);
-    add(texto(this, 0, 0, peer.view.name, { color: UI.titulo }), 22, yCentrada(0, 26), LAYER.UI_PANEL + 1);
-
-    // Gestos: botones planos; el emoji lo pinta el navegador
-    EMOTES.forEach((emote, i) => {
-      const dx = 8 + i * 28;
-      const fondo = add(pieza(this, "boton", 0, 0, 24, 24), dx, 28);
-      fondo
-        .setInteractive({ useHandCursor: true })
-        .on("pointerover", () => fondo.setTexture("ui:boton-hover"))
-        .on("pointerout", () => fondo.setTexture("ui:boton"))
-        .on("pointerup", () => this.sendEmote(emote));
-      add(this.add.text(0, 0, emote, { fontSize: "13px" }).setOrigin(0.5), dx + 12, 40, LAYER.UI_PANEL + 1);
-    });
-
-    const chat = add(pieza(this, "primario", 0, 0, W - 16, 24), 8, 60);
-    chat
-      .setInteractive({ useHandCursor: true })
-      .on("pointerover", () => chat.setTexture("ui:primario-hover"))
-      .on("pointerout", () => chat.setTexture("ui:primario"))
-      .on("pointerup", () => this.chatTo(peer.view.name));
-    const etiqueta = texto(this, 0, 0, `Escribir a ${peer.view.name}`);
-    add(etiqueta, Math.round((W - etiqueta.width) / 2), yCentrada(60, 24), LAYER.UI_PANEL + 1);
-
-    this.peerMenuItems = items;
-    this.peerMenuFor = id;
-    this.movePeerMenu();
+    return {
+      items,
+      add,
+      // El fondo es interactivo para que un toque DENTRO del menú no lo cierre
+      fondo: (w: number, h: number) => add(pieza(this, "panel", 0, 0, w, h).setInteractive(), 0, 0),
+      cabecera: (titulo: string) => {
+        add(icono(this, "rombo", 0, 0), 8, 11, LAYER.UI_PANEL + 1);
+        add(texto(this, 0, 0, titulo, { color: UI.titulo }), 22, yCentrada(0, 26), LAYER.UI_PANEL + 1);
+      },
+      boton: (etiqueta: string, dx: number, dy: number, w: number, h: number, accion: () => void, primario = false) => {
+        const base = primario ? "primario" : "boton";
+        const f = add(pieza(this, base, 0, 0, w, h), dx, dy);
+        f.setInteractive({ useHandCursor: true })
+          .on("pointerover", () => f.setTexture(`ui:${base}-hover`))
+          .on("pointerout", () => f.setTexture(`ui:${base}`))
+          .on("pointerup", accion);
+        if (etiqueta) {
+          const t = texto(this, 0, 0, etiqueta);
+          add(t, Math.round(dx + (w - t.width) / 2), yCentrada(dy, h), LAYER.UI_PANEL + 1);
+        }
+        return f;
+      },
+    };
   }
 
   private closePeerMenu(): void {
@@ -1918,7 +2172,7 @@ export class MainScene extends Phaser.Scene {
       this.closePeerMenu();
       return;
     }
-    const { w: W, h: H } = this.MENU;
+    const { w: W, h: H } = this.menuTam;
     // Sobre la cabeza del avatar (esté la sala a un zoom u otro), pero sin
     // salirse del lienzo; esquina en píxeles enteros para que el texto no se
     // emborrone
@@ -1930,20 +2184,10 @@ export class MainScene extends Phaser.Scene {
     for (const { o, dx, dy } of this.peerMenuItems) o.setPosition(x0 + dx, y0 + dy);
   }
 
-  /** Un gesto es un mensaje de chat corriente: lo ve toda la sala */
-  private sendEmote(emote: string): void {
-    this.closePeerMenu();
-    if (net.isOnline) {
-      net.chat(emote);
-    } else {
-      this.showBubble("me", emote);
-      this.pushChatLine(`Tú: ${emote}`, CHAT_COLORS.mine);
-    }
-  }
-
   /** Abre el chat con el mensaje ya dirigido a ese jugador */
   private chatTo(nombre: string): void {
     this.closePeerMenu();
+    if (net.hablaConFrases) return this.abrirFrases();
     this.openChat();
     const prefijo = `@${nombre} `;
     this.chatText = prefijo;

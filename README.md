@@ -39,6 +39,7 @@ Otros comandos:
 npm run typecheck                        # tsc del cliente + tsc del servidor
 npm run build                            # compilación de producción en dist/
 npm run preview                          # previsualizar el build
+node tools/prueba-normas.mjs             # filtro del chat y edades, sin servidor
 node tools/smoke-multiplayer.mjs         # E2E: registra cuentas reales y juega
 npm --prefix server run db:check         # ejerce los invariantes de la base
 npm --prefix server run db:migrate       # aplica db/migrations/*.sql
@@ -69,6 +70,7 @@ Hecho:
 - [x] **Muebles en 3D** con el color del tema de cada sala, paredes decoradas y luz de ambiente
 - [x] **Interfaz pixel art**: fuente propia, HUD, login, chat y vestidor rehechos
 - [x] **Interfaz fina y propia** (líneas de 1 px), teclado que cruza puertas y se sienta, y **zoom** (rueda, + / −, arrastrar)
+- [x] **Seguridad para niños y niñas**: edad privada, chat de frases, filtro de datos personales, bloquear y reportar
 
 Siguiente:
 

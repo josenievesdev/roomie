@@ -66,6 +66,30 @@ export function clearSave(): void {
   }
 }
 
+// Control de edad: si alguien pone una fecha por debajo de la edad mínima, este
+// navegador no deja volver a intentarlo en un día. Sin esto, bastaría con
+// cambiar el año y darle otra vez. (No es infalible, pero es lo que piden las
+// guías de control de edad: que mentir no sea lo más fácil.)
+const KEY_EDAD = "roomie:edad-rechazada";
+const DIA_MS = 24 * 60 * 60 * 1000;
+
+export function marcarEdadRechazada(): void {
+  try {
+    localStorage.setItem(KEY_EDAD, String(Date.now()));
+  } catch {
+    // sin almacenamiento no hay freno; el servidor sigue rechazando
+  }
+}
+
+export function edadRechazadaReciente(): boolean {
+  try {
+    const t = Number(localStorage.getItem(KEY_EDAD));
+    return Number.isFinite(t) && t > 0 && Date.now() - t < DIA_MS;
+  } catch {
+    return false;
+  }
+}
+
 // El zoom es una preferencia de este navegador, no de la partida: va aparte
 // y sobrevive a cerrar sesión.
 const KEY_ZOOM = "roomie:zoom";

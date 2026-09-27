@@ -2,10 +2,17 @@ import { sql, conexion, cerrar } from "./index.ts";
 import { FURNITURE } from "../../../src/state/furniture-catalog.ts";
 import {
   autenticar,
+  bloquear,
+  bloqueadosDe,
   comprar,
   crearCuenta,
+  desbloquear,
+  guardarNacimiento,
+  guardarReporte,
   inventarioDe,
   moverSaldo,
+  purgarChat,
+  registrarChat,
   saldoDe,
   colocar,
   recoger,
@@ -42,7 +49,7 @@ try {
       select table_name from information_schema.tables where table_schema = 'public'
     `
   ).map((r) => r.table_name);
-  for (const t of ["accounts", "avatars", "rooms", "catalog_items", "items", "ledger", "balances"]) {
+  for (const t of ["accounts", "avatars", "rooms", "catalog_items", "items", "ledger", "balances", "blocks", "reports", "chat_log"]) {
     ok(tablas.includes(t), `existe la tabla ${t}`);
   }
 
@@ -59,11 +66,12 @@ try {
   console.log("\n=== Reglas que deben ser imposibles de romper ===");
   const sufijo = Date.now().toString(36).slice(-6);
   const user = `chk${sufijo}`;
-  const nueva = await crearCuenta(user, "clave-de-prueba", `Chk${sufijo}`, { shirt: 1, hair: 2 });
+  const nueva = await crearCuenta(user, "clave-de-prueba", `Chk${sufijo}`, { shirt: 1, hair: 2 }, "1990-05-10", "no_necesita");
   ok(nueva.saldo === 500, "la cuenta nueva arranca con 500", String(nueva.saldo));
 
   const login = await autenticar(user, "clave-de-prueba");
   ok(login !== null, "entra con la contraseña correcta");
+  ok(login?.account.nacimiento === "1990-05-10", "guarda la fecha de nacimiento tal cual", String(login?.account.nacimiento));
   ok((await autenticar(user, "clave-equivocada")) === null, "rechaza la contraseña incorrecta");
   ok((await autenticar("no-existe-" + sufijo, "x")) === null, "rechaza una cuenta inexistente");
 
@@ -142,8 +150,62 @@ try {
     "y ninguno queda medio colocado",
   );
 
+  // ------------------------------------------------------ seguridad
+  console.log("\n=== Seguridad (edad, bloqueos, reportes, chat) ===");
+  const otra = await crearCuenta(`chq${sufijo}`, "clave-de-prueba", `Chq${sufijo}`, {}, "2015-03-01", "pendiente");
+  const id2 = otra.account.id;
+  ok(otra.account.consentimiento === "pendiente", "una cuenta de menor de 13 queda pendiente del permiso de su tutor");
+
+  ok(
+    (await guardarNacimiento(id, "2001-01-01", "no_necesita")) === false,
+    "una fecha de nacimiento ya dicha no se cambia desde el juego",
+  );
+  await sql`update accounts set birth_date = null where id = ${id}`;
+  ok((await guardarNacimiento(id, "1990-05-10", "no_necesita")) === true, "una cuenta de antes, sin fecha, sí puede decirla");
+
+  ok(
+    (await falla(() => sql`update accounts set birth_date = '1800-01-01' where id = ${id}`)) !== null,
+    "no se guarda una fecha de nacimiento absurda",
+  );
+  ok(
+    (await falla(() => sql`update accounts set consent = 'porque-si' where id = ${id}`)) !== null,
+    "el permiso del tutor sólo puede ser no_necesita, pendiente o aprobado",
+  );
+
+  ok((await falla(() => bloquear(id, id))) !== null, "nadie se puede bloquear a sí mismo");
+  await bloquear(id, id2);
+  ok((await falla(() => bloquear(id, id2))) === null, "bloquear dos veces no falla");
+  ok((await bloqueadosDe(id)).has(id2), "el bloqueo queda guardado");
+  await desbloquear(id, id2);
+  ok(!(await bloqueadosDe(id)).has(id2), "y se puede deshacer");
+
+  ok(
+    (await falla(() => sql`insert into reports (reporter_id, reported_id, reason) values (${id}, ${id2}, 'me-cae-mal')`)) !== null,
+    "un reporte sólo lleva un motivo de la lista",
+  );
+  await guardarReporte({ de: id2, sobre: id, motivo: "datos", sala: "room1", contexto: [{ texto: "prueba" }] });
+  const [rep1] = await sql<{ id: string }[]>`select id from reports where reporter_id = ${id2} and reported_id = ${id}`;
+  ok(rep1 !== undefined, "el reporte se guarda con su contexto");
+
+  await registrarChat(id, "room1", "hola", null);
+  await registrarChat(id, "room1", "mi numero es 3123456789", "datos");
+  ok(
+    (await falla(() => sql`insert into chat_log (account_id, room, text, blocked) values (${id}, 'room1', 'x', 'otro')`)) !== null,
+    "el registro del chat sólo marca 'datos' o 'sexual' como parado",
+  );
+  await sql`insert into chat_log (account_id, room, text, created_at) values (${id}, 'room1', 'viejo', now() - interval '31 days')`;
+  const purgadas = await purgarChat(30);
+  const [{ n: quedan }] = await sql<{ n: number }[]>`select count(*)::int as n from chat_log where account_id = ${id}`;
+  ok(purgadas >= 1 && quedan === 2, "el chat de más de 30 días se borra solo, y el reciente se queda", `${purgadas} borrada(s), quedan ${quedan}`);
+
+  // Borrar una cuenta no borra lo que se reportó de ella: es un registro
+  await sql`delete from accounts where id = ${id2}`;
+  const [sigue] = await sql<{ reporter_id: string | null }[]>`select reporter_id from reports where id = ${rep1.id}`;
+  ok(sigue !== undefined && sigue.reporter_id === null, "el reporte sobrevive a que se borre quien lo hizo");
+
   // ------------------------------------------------------ limpieza
   await sql`delete from accounts where id = ${id}`;
+  await sql`delete from reports where id = ${rep1.id}`;
   const [queda] = await sql`select count(*)::int as n from ledger where account_id = ${id}`;
   ok(queda.n === 0, "borrar la cuenta se lleva sus apuntes (cascade)");
 

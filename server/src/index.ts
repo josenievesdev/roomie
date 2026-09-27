@@ -7,6 +7,19 @@ import { sanitizeLook } from "../../src/state/look.ts";
 import { toScreen } from "../../src/utils/iso.ts";
 import { findPath, type Cell } from "../../src/utils/pathfinding.ts";
 import {
+  EDAD_MINIMA,
+  edadEn,
+  edadValida,
+  franjaDe,
+  leeTextoLibre,
+  modoChat,
+  necesitaConsentimiento,
+  parsearNacimiento,
+  type Franja,
+} from "../../src/state/normas.ts";
+import { filtrarChat, type MotivoBloqueo } from "../../src/state/filtroChat.ts";
+import { frasePorId } from "../../src/state/frases.ts";
+import {
   CHAT_COOLDOWN_MS,
   CHAT_MAX,
   KEYBOARD_SPEED,
@@ -26,6 +39,7 @@ import {
   type JoinErrorPayload,
   type JoinPayload,
   type Look,
+  type MotivoReporte,
   type PlayerView,
   type ResumePayload,
   type RoomId,
@@ -33,7 +47,21 @@ import {
 } from "../../src/net/protocol.ts";
 import { cellKey, loadWorlds, type RoomWorld } from "./world.ts";
 import { cerrarSesion, entrar, purgar, reanudar, type Sesion } from "./db/auth.ts";
-import { crearCuenta, guardarLook, nicknameLibre, nombreLibre } from "./db/repo.ts";
+import {
+  bloquear,
+  bloqueadosDe,
+  crearCuenta,
+  desbloquear,
+  guardarLook,
+  guardarNacimiento,
+  guardarReporte,
+  nicknameLibre,
+  nicknamesDe,
+  nombreLibre,
+  purgarChat,
+  registrarChat,
+  type Consentimiento,
+} from "./db/repo.ts";
 
 // Roomie — servidor multijugador (Fase 7).
 //
@@ -289,6 +317,72 @@ function system(room: RoomId, text: string): void {
   io.to(room).emit("chat", msg);
 }
 
+// ---------- Seguridad: edad, bloqueos, reportes ----------
+//
+// Las reglas viven en `src/state/normas.ts`; aquí sólo se aplican.
+
+/** Sesión de un socket, con lo que las normas necesitan a mano */
+type SesionViva = Sesion & {
+  /** null: cuenta de antes sin fecha de nacimiento (no puede jugar aún) */
+  franja: Franja | null;
+  /** Cuentas que tiene bloqueadas */
+  bloqueados: Set<string>;
+};
+
+const franjaDeCuenta = (nacimiento: string | null): Franja | null =>
+  nacimiento ? franjaDe(edadEn(nacimiento)) : null;
+
+const consentimientoPara = (edad: number): Consentimiento =>
+  necesitaConsentimiento(edad) ? "pendiente" : "no_necesita";
+
+/**
+ * Entrega un mensaje de chat a quien le toca de la sala, uno a uno: quien
+ * no lee texto libre (los niños) sólo recibe frases, y a nadie le llega lo
+ * de alguien a quien tiene bloqueado.
+ */
+function emitirChat(room: RoomId, msg: ChatPayload, o: { libre: boolean; de: string }): void {
+  const ids = io.sockets.adapter.rooms.get(room);
+  if (!ids) return;
+  for (const sid of ids) {
+    const s = sesiones.get(sid);
+    // Sin franja conocida, lo más seguro: como a un niño
+    if (o.libre && !leeTextoLibre(s?.franja ?? "nino")) continue;
+    if (s?.bloqueados.has(o.de)) continue;
+    io.to(sid).emit("chat", msg);
+  }
+}
+
+/** Una línea de las recientes de una sala: el contexto de los reportes */
+type LineaChat = { de: string; nombre: string; texto: string; bloqueado: MotivoBloqueo | null; at: string };
+const HISTORIAL = 40;
+const historial = new Map<RoomId, LineaChat[]>();
+
+function apuntar(room: RoomId, l: Omit<LineaChat, "at">): void {
+  const lista = historial.get(room) ?? [];
+  lista.push({ ...l, at: new Date().toISOString() });
+  if (lista.length > HISTORIAL) lista.splice(0, lista.length - HISTORIAL);
+  historial.set(room, lista);
+  registrarChat(l.de, room, l.texto, l.bloqueado).catch((e) => console.error("[roomie] registro de chat:", e));
+}
+
+const AVISO_BLOQUEO: Record<MotivoBloqueo, string> = {
+  datos: "Por tu seguridad, ese mensaje no se envió: no compartas teléfonos, redes, correos ni dónde vives.",
+  sexual: "Ese mensaje no se envió: en Roomie no se habla de eso.",
+};
+
+const MOTIVOS: readonly MotivoReporte[] = ["acoso", "lenguaje", "datos", "otro"];
+/** Un reporte por persona cada 10 min, y como mucho 10 por hora */
+const reportesRecientes = new Map<string, { sobre: string; at: number }[]>();
+function puedeReportar(de: string, sobre: string): boolean {
+  const ahora = Date.now();
+  const lista = (reportesRecientes.get(de) ?? []).filter((r) => ahora - r.at < 60 * 60 * 1000);
+  reportesRecientes.set(de, lista);
+  if (lista.length >= 10) return false;
+  if (lista.some((r) => r.sobre === sobre && ahora - r.at < 10 * 60 * 1000)) return false;
+  lista.push({ sobre, at: ahora });
+  return true;
+}
+
 function enterRoom(socket: Socket<ClientEvents, ServerEvents>, p: Player, room: RoomId): void {
   if (p.room === room) return;
   socket.leave(p.room);
@@ -309,7 +403,7 @@ const io = new Server<ClientEvents, ServerEvents>(httpServer, {
 });
 
 /** Quién es cada socket. Sin entrada aquí, el socket no puede `join`. */
-const sesiones = new Map<string, Sesion>();
+const sesiones = new Map<string, SesionViva>();
 
 io.on("connection", (socket) => {
   let me: Player | null = null;
@@ -318,15 +412,29 @@ io.on("connection", (socket) => {
     socket.emit("authError", { code, message });
   };
 
-  /** Confirma la identidad al cliente y la deja lista para `join` */
-  const confirmar = (s: Sesion): void => {
-    sesiones.set(socket.id, s);
+  /** Aviso sólo para este jugador, como una línea de sistema del chat */
+  const aviso = (text: string): void => {
+    socket.emit("chat", { from: null, name: "sistema", room: me?.room ?? ROOMS[0], text, system: true });
+  };
+
+  /**
+   * Confirma la identidad al cliente y la deja lista para `join`. Lleva cómo
+   * habla (por su edad), pero no la edad: ésa no sale nunca del servidor.
+   */
+  const confirmar = async (s: Sesion): Promise<void> => {
+    const franja = franjaDeCuenta(s.account.nacimiento);
+    const bloqueados = await bloqueadosDe(s.account.id);
+    sesiones.set(socket.id, { ...s, franja, bloqueados });
     socket.emit("authOk", {
       token: s.token,
       username: s.account.username,
       nickname: s.avatar.nickname,
       look: sanitizeLook(s.avatar.look),
       saldo: s.saldo,
+      // Sin fecha todavía, lo más seguro
+      modoChat: modoChat(franja ?? "nino"),
+      necesitaNacimiento: franja === null,
+      bloqueados: await nicknamesDe([...bloqueados]),
     });
   };
 
@@ -343,20 +451,39 @@ io.on("connection", (socket) => {
       }
 
       if (p?.mode === "register") {
+        // La edad, lo primero. El mensaje no dice cuál es el mínimo: un
+        // control de edad que lo anuncia invita a mentir.
+        const nacimiento = parsearNacimiento(p?.nacimiento);
+        if (!nacimiento) return fallo("INVALID", "Escribe tu fecha de nacimiento: día, mes y año.");
+        const edad = edadEn(nacimiento);
+        if (edad < EDAD_MINIMA) return fallo("UNDER_AGE", "Lo sentimos: todavía no puedes crear una cuenta.");
+        if (!edadValida(edad)) return fallo("INVALID", "Esa fecha de nacimiento no parece correcta.");
+
         const nickname = sanitizeName(p?.nickname);
+        // El nombre lo ve todo el mundo, niños incluidos: pasa el mismo filtro
+        if (filtrarChat(nickname).tipo !== "ok") {
+          return fallo("INVALID", "Elige otro nombre: ese no se puede usar en Roomie.");
+        }
         if (!(await nombreLibre(username))) {
           return fallo("USERNAME_TAKEN", `El usuario "${username}" ya existe.`);
         }
         if (!(await nicknameLibre(nickname))) {
           return fallo("NICKNAME_TAKEN", `El nombre "${nickname}" ya está cogido.`);
         }
-        const creada = await crearCuenta(username, password, nickname, sanitizeLook(p?.look));
+        const creada = await crearCuenta(
+          username,
+          password,
+          nickname,
+          sanitizeLook(p?.look),
+          nacimiento,
+          consentimientoPara(edad),
+        );
         // Recién creada, se entra directo: no tiene sentido pedir la
         // contraseña que acaba de escribir.
         const s = await entrar(username, password);
         if ("error" in s) return fallo(s.error, "No se pudo iniciar la sesión recién creada.");
         console.log(`[roomie] alta: ${username} (${creada.avatar.nickname})`);
-        return confirmar(s);
+        return await confirmar(s);
       }
 
       const s = await entrar(username, password);
@@ -365,7 +492,7 @@ io.on("connection", (socket) => {
           ? fallo("RATE_LIMITED", "Demasiados intentos fallidos. Prueba dentro de un rato.")
           : fallo("BAD_CREDENTIALS", "Usuario o contraseña incorrectos.");
       }
-      confirmar(s);
+      await confirmar(s);
     } catch (e) {
       console.error("[roomie] auth:", e);
       fallo("NO_DB", "No se pudo hablar con la base de datos.");
@@ -376,9 +503,29 @@ io.on("connection", (socket) => {
     try {
       const datos = await reanudar(String(p?.token ?? ""));
       if (!datos) return fallo("BAD_CREDENTIALS", "La sesión caducó.");
-      confirmar({ ...datos, token: String(p.token) });
+      await confirmar({ ...datos, token: String(p.token) });
     } catch (e) {
       console.error("[roomie] resume:", e);
+      fallo("NO_DB", "No se pudo hablar con la base de datos.");
+    }
+  });
+
+  // Cuenta de antes: la fecha de nacimiento que faltaba. Una vez dicha, no se
+  // cambia desde el juego (si no, bastaría con cambiarla para saltarse las normas).
+  socket.on("nacimiento", async (fecha: string) => {
+    try {
+      const s = sesiones.get(socket.id);
+      if (!s || s.franja !== null) return;
+      const nacimiento = parsearNacimiento(fecha);
+      if (!nacimiento) return fallo("INVALID", "Escribe tu fecha de nacimiento: día, mes y año.");
+      const edad = edadEn(nacimiento);
+      if (edad < EDAD_MINIMA) return fallo("UNDER_AGE", "Lo sentimos: todavía no puedes usar esta cuenta.");
+      if (!edadValida(edad)) return fallo("INVALID", "Esa fecha de nacimiento no parece correcta.");
+      const consentimiento = consentimientoPara(edad);
+      if (!(await guardarNacimiento(s.account.id, nacimiento, consentimiento))) return;
+      await confirmar({ ...s, account: { ...s.account, nacimiento, consentimiento } });
+    } catch (e) {
+      console.error("[roomie] nacimiento:", e);
       fallo("NO_DB", "No se pudo hablar con la base de datos.");
     }
   });
@@ -402,6 +549,11 @@ io.on("connection", (socket) => {
     const sesion = sesiones.get(socket.id);
     if (!sesion) {
       socket.emit("authError", { code: "BAD_CREDENTIALS", message: "Entra con tu cuenta primero." });
+      return;
+    }
+    // Sin fecha de nacimiento no se sabe qué normas aplicarle: no se entra
+    if (sesion.franja === null) {
+      socket.emit("joinError", { code: "INVALID", message: "Antes de entrar, falta tu fecha de nacimiento." });
       return;
     }
 
@@ -509,20 +661,83 @@ io.on("connection", (socket) => {
   });
 
   socket.on("chat", (text: unknown) => {
-    if (!me) return;
+    const s = sesiones.get(socket.id);
+    if (!me || !s?.franja) return;
+    // Quien habla con frases no escribe texto libre (el cliente ni lo ofrece)
+    if (modoChat(s.franja) !== "libre") return;
     const now = Date.now();
     if (now - me.lastChatAt < CHAT_COOLDOWN_MS) return; // anti-spam
     const msg = sanitizeChat(text);
     if (!msg) return;
     me.lastChatAt = now;
-    io.to(me.room).emit("chat", {
-      from: me.id,
-      name: me.name,
-      room: me.room,
-      text: msg,
-      system: false,
-    });
+
+    const room = me.room;
+    const nombres = [...players.values()].filter((p) => p.room === room).map((p) => p.name);
+    const r = filtrarChat(msg, { nombres });
+    // Se apunta lo que se escribió DE VERDAD, pasara o no: es lo que necesita
+    // un moderador para entender un reporte
+    apuntar(room, { de: s.account.id, nombre: me.name, texto: msg, bloqueado: r.tipo === "bloqueado" ? r.motivo : null });
+    if (r.tipo === "bloqueado") return aviso(AVISO_BLOQUEO[r.motivo]);
+    emitirChat(room, { from: me.id, name: me.name, room, text: r.texto, system: false }, { libre: true, de: s.account.id });
   });
+
+  // Una frase o un gesto del menú: la ven todos, niños incluidos. El texto lo
+  // pone el servidor a partir del id, así que no se cuela nada.
+  socket.on("frase", (id: unknown) => {
+    const s = sesiones.get(socket.id);
+    if (!me || !s?.franja) return;
+    const f = frasePorId(id);
+    if (!f) return;
+    const now = Date.now();
+    if (now - me.lastChatAt < CHAT_COOLDOWN_MS) return;
+    me.lastChatAt = now;
+    const room = me.room;
+    apuntar(room, { de: s.account.id, nombre: me.name, texto: f.texto, bloqueado: null });
+    emitirChat(room, { from: me.id, name: me.name, room, text: f.texto, system: false, frase: f.id }, { libre: false, de: s.account.id });
+  });
+
+  socket.on("reportar", async (p: unknown) => {
+    try {
+      const s = sesiones.get(socket.id);
+      const q = p as { jugador?: unknown; motivo?: unknown } | null;
+      const otro = players.get(String(q?.jugador ?? ""));
+      if (!me || !s || !otro || otro.accountId === s.account.id) return;
+      const motivo = MOTIVOS.find((m) => m === q?.motivo) ?? "otro";
+      if (!puedeReportar(s.account.id, otro.accountId)) return aviso("Ya nos avisaste de esto. ¡Gracias!");
+      await guardarReporte({
+        de: s.account.id,
+        sobre: otro.accountId,
+        motivo,
+        sala: otro.room,
+        contexto: historial.get(otro.room) ?? [],
+      });
+      console.log(`[roomie] reporte: ${me.name} → ${otro.name} (${motivo})`);
+      aviso(`Gracias por avisar: lo revisaremos. Si ${otro.name} te molesta, también puedes bloquearlo.`);
+    } catch (e) {
+      console.error("[roomie] reporte:", e);
+    }
+  });
+
+  const cambiarBloqueo = async (jugador: unknown, bloqueado: boolean): Promise<void> => {
+    try {
+      const s = sesiones.get(socket.id);
+      const otro = players.get(String(jugador ?? ""));
+      if (!s || !otro || otro.accountId === s.account.id) return;
+      if (bloqueado) {
+        await bloquear(s.account.id, otro.accountId);
+        s.bloqueados.add(otro.accountId);
+      } else {
+        await desbloquear(s.account.id, otro.accountId);
+        s.bloqueados.delete(otro.accountId);
+      }
+      socket.emit("bloqueos", { bloqueados: await nicknamesDe([...s.bloqueados]) });
+      aviso(bloqueado ? `Has bloqueado a ${otro.name}: ya no verás lo que dice.` : `Has desbloqueado a ${otro.name}.`);
+    } catch (e) {
+      console.error("[roomie] bloqueo:", e);
+    }
+  };
+  socket.on("bloquear", (jugador: unknown) => void cambiarBloqueo(jugador, true));
+  socket.on("desbloquear", (jugador: unknown) => void cambiarBloqueo(jugador, false));
 
   socket.on("disconnect", () => {
     sesiones.delete(socket.id);
@@ -598,6 +813,12 @@ const limpiar = (): void => {
       if (s || i) console.log(`[roomie] purga: ${s} sesión(es), ${i} intento(s)`);
     })
     .catch((e) => console.error("[roomie] purga:", e));
+  // El registro del chat se guarda poco a propósito: 30 días
+  purgarChat()
+    .then((n) => {
+      if (n) console.log(`[roomie] purga: ${n} línea(s) de chat`);
+    })
+    .catch((e) => console.error("[roomie] purga del chat:", e));
 };
 limpiar();
 setInterval(limpiar, 6 * 60 * 60 * 1000).unref();

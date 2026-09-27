@@ -22,6 +22,10 @@ jugador ocupa su baldosa. En la Fase 5 los muebles pasaron a la misma técnica
 cuadros, apliques y neones, y la interfaz entera es pixel art con una fuente
 propia. En la Fase 6 esa interfaz pasó a ser fina y propia (líneas de 1 px),
 el teclado cruza puertas y se sienta, y hay zoom para mirar la sala de cerca.
+En la Fase 7 llegó lo más importante, porque en Roomie jugarán niños y niñas:
+la edad de cada cuenta (privada), el chat de frases para los niños, el filtro
+de datos personales y groserías, y bloquear y reportar
+(`docs/fase7-seguridad-menores.md`).
 Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
 
@@ -74,6 +78,10 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Interfaz fina de 1 px, iconos con pista | navegador |
 | Teclado: entra en puertas y asientos | smoke test (5c, 5d) |
 | Zoom ×1/×2/×3 con la interfaz a tamaño fijo | navegador (rueda, botones, arrastre) |
+| Los niños hablan con frases y no leen texto libre | smoke test (4b) con un niño de 10 años + navegador |
+| Fuera teléfonos, redes, correos y fotos; groserías tapadas | `tools/prueba-normas.mjs` + smoke test |
+| Bloquear y reportar, con el contexto guardado | smoke test + `db:check` + navegador |
+| Fecha de nacimiento al registrarse (y en las cuentas de antes) | smoke test + navegador |
 
 ## Las decisiones que no hay que deshacer
 
@@ -127,6 +135,13 @@ del kit (`src/ui/kit.ts`) en la fuente pixel propia, a 12 px (24 el logo).
 Phaser mide cada fuente una sola vez: si arrancara antes de que llegue,
 mediría la de reserva y todo el texto quedaría descolocado.
 
+**En Roomie juegan niños: todos comparten el mundo, pero a cada uno le llega
+según su edad.** Las normas viven en un solo sitio (`src/state/normas.ts`) y
+las aplica el servidor. Un niño habla con frases y no lee texto libre: así,
+aunque un adulto mienta con su edad, sólo puede usar las mismas frases. La
+edad no sale nunca del servidor. Cada sistema nuevo que ponga en contacto a
+dos jugadores añade su regla ahí ANTES de existir.
+
 **Dos cámaras: la sala con zoom, la interfaz sin él.** Qué dibuja cada una lo
 decide la profundidad justo antes de dibujar (`repartirCamaras`): de
 `LAYER.WORLD_LABEL` hacia arriba, la de la interfaz. Por eso nombres y
@@ -148,15 +163,18 @@ así que las burbujas de chat de los avatares flotaban por encima del modal.
 
 ## Base de datos
 
-Siete tablas más sesiones. Pocas y con los invariantes correctos, en vez de
-muchas preparadas para funciones que no existen.
+Pocas tablas y con los invariantes correctos, en vez de muchas preparadas
+para funciones que no existen.
 
 ```
-accounts ─┬─ avatars (nickname, look)
+accounts (fecha de nacimiento, permiso del tutor) ─┬─ avatars (nickname, look)
           ├─ sessions (token HASHEADO, caducidad)
           ├─ balances (caché)  ←→  ledger (append-only, la verdad)
           ├─ items (uno por mueble; en inventario o colocado)
-          └─ rooms (owner NULL = pública)
+          ├─ rooms (owner NULL = pública)
+          ├─ blocks (a quién ha bloqueado cada uno)
+          ├─ reports (con el chat de alrededor como contexto)
+          └─ chat_log (lo que se escribe; se borra solo a los 30 días)
 catalog_items (la tienda)        login_attempts (freno a fuerza bruta)
 ```
 
@@ -176,6 +194,8 @@ El plan completo está en **`docs/plan-piramide.md`**: primero los cimientos
 (que no se ven, pero sin ellos se cae lo de arriba), luego los sistemas, el
 contenido y la cima, subiendo por hitos jugables:
 
+0. **Seguros (hecho).** El cimiento más bajo: edades, frases para los niños,
+   filtro, bloquear y reportar.
 1. **Mi primer piso.** Llegar a la terminal, ganarse las llaves con tres tareas
    cortas y tener un piso recién mudado (cama y clóset) que se decora con la
    tienda. Trae los cimientos grandes: lugares como datos con las puertas en el
@@ -202,6 +222,12 @@ contenido y la cima, subiendo por hitos jugables:
   mirar si estabas en una puerta que lleva allí. Con salas como datos, la
   puerta y su destino deberían vivir en el servidor.
 - **No hay pellizco para el zoom en el móvil**: allí se usan los botones + / −.
+- **Antes de abrir al público con niños**:
+  - falta el permiso del tutor por correo (las cuentas de menores de 13 se
+    quedan "pendientes");
+  - falta un panel de moderación y alguien que modere;
+  - falta una revisión legal de las edades según el país.
+  El filtro no entiende números escritos con letras ni otros idiomas.
 - **El lienzo es 960×540 fijo con `Scale.FIT`**: en un móvil en vertical queda
   una franja pequeña. Falta diseño adaptable.
 - **La interpolación usa la hora de llegada**, no la de simulación, así que
@@ -212,6 +238,8 @@ contenido y la cima, subiendo por hitos jugables:
 - **Las cuentas `sk...` de la base son del smoke test.** Cada ejecución crea
   las suyas con sufijo único. Para limpiarlas:
   `delete from accounts where username like 'sk%';`
+  y luego sus reportes, que se quedan sin nadie:
+  `delete from reports where reporter_id is null and reported_id is null;`
 
 ## Historial por tandas
 
@@ -230,6 +258,7 @@ contenido y la cima, subiendo por hitos jugables:
 | `fase4-avatar-y-convivencia.md` | Clics en marcha, orden de dibujo, cada uno en su baldosa; avatar por capas y vestidor |
 | `fase5-muebles-y-ui.md` | Alfombra que cortaba el sofá; muebles en 3D, paredes decoradas y luz; interfaz pixel art |
 | `fase6-interfaz-fina-teclado-zoom.md` | Interfaz fina y propia; teclado en puertas y asientos; zoom con la interfaz a tamaño fijo |
+| `fase7-seguridad-menores.md` | Niños seguros: edad privada, frases, filtro, bloquear y reportar |
 | `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
 | `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |
