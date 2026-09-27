@@ -17,7 +17,7 @@ import {
   frameInicial,
   ORIGEN,
 } from "../entities/avatar";
-import { boton, pieza, texto, UI } from "./kit";
+import { boton, icono, pieza, texto, UI, UI_HEX, yCentrada } from "./kit";
 
 // Vestidor: donde se elige el aspecto. Trabaja sobre un BORRADOR: nada llega
 // al avatar ni al servidor hasta pulsar Guardar, y Cancelar lo tira.
@@ -68,13 +68,15 @@ export type OpcionesVestidor = {
 };
 
 /** Medidas del panel (lienzo de 960×540) */
-const W = 580;
-const H = 360;
+const W = 520;
+const H = 300;
 const X0 = 480 - W / 2;
 const Y0 = 270 - H / 2;
-const PREVIEW = { x: X0 + 18, y: Y0 + 58, w: 184, h: 234 };
-const DERECHA = X0 + 220;
-const ANCHO_DER = W - 238;
+const PREVIEW = { x: X0 + 16, y: Y0 + 54, w: 160, h: 214 };
+const DERECHA = X0 + 192;
+const ANCHO_DER = W - 192 - 16;
+/** Alto de pestañas y botones */
+const ALTO = 22;
 
 type Objeto = Phaser.GameObjects.GameObject & { setScrollFactor(v: number): Objeto; setDepth(v: number): Objeto };
 
@@ -135,26 +137,27 @@ export class Vestidor {
   private construir(): void {
     const s = this.scene;
     // Velo: tapa el mundo y se come los clics (nada de caminar detrás)
-    this.fijo(s.add.rectangle(480, 270, 960, 540, 0x07070d, 0.6).setInteractive(), 0);
+    this.fijo(s.add.rectangle(480, 270, 960, 540, UI_HEX.velo, 0.6).setInteractive(), 0);
     this.fijo(pieza(s, "panel", X0, Y0, W, H).setInteractive());
 
-    this.fijo(texto(s, X0 + 20, Y0 + 14, this.o.titulo ?? "Vestidor", { tam: 2, color: UI.titulo }), 2);
-    if (this.o.subtitulo) this.fijo(texto(s, X0 + 20, Y0 + 36, this.o.subtitulo, { tam: 1, color: UI.suave }), 2);
+    this.fijo(icono(s, "rombo", X0 + 16, Y0 + 18), 2);
+    this.fijo(texto(s, X0 + 30, yCentrada(Y0 + 12, 16), this.o.titulo ?? "Vestidor", { color: UI.titulo }), 2);
+    if (this.o.subtitulo) this.fijo(texto(s, X0 + 16, Y0 + 30, this.o.subtitulo, { color: UI.suave }), 2);
 
     // Vista previa: un hueco hundido, una baldosa y el avatar encima a 2×
     this.fijo(pieza(s, "campo", PREVIEW.x, PREVIEW.y, PREVIEW.w, PREVIEW.h));
     const suelo = this.fijo(s.add.graphics());
     const cx = PREVIEW.x + PREVIEW.w / 2;
-    const cy = PREVIEW.y + PREVIEW.h - 50;
+    const cy = PREVIEW.y + PREVIEW.h - 46;
     const rombo = [
-      { x: cx, y: cy - 22 },
-      { x: cx + 44, y: cy },
-      { x: cx, y: cy + 22 },
-      { x: cx - 44, y: cy },
+      { x: cx, y: cy - 20 },
+      { x: cx + 40, y: cy },
+      { x: cx, y: cy + 20 },
+      { x: cx - 40, y: cy },
     ];
     suelo.fillStyle(0x2c6e74, 1);
     suelo.fillPoints(rombo, true);
-    suelo.lineStyle(2, 0x3f8f96, 1);
+    suelo.lineStyle(1, 0x3f8f96, 1);
     suelo.strokePoints(rombo, true);
     createAvatarTexture(s, this.borrador, TEX_PREVIEW);
     this.preview = this.fijo(
@@ -162,21 +165,23 @@ export class Vestidor {
       2,
     );
     this.preview.play(animKey(TEX_PREVIEW, `idle-${this.dir}`));
-    const alto = PREVIEW.y + PREVIEW.h - 38;
+    const alto = PREVIEW.y + PREVIEW.h - ALTO - 6;
     for (const o of [
-      ...boton(s, PREVIEW.x + 8, alto, 36, 30, "◀", () => this.girar(1), { capa: LAYER.UI_PANEL + 2 }).objetos,
-      ...boton(s, PREVIEW.x + PREVIEW.w - 44, alto, 36, 30, "▶", () => this.girar(-1), { capa: LAYER.UI_PANEL + 2 }).objetos,
+      ...boton(s, PREVIEW.x + 6, alto, 24, ALTO, "◀", () => this.girar(1), { capa: LAYER.UI_PANEL + 2 }).objetos,
+      ...boton(s, PREVIEW.x + PREVIEW.w - 30, alto, 24, ALTO, "▶", () => this.girar(-1), { capa: LAYER.UI_PANEL + 2 }).objetos,
     ]) {
       this.fijos.push(o);
     }
 
+    const yBotones = Y0 + H - 16 - 24;
     for (const o of [
-      ...boton(s, X0 + W - 136, Y0 + H - 50, 118, 34, "Guardar", () => this.o.onGuardar({ ...this.borrador }), {
+      ...boton(s, X0 + W - 16 - 96, yBotones, 96, 24, "Guardar", () => this.o.onGuardar({ ...this.borrador }), {
         primario: true,
         capa: LAYER.UI_PANEL + 2,
       }).objetos,
-      ...boton(s, X0 + W - 262, Y0 + H - 50, 118, 34, "Cancelar", () => this.o.onCerrar(), { capa: LAYER.UI_PANEL + 2 })
-        .objetos,
+      ...boton(s, X0 + W - 16 - 96 - 8 - 96, yBotones, 96, 24, "Cancelar", () => this.o.onCerrar(), {
+        capa: LAYER.UI_PANEL + 2,
+      }).objetos,
     ]) {
       this.fijos.push(o);
     }
@@ -195,9 +200,9 @@ export class Vestidor {
     PESTANAS.forEach((t, i) => {
       const x = DERECHA + i * (anchoP + hueco);
       const activa = t.id === p;
-      const fondo = this.poner(this.pestanas, pieza(s, activa ? "primario" : "boton", x, Y0 + 56, anchoP, 30), 1);
-      const etiqueta = this.poner(this.pestanas, texto(s, 0, 0, t.titulo, { tam: 1 }), 2);
-      etiqueta.setPosition(Math.round(x + (anchoP - etiqueta.width) / 2), Y0 + 67);
+      const fondo = this.poner(this.pestanas, pieza(s, activa ? "primario" : "boton", x, PREVIEW.y, anchoP, ALTO), 1);
+      const etiqueta = this.poner(this.pestanas, texto(s, 0, 0, t.titulo), 2);
+      etiqueta.setPosition(Math.round(x + (anchoP - etiqueta.width) / 2), yCentrada(PREVIEW.y, ALTO));
       if (!activa) {
         fondo
           .setInteractive({ useHandCursor: true })
@@ -216,13 +221,13 @@ export class Vestidor {
     for (const o of this.dinamicos) o.destroy();
     this.dinamicos = [];
     const s = this.scene;
-    let y = Y0 + 98;
+    let y = PREVIEW.y + ALTO + 10;
 
     if (this.pestana !== "piel") {
       const parte = this.pestana;
       const rc = RECORTES[parte];
       const estilos = Object.entries(ESTILOS[parte]) as [string, string][];
-      const caja = { w: 50, h: 58 };
+      const caja = { w: 46, h: 54 };
       estilos.forEach(([estilo, nombre], i) => {
         const x = DERECHA + i * (caja.w + 6);
         const elegido = this.borrador[parte] === estilo;
@@ -237,18 +242,18 @@ export class Vestidor {
             .on("pointerup", () => this.elegir(parte, estilo));
         }
         this.dinamico(s.add.image(x + caja.w / 2, y + caja.h / 2, k).setOrigin(0.5), 3);
-        if (elegido) this.dinamico(texto(s, DERECHA, y + caja.h + 6, nombre, { tam: 2, color: UI.titulo }), 3);
+        if (elegido) this.dinamico(texto(s, DERECHA, y + caja.h + 4, nombre, { color: UI.titulo }), 3);
       });
-      y += caja.h + 34;
+      y += caja.h + 28;
     }
 
     // Colores
     const { campo, catalogo } = COLOR_DE[this.pestana];
-    this.dinamico(texto(s, DERECHA, y, this.pestana === "piel" ? "Tono de piel" : "Color", { tam: 1, color: UI.suave }), 3);
-    y += 16;
+    this.dinamico(texto(s, DERECHA, y, this.pestana === "piel" ? "Tono de piel" : "Color", { color: UI.suave }), 3);
+    y += 18;
     const grande = this.pestana === "piel";
-    const lado = grande ? 34 : 24;
-    const hueco = grande ? 8 : 4;
+    const lado = grande ? 28 : 18;
+    const hueco = grande ? 6 : 4;
     const porFila = Math.floor((ANCHO_DER + hueco) / (lado + hueco));
     Object.entries(catalogo).forEach(([id, color], i) => {
       const x = DERECHA + (i % porFila) * (lado + hueco);
@@ -256,7 +261,7 @@ export class Vestidor {
       const elegido = this.borrador[campo] === id;
       // Muestra: marco hundido (iluminado si es la elegida) y el color dentro
       const marco = this.dinamico(pieza(s, elegido ? "campo-activo" : "campo", x, yy, lado, lado), 3);
-      this.dinamico(s.add.rectangle(x + 4, yy + 4, lado - 8, lado - 8, color).setOrigin(0, 0), 4);
+      this.dinamico(s.add.rectangle(x + 3, yy + 3, lado - 6, lado - 6, color).setOrigin(0, 0), 4);
       if (!elegido) {
         marco
           .setInteractive({ useHandCursor: true })

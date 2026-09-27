@@ -130,12 +130,17 @@ function spawnCell(
  * ¿Hay alguien plantado en esa celda de la sala? Quieto o sentado; quien va
  * andando no ocupa sitio (está de paso). Las puertas no se ocupan nunca: quien
  * llega a una está a punto de irse de la sala.
+ *
+ * Quien está sentado ocupa aunque en este paso se haya movido: al sentarse con
+ * el teclado salta al centro del asiento, y ese salto no puede dejar el
+ * asiento libre para otro que entre en el mismo paso.
  */
 function occupied(room: RoomId, col: number, row: number, except: string): boolean {
   const world = worlds.get(room);
   if (world?.doorCells.has(cellKey(col, row))) return false;
   for (const p of players.values()) {
-    if (p.id === except || p.room !== room || p.moving) continue;
+    if (p.id === except || p.room !== room) continue;
+    if (p.moving && !p.state.sitting) continue;
     if (Math.round(p.state.col) === col && Math.round(p.state.row) === row) return true;
   }
   return false;
@@ -153,6 +158,10 @@ function newState(id: string, room: RoomId, start: Cell, facing: Facing): Avatar
       rows: world.rows,
       isBlocked: world.isBlocked,
       isOccupied: (col, row) => occupied(room, col, row, id),
+      // Las mismas puertas y asientos que ve el cliente: con el teclado se
+      // entra en ellos igual en los dos lados
+      isDoor: (col, row) => world.doorCells.has(cellKey(col, row)),
+      seatAt: (col, row) => world.seats.get(cellKey(col, row)) ?? null,
     },
     start,
     facing,

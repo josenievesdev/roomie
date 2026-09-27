@@ -106,32 +106,54 @@ del mundo: una alfombra con la Y de su celda tapaba el sofá de detrás.
 
 ## 9. Interfaz
 
+**La idea: fina, pero pixel art.** Líneas de 1 píxel, esquinas redondeadas,
+paneles de cristal oscuro y una línea de color arriba en el panel principal.
+Nada de biseles gordos ni letra duplicada: eso era lo que la hacía parecer de
+Minecraft. El carácter lo ponen los colores y un motivo propio, el **rombo
+isométrico** (la baldosa del juego en pequeño) como viñeta de los títulos.
+
 **Una fuente:** "Roomie Pixel" (`tools/fuente/glifos.mjs`), siempre a través
-de `texto()` del kit (`src/ui/kit.ts`), nunca un `fontFamily` suelto.
-Tamaños en múltiplos de 8 px, que es lo que mantiene la letra nítida:
+de `texto()` del kit (`src/ui/kit.ts`), nunca un `fontFamily` suelto. Trazo
+de 1 px, mayúsculas de 9, minúsculas de 6 y rabos de 3; el em son 12 px, así
+que sólo se usa a 12 (todo) o a 24 (sólo el logo). La caja del texto mide 15
+de alto (3 de aire para las tildes arriba): para centrar una línea en un hueco
+se centran las mayúsculas con `yCentrada()`.
 
-| Dónde | Tamaño |
-|---|---|
-| Nombres sobre los avatares, chuleta de teclas | 8 px (1×) |
-| Interfaz: HUD, paneles, botones, chat, burbujas | 16 px (2×) |
-| Logo | 32 px (4×) |
+**Unas piezas:** paneles, botones, campos, pastillas, teclas y burbujas son las
+de 9 porciones del kit (`pieza()`, `boton()`), dibujadas a tamaño real: borde
+de 1 px, un brillo de 1 px bajo el borde de arriba (o una sombra, en los campos
+hundidos) y esquina redondeada. Un botón tiene tres estados (normal, encima:
+se enciende el borde; pulsado: se hunde) y actúa al soltar. Los botones de
+sólo icono llevan su `pista` al pasar por encima. Las coordenadas se
+redondean: medio píxel emborrona el texto.
 
-**Unas piezas:** paneles, botones, campos, chips y burbujas son las de 9
-porciones del kit (`pieza()`, `boton()`), con su contorno, su bisel y sus
-esquinas a píxel. En la interfaz cada píxel de pieza son 2 del lienzo, igual
-que la letra a 16 px. Un botón tiene tres estados (normal, encima, pulsado) y
-actúa al soltar. Las coordenadas se redondean: medio píxel emborrona el texto.
+**Iconos:** de línea de 1 px en los botones (chat, vestidor, perfil, zoom), con
+un punto de color; de color y con contorno cuando tienen que leerse sobre
+cualquier fondo (casa, moneda).
+
+Medidas: HUD y botones de 24 px de alto, campos de 24, botones de modal de 26,
+nombres sobre los avatares de 16, teclas de la chuleta de 16.
 
 Paleta de la interfaz:
 
 | Uso | Color |
 |---|---|
-| Fondo de panel | `#12121a` |
-| Caja / botón | `#1a1a2e` (hover `#2a2a4e`) |
-| Borde | `#6d6d94` (suave `#3a3a55`) |
-| Botón principal | `#6c5ce7` (hover `#8c7ce7`) |
-| Títulos y selección | `#ffe9a8` |
-| Texto secundario | `#9a9ad0` |
+| Fondo de panel | `#17151f` (95 %) |
+| Borde | `#3d3860` (encima `#7a72b8`) |
+| Línea de arriba del panel | `#8577f2` |
+| Botón principal | `#6c5ce7` (borde `#8b7cf6`) |
+| Campo activo, acento | `#9d90ff` |
+| Texto | `#f4f1ff` |
+| Títulos, nombres y monedas | `#ffe9a8` |
+| Texto secundario | `#9a96c4` (apagado `#6c6890`) |
+| En línea / error | `#7bed9f` / `#ff8a8a` |
+
+**Zoom y tamaño fijo.** La sala se amplía ×1, ×2 o ×3 (enteros: con ×1,5 unos
+píxeles saldrían dobles y otros no). La interfaz, los nombres y las burbujas
+NO se amplían: los dibuja otra cámara sin zoom. Lo decide la profundidad: de
+`LAYER.WORLD_LABEL` para arriba va en la cámara de la interfaz, así que un
+nombre o una burbuja se colocan en coordenadas de PANTALLA (`sobreCabeza()`
+en MainScene), no del mundo.
 
 Los paneles fijos a la cámara se hacen con objetos sueltos, nunca con un
 `Container` (ver `CLAUDE.md`).

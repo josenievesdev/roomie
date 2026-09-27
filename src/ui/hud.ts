@@ -1,11 +1,12 @@
 import Phaser from "phaser";
 import { LAYER } from "../render/layers";
-import { boton, icono, pieza, texto, UI } from "./kit";
+import { boton, icono, pieza, texto, UI, UI_HEX, yCentrada, type Boton } from "./kit";
 
-// HUD: lo que está siempre en pantalla. Arriba a la izquierda, dónde estás y
-// cuánta gente hay; arriba a la derecha, tus monedas y los botones (chat,
-// vestidor, perfil); abajo a la derecha, una chuleta de teclas que se va
-// sola al rato.
+// HUD: lo que está siempre en pantalla, pequeño y en las esquinas para que
+// mande la sala. Arriba a la izquierda, dónde estás y cuánta gente hay;
+// arriba a la derecha, tus monedas y tres botones de sólo icono (chat,
+// vestidor, perfil) con su pista al pasar; abajo a la derecha, el zoom y una
+// chuleta de teclas que se va sola al rato.
 
 export type DatosHud = {
   /** Nombre bonito de la sala ("Plaza Central"), no su id */
@@ -20,99 +21,142 @@ export type AccionesHud = {
   chat: () => void;
   vestidor: () => void;
   perfil: () => void;
+  /** +1 acerca, -1 aleja */
+  zoom: (paso: number) => void;
 };
 
 const MARGEN = 8;
-const ALTO_BOTON = 36;
+/** Alto de todo lo del HUD: pastillas y botones */
+const ALTO = 24;
+const HUECO = 4;
 /** Cuánto se queda la chuleta de teclas antes de irse */
 const CHULETA_MS = 14000;
+
+type Fijable = Phaser.GameObjects.GameObject & {
+  setScrollFactor(v: number): Fijable;
+  setDepth(v: number): Fijable;
+};
 
 export class Hud {
   private scene: Phaser.Scene;
   private chipSala: Phaser.GameObjects.NineSlice;
   private nombreSala: Phaser.GameObjects.Text;
-  private linea: Phaser.GameObjects.Text;
+  private separador: Phaser.GameObjects.Rectangle;
+  private gente: Phaser.GameObjects.Text;
   private chipMonedas: Phaser.GameObjects.NineSlice;
   private monedas: Phaser.GameObjects.Text;
   private iconoMonedas: Phaser.GameObjects.Image;
-  private botones: Phaser.GameObjects.GameObject[] = [];
+  /** Borde derecho de la pastilla de monedas (crece hacia la izquierda) */
+  private finMonedas: number;
+  private zoomMas: Boton;
+  private zoomMenos: Boton;
   private chuleta: Phaser.GameObjects.GameObject[] = [];
 
   constructor(scene: Phaser.Scene, acciones: AccionesHud) {
     this.scene = scene;
-    const fijo = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
-      o: T,
-      capa = 0,
-    ): T => o.setScrollFactor(0).setDepth(LAYER.UI_HUD + capa);
-
-    // ---- Dónde estás
-    this.chipSala = fijo(pieza(scene, "chip", MARGEN, MARGEN, 200, 44));
-    fijo(icono(scene, "casa", MARGEN + 8, MARGEN + 8), 1);
-    this.nombreSala = fijo(texto(scene, MARGEN + 36, MARGEN + 6, "", { tam: 2, color: UI.titulo }), 1);
-    this.linea = fijo(texto(scene, MARGEN + 36, MARGEN + 26, "", { tam: 1, color: UI.exito }), 1);
-
-    // ---- Botones (de derecha a izquierda)
-    const ancho = 960;
-    let x = ancho - MARGEN;
-    const nuevo = (etiqueta: string, ico: string, anchoBoton: number, accion: () => void) => {
-      x -= anchoBoton;
-      const b = boton(scene, x, MARGEN, anchoBoton, ALTO_BOTON, etiqueta, accion, { icono: ico, capa: LAYER.UI_HUD });
-      this.botones.push(...b.objetos);
-      x -= 6;
+    const ancho = scene.scale.width;
+    const alto = scene.scale.height;
+    const fijo = <T extends Phaser.GameObjects.GameObject>(o: T, capa = 0): T => {
+      (o as unknown as Fijable).setScrollFactor(0).setDepth(LAYER.UI_HUD + capa);
+      return o;
     };
-    nuevo("Perfil", "persona", 100, acciones.perfil);
-    nuevo("Vestidor", "camiseta", 124, acciones.vestidor);
-    nuevo("Chat", "chat", 88, acciones.chat);
+    const yTexto = yCentrada(MARGEN, ALTO);
 
-    // ---- Monedas
-    this.chipMonedas = fijo(pieza(scene, "chip", x - 90, MARGEN, 90, ALTO_BOTON));
-    this.iconoMonedas = fijo(icono(scene, "moneda", x - 82, MARGEN + 9), 1);
-    this.monedas = fijo(texto(scene, x - 58, MARGEN + 10, "", { tam: 2, color: UI.titulo }), 1);
+    // ---- Dónde estás: casa, nombre de la sala | gente
+    this.chipSala = fijo(pieza(scene, "chip", MARGEN, MARGEN, 120, ALTO));
+    fijo(icono(scene, "casa", MARGEN + 7, MARGEN + 7), 1);
+    this.nombreSala = fijo(texto(scene, MARGEN + 24, yTexto, "", { color: UI.titulo }), 1);
+    this.separador = fijo(scene.add.rectangle(0, MARGEN + 6, 1, ALTO - 12, UI_HEX.borde).setOrigin(0, 0), 1);
+    this.gente = fijo(texto(scene, 0, yTexto, ""), 1);
 
-    this.crearChuleta();
+    // ---- Botones de sólo icono, de derecha a izquierda
+    let x = ancho - MARGEN;
+    const nuevo = (ico: string, pista: string, accion: () => void) => {
+      x -= ALTO;
+      boton(scene, x, MARGEN, ALTO, ALTO, "", accion, { icono: ico, capa: LAYER.UI_HUD, pista });
+      x -= HUECO;
+    };
+    nuevo("persona", "Perfil", acciones.perfil);
+    nuevo("camiseta", "Vestidor · C", acciones.vestidor);
+    nuevo("chat", "Chat · Enter", acciones.chat);
+
+    // ---- Monedas, a la izquierda de los botones
+    this.finMonedas = x - HUECO;
+    this.chipMonedas = fijo(pieza(scene, "chip", 0, MARGEN, 40, ALTO));
+    this.iconoMonedas = fijo(icono(scene, "moneda", 0, MARGEN + 8), 1);
+    this.monedas = fijo(texto(scene, 0, yTexto, "", { color: UI.titulo }), 1);
+
+    // ---- Zoom, abajo a la derecha
+    const zx = ancho - MARGEN - ALTO;
+    const zy = alto - MARGEN - ALTO;
+    this.zoomMenos = boton(scene, zx, zy, ALTO, ALTO, "", () => acciones.zoom(-1), {
+      icono: "menos",
+      capa: LAYER.UI_HUD,
+      pista: "Alejar · −",
+      ladoPista: "izquierda",
+    });
+    this.zoomMas = boton(scene, zx, zy - ALTO - HUECO, ALTO, ALTO, "", () => acciones.zoom(1), {
+      icono: "mas",
+      capa: LAYER.UI_HUD,
+      pista: "Acercar · +",
+      ladoPista: "izquierda",
+    });
+
+    this.crearChuleta(zx - 12, alto - MARGEN);
   }
 
   actualizar(d: DatosHud): void {
     this.nombreSala.setText(d.sala);
-    if (!d.enLinea) {
-      this.linea.setText("○ Sin conexión").setColor("#8a8aa8");
-    } else {
-      this.linea.setText(`● ${d.gente} ${d.gente === 1 ? "persona" : "personas"} aquí`).setColor(UI.exito);
-    }
-    const anchoSala = Math.max(this.nombreSala.width, this.linea.width) + 36 + 14;
-    this.chipSala.setSize(Math.max(120, anchoSala), 44);
+    const xSeparador = this.nombreSala.x + this.nombreSala.width + 8;
+    this.separador.setX(xSeparador);
+    if (d.enLinea) this.gente.setText(`● ${d.gente} aquí`).setColor(UI.exito);
+    else this.gente.setText("○ sin conexión").setColor(UI.tenue);
+    this.gente.setX(xSeparador + 8);
+    this.chipSala.setSize(this.gente.x + this.gente.width + 9 - MARGEN, ALTO);
 
     const hay = d.saldo !== null;
     this.monedas.setText(hay ? String(d.saldo) : "");
+    const w = 7 + this.iconoMonedas.width + 5 + this.monedas.width + 8;
+    const x0 = this.finMonedas - w;
+    this.chipMonedas.setX(x0).setSize(w, ALTO);
+    this.iconoMonedas.setX(x0 + 7);
+    this.monedas.setX(x0 + 7 + this.iconoMonedas.width + 5);
     for (const o of [this.chipMonedas, this.monedas, this.iconoMonedas]) o.setVisible(hay);
   }
 
-  /** Teclas con su marco, al pie; se desvanecen solas */
-  private crearChuleta(): void {
+  /** Atenúa el botón de zoom que ya no puede ir más allá */
+  nivelZoom(nivel: number, min: number, max: number): void {
+    for (const o of this.zoomMas.objetos) (o as unknown as Phaser.GameObjects.Components.Alpha).setAlpha(nivel >= max ? 0.35 : 1);
+    for (const o of this.zoomMenos.objetos) (o as unknown as Phaser.GameObjects.Components.Alpha).setAlpha(nivel <= min ? 0.35 : 1);
+  }
+
+  /** Teclas con su marco, alineadas a la derecha hasta `derecha`; se desvanecen solas */
+  private crearChuleta(derecha: number, abajo: number): void {
     const s = this.scene;
     const partes: [string, string][] = [
-      ["Clic", "caminar"],
+      ["Clic", "andar"],
       ["WASD", "mover"],
       ["Enter", "chat"],
       ["C", "vestidor"],
+      ["Rueda", "zoom"],
     ];
+    const ALTO_TECLA = 16;
+    const y = abajo - ALTO_TECLA;
+    const yTexto = yCentrada(y, ALTO_TECLA);
     // Se mide primero para alinearla a la derecha
-    const trozos: { tecla: Phaser.GameObjects.Text; marco: Phaser.GameObjects.NineSlice; desc: Phaser.GameObjects.Text }[] = [];
-    let ancho = 0;
-    for (const [t, d] of partes) {
-      const tecla = texto(s, 0, 0, t, { tam: 1, sombra: false });
-      const marco = pieza(s, "tecla", 0, 0, tecla.width + 12, 22);
-      const desc = texto(s, 0, 0, d, { tam: 1, color: UI.suave });
-      trozos.push({ tecla, marco, desc });
-      ancho += marco.width + 6 + desc.width + 14;
-    }
-    const y = 540 - MARGEN - 22;
-    let x = 960 - MARGEN - ancho;
+    const trozos = partes.map(([t, d]) => {
+      const tecla = texto(s, 0, yTexto, t);
+      const marco = pieza(s, "tecla", 0, y, tecla.width + 10, ALTO_TECLA);
+      const desc = texto(s, 0, yTexto, d, { color: UI.suave, sombra: true });
+      return { tecla, marco, desc };
+    });
+    const ancho = trozos.reduce((a, t) => a + t.marco.width + 5 + t.desc.width, 0) + (trozos.length - 1) * 12;
+    let x = derecha - ancho;
     for (const { tecla, marco, desc } of trozos) {
-      marco.setPosition(x, y);
-      tecla.setPosition(x + 6, y + 6);
-      desc.setPosition(x + marco.width + 6, y + 7);
-      x += marco.width + 6 + desc.width + 14;
+      marco.setX(x);
+      tecla.setX(x + 5);
+      desc.setX(x + marco.width + 5);
+      x += marco.width + 5 + desc.width + 12;
       for (const o of [marco, tecla, desc]) {
         o.setScrollFactor(0).setDepth(LAYER.UI_HUD + (o === marco ? 0 : 1));
         this.chuleta.push(o);

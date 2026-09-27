@@ -30,6 +30,6 @@ function arrancar(): void {
 // midiera la de reserva todos los textos saldrían descolocados. Si la fuente
 // fallara, el juego arranca igual con la monoespaciada del sistema.
 document.fonts
-  .load('16px "Roomie Pixel"')
+  .load('12px "Roomie Pixel"')
   .catch(() => undefined)
   .then(arrancar);

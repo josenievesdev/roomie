@@ -68,6 +68,7 @@ Hecho:
 - [x] **Guía de estilo** (`docs/guia-de-estilo.md`): una escala, una cámara, una luz
 - [x] **Muebles en 3D** con el color del tema de cada sala, paredes decoradas y luz de ambiente
 - [x] **Interfaz pixel art**: fuente propia, HUD, login, chat y vestidor rehechos
+- [x] **Interfaz fina y propia** (líneas de 1 px), teclado que cruza puertas y se sienta, y **zoom** (rueda, + / −, arrastrar)
 
 Siguiente:
 
@@ -78,6 +79,8 @@ Siguiente:
 - [ ] Trabajos y economía
 
 El detalle de cada punto, y por qué en ese orden, en `docs/estado-actual.md`.
+Hacia dónde va el mundo (barrio, transporte, economía, moda y caras), en
+`docs/vision-mundo.md`.
 
 ## Arquitectura
 

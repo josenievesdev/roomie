@@ -44,13 +44,16 @@ export const LAYER = {
    * Nombres sobre los avatares. Encima de todo el mundo: antes compartían la
    * profundidad de su avatar y el mueble que tuviera delante se los comía
    * (media etiqueta asomando por detrás de una planta). Debajo de burbujas.
+   *
+   * Desde aquí hacia arriba todo lo dibuja la cámara de la interfaz, sin
+   * zoom: nombres y burbujas siguen a su avatar pero a tamaño fijo (ver
+   * `repartirCamaras` en MainScene).
    */
   WORLD_LABEL: 10_000,
 
   /**
-   * Encima de TODO el mundo, pero todavía dentro de él: burbujas de chat y
-   * marcador de destino. Van ancladas a una posición del mundo y deben tapar
-   * paredes y muebles, pero nunca a la interfaz.
+   * Burbujas de chat: encima de todo el mundo y de los nombres, pero nunca
+   * de la interfaz. Van ancladas a un avatar y deben tapar paredes y muebles.
    */
   WORLD_TOP: 10_001,
 

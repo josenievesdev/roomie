@@ -53,6 +53,16 @@ export interface World {
    * cliente con el último snapshot. Sin él, nadie ocupa sitio.
    */
   isOccupied?(col: number, row: number): boolean;
+  /**
+   * ¿Es una puerta? Las puertas están bloqueadas para andar por encima, pero
+   * el teclado puede entrar en ellas (y quien conoce la sala, cruzar).
+   */
+  isDoor?(col: number, row: number): boolean;
+  /**
+   * El asiento de una celda, si lo hay. El teclado puede entrar en un asiento
+   * libre, y al entrar se sienta, igual que al terminar un camino en él.
+   */
+  seatAt?(col: number, row: number): SitTarget | null;
 }
 
 export const PATH_SPEED = 3; // celdas/s (clic + A*)
@@ -87,6 +97,12 @@ export class AvatarState {
   path: Cell[] = [];
   sitting: SitTarget | null = null;
   private pendingSit: SitTarget | null = null;
+  /**
+   * Dirección de teclado con la que se entró sentándose en un asiento, hasta
+   * que se suelta. Sin esto, la misma tecla que te sienta te levantaría en el
+   * frame siguiente y sentarse con el teclado sería imposible.
+   */
+  private sentadoCon: { x: number; y: number } | null = null;
   private world: World;
 
   constructor(world: World, start: Cell, facing: Facing = FACING_SUR) {
@@ -96,35 +112,51 @@ export class AvatarState {
     this.facing = facing;
   }
 
-  /** Orden de teclado en px de pantalla. Devuelve true si hubo orden. */
+  /**
+   * Orden de teclado en px de pantalla. Devuelve true si hubo orden.
+   *
+   * Entrar con el teclado en un asiento libre sienta, como llegar a él con un
+   * camino; y se sigue sentado mientras no se suelte o cambie la tecla. En
+   * una puerta se puede entrar: cruzarla lo decide quien conoce la sala.
+   */
   keyboardMove(sx: number, sy: number): boolean {
     if (sx === 0 && sy === 0) return false;
-    if (this.sitting) this.stand();
+    const dir = { x: Math.sign(sx), y: Math.sign(sy) };
+    if (this.sitting) {
+      const s = this.sentadoCon;
+      if (s && s.x === dir.x && s.y === dir.y) return true;
+      this.stand();
+    }
     this.cancelPath();
 
     // Dos pasos por ejes de pantalla para deslizar por los muros
-    if (sx !== 0) {
-      const col = this.col + sx / TILE_W;
-      const row = this.row - sx / TILE_W;
-      if (this.canStand(col, row)) {
-        this.col = col;
-        this.row = row;
-      }
-    }
-    if (sy !== 0) {
-      const col = this.col + sy / TILE_H;
-      const row = this.row + sy / TILE_H;
-      if (this.canStand(col, row)) {
-        this.col = col;
-        this.row = row;
-      }
-    }
+    if (sx !== 0 && this.pasoTeclado(this.col + sx / TILE_W, this.row - sx / TILE_W, dir)) return true;
+    if (sy !== 0) this.pasoTeclado(this.col + sy / TILE_H, this.row + sy / TILE_H, dir);
+    return true;
+  }
+
+  /**
+   * Un paso de teclado hasta (col, row), si se puede pisar. Si el paso entra
+   * en un asiento, se sienta en él y devuelve true (ya no se sigue andando).
+   */
+  private pasoTeclado(col: number, row: number, dir: { x: number; y: number }): boolean {
+    if (!this.puedeEntrar(col, row)) return false;
+    const antes = { col: Math.round(this.col), row: Math.round(this.row) };
+    this.col = col;
+    this.row = row;
+    const c = Math.round(col);
+    const r = Math.round(row);
+    if (c === antes.col && r === antes.row) return false;
+    const seat = this.world.seatAt?.(c, r);
+    if (!seat) return false;
+    this.sitAt(seat);
+    this.sentadoCon = dir;
     return true;
   }
 
   /** Inicia un camino (con destino "sofá" si `sit` no es null) */
   startPath(path: Cell[], sit: SitTarget | null = null): void {
-    this.sitting = null; // levantarse al empezar a caminar
+    this.stand(); // levantarse al empezar a caminar
     this.path = path.slice();
     this.pendingSit = sit;
   }
@@ -136,10 +168,16 @@ export class AvatarState {
 
   stand(): void {
     this.sitting = null;
+    this.sentadoCon = null;
   }
 
-  /** Avanza por el camino. Devuelve true si hubo movimiento este frame. */
+  /**
+   * Avanza por el camino. Devuelve true si hubo movimiento este frame. Se
+   * llama cuando NO hay teclas: por eso aquí se da por soltada la tecla con
+   * la que alguien se sentó.
+   */
   tick(dt: number): boolean {
+    this.sentadoCon = null;
     if (this.sitting || this.path.length === 0) return false;
     let move = PATH_SPEED * dt;
     let moved = false;
@@ -245,10 +283,19 @@ export class AvatarState {
     this.facing = facingDesde(moveX, moveY);
   }
 
-  private canStand(col: number, row: number): boolean {
+  /**
+   * ¿Puede el teclado llevar los pies hasta ahí? Celdas libres, puertas y
+   * asientos que nadie ocupa. Y moverse dentro de la celda en la que ya se
+   * está vale siempre: si no, quien está sentado en un sofá (celda
+   * bloqueada) no podría levantarse andando.
+   */
+  private puedeEntrar(col: number, row: number): boolean {
     const c = Math.round(col);
     const r = Math.round(row);
     if (c < 0 || r < 0 || c >= this.world.cols || r >= this.world.rows) return false;
-    return !this.world.isBlocked(c, r);
+    if (c === Math.round(this.col) && r === Math.round(this.row)) return true;
+    if (!this.world.isBlocked(c, r)) return true;
+    if (this.world.isDoor?.(c, r)) return true;
+    return !!this.world.seatAt?.(c, r) && !this.world.isOccupied?.(c, r);
   }
 }

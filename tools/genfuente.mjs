@@ -2,20 +2,20 @@
 //
 // Un TrueType de verdad, construido a mano desde los glifos de
 // `tools/fuente/glifos.mjs`: cada píxel de tinta es un cuadrado del contorno.
-// Con 8 píxeles por em, a 8 px de tamaño cada píxel de la fuente es un
-// píxel de pantalla, a 16 px son dos, a 24 px tres... siempre nítido. Y al
-// ser una fuente del navegador, lo que no tiene (emojis, otros alfabetos) lo
-// pone él con la fuente de reserva.
+// Con 12 píxeles por em, a 12 px de tamaño cada píxel de la fuente es un
+// píxel de pantalla, a 24 px son dos... siempre nítido. Y al ser una fuente
+// del navegador, lo que no tiene (emojis, otros alfabetos) lo pone él con la
+// fuente de reserva.
 //
 // Uso: node tools/genfuente.mjs
 import fs from "node:fs";
 import path from "node:path";
-import { GLIFOS } from "./fuente/glifos.mjs";
+import { GLIFOS, METRICAS } from "./fuente/glifos.mjs";
 
-const PX = 128; // unidades por píxel de la fuente
-const EM = 8 * PX; // 1024
-const ASC = 9 * PX; // hasta la tilde de las mayúsculas
-const DESC = 2 * PX; // rabos de g, j, p, q, y
+const PX = 100; // unidades por píxel de la fuente
+const EM = METRICAS.em * PX; // 1200: a 12 px, 1 píxel de letra = 1 de pantalla
+const ASC = METRICAS.ascenso * PX; // hasta la tilde de las mayúsculas
+const DESC = METRICAS.descenso * PX; // rabos de g, j, p, q, y
 const OUT = path.join("public", "assets", "fuente");
 
 // ---------------------------------------------------------------- Glifos → contornos
@@ -54,8 +54,8 @@ glifos.push({
   avance: 6 * PX,
   contornos: [
     // Exterior en sentido horario, interior al revés: el hueco
-    [[PX / 2, 0], [PX / 2, 7 * PX], [4.5 * PX, 7 * PX], [4.5 * PX, 0]],
-    [[1.5 * PX, PX], [3.5 * PX, PX], [3.5 * PX, 6 * PX], [1.5 * PX, 6 * PX]],
+    [[PX / 2, 0], [PX / 2, 9 * PX], [4.5 * PX, 9 * PX], [4.5 * PX, 0]],
+    [[1.5 * PX, PX], [3.5 * PX, PX], [3.5 * PX, 8 * PX], [1.5 * PX, 8 * PX]],
   ],
 });
 for (const [ch, glifo] of Object.entries(GLIFOS)) {
@@ -195,7 +195,7 @@ const fecha = BigInt(Math.floor(Date.UTC(2026, 8, 26) / 1000) + 2082844800); // 
 const head = new Buf();
 head.u16(1).u16(0).u32(0x00010000).u32(0).u32(0x5f0f3cf5).u16(0x000b).u16(EM);
 for (let i = 0; i < 2; i++) head.u32(Number(fecha >> 32n)).u32(Number(fecha & 0xffffffffn));
-head.i16(bbox.xMin).i16(bbox.yMin).i16(bbox.xMax).i16(bbox.yMax).u16(0).u16(8).i16(2).i16(1).i16(0);
+head.i16(bbox.xMin).i16(bbox.yMin).i16(bbox.xMax).i16(bbox.yMax).u16(0).u16(METRICAS.em).i16(2).i16(1).i16(0);
 
 const hhea = new Buf();
 hhea.u16(1).u16(0).i16(ASC).i16(-DESC).i16(0).u16(avanceMax).i16(0).i16(0).i16(bbox.xMax);
@@ -214,7 +214,7 @@ os2.i16(0).bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 os2.u32(0b11).u32(0).u32(0).u32(0); // Latín básico y Latín-1
 os2.tag("RMIE").u16(0x0040 | 0x0080).u16(Math.min(...cps)).u16(Math.min(Math.max(...cps), 0xffff));
 os2.i16(ASC).i16(-DESC).i16(0).u16(ASC).u16(DESC).u32(1).u32(0);
-os2.i16(5 * PX).i16(7 * PX).u16(0).u16(32).u16(1);
+os2.i16(METRICAS.minuscula * PX).i16(METRICAS.mayuscula * PX).u16(0).u16(32).u16(1);
 
 const post = new Buf();
 post.u32(0x00030000).u32(0).i16(-PX).i16(PX).u32(0).u32(0).u32(0).u32(0).u32(0);

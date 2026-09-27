@@ -1,6 +1,6 @@
 # Roomie — estado actual y qué viene
 
-**Última actualización:** 26 de septiembre de 2026
+**Última actualización:** 27 de septiembre de 2026
 **Rama de trabajo:** `feat/avatar-v2` (sale de `fix/hud-count-modal-veil`) · **Base estable:** `master`
 
 Este documento es el punto de entrada. Los `docs/fase*.md` son el detalle de
@@ -20,8 +20,13 @@ piernas, calzado), en 8 direcciones y a la misma escala que la sala, y cada
 jugador ocupa su baldosa. En la Fase 5 los muebles pasaron a la misma técnica
 3D (con el color del tema de cada sala), las paredes se llenaron de ventanas,
 cuadros, apliques y neones, y la interfaz entera es pixel art con una fuente
-propia. Las reglas visuales que hacen que todo encaje están en
+propia. En la Fase 6 esa interfaz pasó a ser fina y propia (líneas de 1 px),
+el teclado cruza puertas y se sienta, y hay zoom para mirar la sala de cerca.
+Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
+
+Hacia dónde va el mundo (barrio, direcciones, transporte, economía, moda y
+caras) está pensado en `docs/vision-mundo.md`.
 
 Lo que **no** existe todavía: tienda, inventario visible, salas propias,
 trabajos ni economía. Las tablas están y probadas, pero sin interfaz.
@@ -66,6 +71,9 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Muebles en 3D coloreados por el tema de la sala | vistas previas del generador + navegador |
 | Paredes decoradas y luz de ambiente | navegador, en las dos salas |
 | Interfaz pixel art con fuente propia | navegador (HUD, login, chat, vestidor, menús) |
+| Interfaz fina de 1 px, iconos con pista | navegador |
+| Teclado: entra en puertas y asientos | smoke test (5c, 5d) |
+| Zoom ×1/×2/×3 con la interfaz a tamaño fijo | navegador (rueda, botones, arrastre) |
 
 ## Las decisiones que no hay que deshacer
 
@@ -115,9 +123,19 @@ alfombras, luz y marcador (`LAYER.ALFOMBRA`) quedan por debajo de todo el
 mundo. Con la Y de su celda, una alfombra delante del sofá lo tapaba.
 
 **Una fuente, cargada antes que Phaser.** Todo el texto pasa por `texto()`
-del kit (`src/ui/kit.ts`) en la fuente pixel propia, a múltiplos de 8 px.
+del kit (`src/ui/kit.ts`) en la fuente pixel propia, a 12 px (24 el logo).
 Phaser mide cada fuente una sola vez: si arrancara antes de que llegue,
 mediría la de reserva y todo el texto quedaría descolocado.
+
+**Dos cámaras: la sala con zoom, la interfaz sin él.** Qué dibuja cada una lo
+decide la profundidad justo antes de dibujar (`repartirCamaras`): de
+`LAYER.WORLD_LABEL` hacia arriba, la de la interfaz. Por eso nombres y
+burbujas se colocan en coordenadas de pantalla. Con una sola cámara, el zoom
+ampliaba también el HUD (aunque tenga `scrollFactor(0)`) y lo sacaba de la
+pantalla.
+
+**Estar en una puerta sin camino es cruzarla.** Da igual cómo se llegara: con
+un clic, con el teclado o por una corrección del servidor.
 
 **La ocupación de baldosas vive en `AvatarState`.** Cliente y servidor
 ejecutan la misma regla ("si la celda final la ocupa alguien, renuncio"), cada
@@ -185,10 +203,13 @@ dónde apoyarse.
   girar muebles (la tabla `items` ya tiene `rot`) pide generar más variantes.
 - **Cada avatar en pantalla ocupa 1,8 MB de GPU** (hoja de 672×672). Con
   decenas de jugadores por sala habrá que generar sólo las direcciones en uso.
-- **El teclado no respeta la ocupación**: con las flechas se puede atravesar a
-  alguien. El clic sí está protegido.
-- **No hay mobiliario de pared** (cuadros, televisores, ventanas). El catálogo
-  ya tiene el campo `kind: 'floor' | 'wall'` preparado.
+- **El teclado atraviesa a la gente de pie**: con las flechas se puede pasar
+  por encima de alguien (los asientos ocupados sí estorban). El clic sí está
+  protegido.
+- **El cambio de sala no se comprueba en el servidor**: acepta un `room` sin
+  mirar si estabas en una puerta que lleva allí. Con salas como datos, la
+  puerta y su destino deberían vivir en el servidor.
+- **No hay pellizco para el zoom en el móvil**: allí se usan los botones + / −.
 - **El lienzo es 960×540 fijo con `Scale.FIT`**: en un móvil en vertical queda
   una franja pequeña. Falta diseño adaptable.
 - **La interpolación usa la hora de llegada**, no la de simulación, así que
@@ -216,6 +237,8 @@ dónde apoyarse.
 | `fase3-login-real.md` | Cuentas, sesiones y la identidad en el servidor |
 | `fase4-avatar-y-convivencia.md` | Clics en marcha, orden de dibujo, cada uno en su baldosa; avatar por capas y vestidor |
 | `fase5-muebles-y-ui.md` | Alfombra que cortaba el sofá; muebles en 3D, paredes decoradas y luz; interfaz pixel art |
+| `fase6-interfaz-fina-teclado-zoom.md` | Interfaz fina y propia; teclado en puertas y asientos; zoom con la interfaz a tamaño fijo |
+| `vision-mundo.md` | Ideas y plan: barrio, direcciones, transporte, economía, cena, moda y caras |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |
 
 `reporte-proyecto.md` es anterior a todo esto y está desfasado; se conserva

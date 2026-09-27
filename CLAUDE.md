@@ -68,8 +68,14 @@ entrada en el catálogo + `node tools/genmuebles.mjs` + su fila en la tienda
 comprar. El color lo pone el tema de la sala, no el PNG.
 
 **Todo texto pasa por el kit** (`texto()` de `src/ui/kit.ts`): la fuente
-pixel propia a 8/16/24 px, nunca un `fontFamily` suelto. Las piezas de
-interfaz (paneles, botones, campos) también salen del kit.
+pixel propia a 12 px (24 sólo el logo), nunca un `fontFamily` suelto. Las
+piezas de interfaz (paneles, botones, campos) también salen del kit, con
+líneas de 1 px: nada de duplicar la escala para que "se vea".
+
+**Con zoom, lo de tamaño fijo va en la cámara de la interfaz.** La sala se
+amplía; interfaz, nombres y burbujas no. Lo decide la profundidad: de
+`LAYER.WORLD_LABEL` para arriba lo dibuja la cámara sin zoom, así que se
+coloca en coordenadas de pantalla (`aPantalla()`/`sobreCabeza()`).
 
 **El aspecto sólo se valida con `sanitizeLook()`** (`src/state/look.ts`,
 compartido). El servidor corrige campo a campo contra el catálogo.

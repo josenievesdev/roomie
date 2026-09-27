@@ -327,13 +327,17 @@ if (lejos) {
 // Se BUSCA una celda libre que tenga un mueble justo al lado en +x de
 // pantalla (col+1, row-1) y se empuja contra él: el servidor debe frenar al
 // avatar igual que el cliente, sin atravesarlo. Antes esto dependía de que
-// hubiera una mesa exactamente en (7,5).
+// hubiera una mesa exactamente en (7,5). Asientos y puertas no valen: en
+// ellos el teclado SÍ entra (5c y 5d).
+const especial = (w, c, r) => w.seats.has(`${c},${r}`) || w.doorCells.has(`${c},${r}`);
 let desde = null;
 for (let row = 1; row < room1.rows - 1 && !desde; row++) {
   for (let col = 1; col < room1.cols - 1; col++) {
     const vecino = { col: col + 1, row: row - 1 };
     if (room1.isBlocked(col, row)) continue;
     if (vecino.row < 1 || !room1.isBlocked(vecino.col, vecino.row)) continue;
+    // Un mueble de verdad: ni el anillo de muros del borde ni un asiento
+    if (vecino.col > room1.cols - 2 || especial(room1, vecino.col, vecino.row)) continue;
     desde = { col, row, obstaculo: vecino };
     break;
   }
@@ -360,6 +364,81 @@ if (desde) {
     `el mueble (${desde.obstaculo.col},${desde.obstaculo.row}) frena al avatar en ` +
       `(${walled.col.toFixed(2)},${walled.row.toFixed(2)}) sin atravesarlo`,
   );
+}
+
+/** Mantiene una dirección de teclado pulsada (como el cliente, cada 40 ms) */
+const pulsar = (c, mx, my) => {
+  const t = setInterval(() => c.sock.emit("move", mx, my), 40);
+  c.sock.emit("move", mx, my);
+  return () => {
+    clearInterval(t);
+    c.sock.emit("move", 0, 0);
+  };
+};
+
+// ---------- 5c. El teclado sienta ----------
+// Se busca un asiento con una celda libre al lado en uno de los cuatro ejes
+// de pantalla, y se empuja desde ahí: al entrar, se sienta mirando hacia
+// donde mira el asiento. Y sigue sentado con la tecla aún pulsada; si no, la
+// misma tecla lo levantaría al instante.
+{
+  const EJES = [
+    { mx: 1, my: 0, dc: -1, dr: 1 },
+    { mx: -1, my: 0, dc: 1, dr: -1 },
+    { mx: 0, my: 1, dc: -1, dr: -1 },
+    { mx: 0, my: -1, dc: 1, dr: 1 },
+  ];
+  let prueba = null;
+  for (const [key, seat] of room1.seats) {
+    for (const e of EJES) {
+      const from = { col: seat.col + e.dc, row: seat.row + e.dr };
+      if (!libre(from.col, from.row, [celda(view(A, B.id))])) continue;
+      prueba = { seat, from, e, key };
+      break;
+    }
+    if (prueba) break;
+  }
+  check(!!prueba, "hay un asiento al que llegar con el teclado en room1");
+  if (prueba) {
+    const { seat, from, e } = prueba;
+    await colocar(A, from);
+    const soltar = pulsar(A, e.mx, e.my);
+    const sento = await until(() => view(A)?.sitting, 3000);
+    check(
+      sento && en(view(A), seat) && view(A).facing === seat.dir,
+      `con el teclado, A entra en el asiento (${seat.col},${seat.row}) y se sienta mirando a ${seat.dir}`,
+    );
+    await sleep(500);
+    check(view(A)?.sitting, "con la tecla aún pulsada sigue sentado");
+    soltar();
+    await sleep(200);
+    const levantar = pulsar(A, -e.mx, -e.my);
+    check(
+      await until(() => !view(A)?.sitting && !en(view(A), seat), 3000),
+      "otra tecla lo levanta y lo saca del asiento",
+    );
+    levantar();
+    await hastaQueSePare(A, 2000);
+  }
+}
+
+// ---------- 5d. El teclado entra en las puertas ----------
+// Delante de la puerta y hacia ella (las puertas están en los muros del
+// fondo: fila 0 o columna 0). El servidor tiene que dejarle pisarla; cruzar
+// a la otra sala ya es cosa del cliente, que conoce el destino.
+{
+  const [pc, pr] = [...room1.doorCells][0].split(",").map(Number);
+  const puerta = { col: pc, row: pr };
+  const delante = pr === 0 ? { col: pc, row: 1 } : { col: 1, row: pr };
+  const [mx, my] = pr === 0 ? [Math.SQRT1_2, -Math.SQRT1_2] : [-Math.SQRT1_2, -Math.SQRT1_2];
+  await colocar(A, delante);
+  const soltar = pulsar(A, mx, my);
+  check(
+    await until(() => en(view(A), puerta), 3000),
+    `con el teclado, A entra en la puerta (${pc},${pr})`,
+  );
+  soltar();
+  await hastaQueSePare(A, 2000);
 }
 
 // ---------- 6. Desconexión ----------

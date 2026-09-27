@@ -65,3 +65,25 @@ export function clearSave(): void {
     // ignore
   }
 }
+
+// El zoom es una preferencia de este navegador, no de la partida: va aparte
+// y sobrevive a cerrar sesión.
+const KEY_ZOOM = "roomie:zoom";
+
+/** Nivel de zoom guardado (1, 2, 3...), o null si no hay */
+export function cargarZoom(): number | null {
+  try {
+    const n = Number(localStorage.getItem(KEY_ZOOM));
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+export function guardarZoom(nivel: number): void {
+  try {
+    localStorage.setItem(KEY_ZOOM, String(nivel));
+  } catch {
+    // sin localStorage el zoom vuelve a 1 al recargar, nada más
+  }
+}

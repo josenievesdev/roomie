@@ -30,8 +30,8 @@ import {
 import { DEFAULT_LOOK, mismoLook, sanitizeLook } from "../state/look";
 import { Vestidor } from "../ui/vestidor";
 import { Hud } from "../ui/hud";
-import { boton, centrar, crearTexturasUI, estiloTexto, icono, partirTexto, pieza, texto, UI } from "../ui/kit";
-import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
+import { boton, centrar, crearTexturasUI, icono, partirTexto, pieza, texto, UI, UI_HEX, yCentrada } from "../ui/kit";
+import { loadSave, writeSave, clearSave, cargarZoom, guardarZoom, type SaveData } from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
 import { themeFor, type RoomTheme } from "../render/theme";
 import { createTextInput, textInputFocused, type TextInput } from "../ui/textInput";
@@ -90,9 +90,14 @@ const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
 /** Cuánto dura el saludo del avatar cuando alguien manda 👋 */
 const SALUDO_MS = 1600;
-/** Nombre sobre la cabeza y burbuja sobre el nombre, medidos desde los pies */
-const ALTO_NOMBRE = ALTO_AVATAR + 3;
-const ALTO_BURBUJA = ALTO_AVATAR + 24;
+/**
+ * Nombre sobre la cabeza y burbuja sobre el nombre, en píxeles de PANTALLA
+ * por encima de la cabeza: nombres y burbujas van a tamaño fijo, con el zoom
+ * que sea (ver `repartirCamaras`).
+ */
+const HUECO_NOMBRE = 3;
+const ALTO_ETIQUETA = 16;
+const HUECO_BURBUJA = HUECO_NOMBRE + ALTO_ETIQUETA + 5;
 /**
  * Alto de la cara de pared, IGUAL que `WALL_H` en tools/genassets.mjs: 1,5
  * veces el avatar. (La puerta, algo más alta que él, es un modelo 3D:
@@ -114,20 +119,31 @@ type CampoAuth = {
 };
 
 /**
- * Panel de chat de la esquina inferior izquierda, al estilo de Minecraft:
- * historial a la vista que se desvanece solo, y al abrir para escribir se
- * muestra entero con fondo.
+ * Panel de chat de la esquina inferior izquierda: historial a la vista que
+ * se desvanece solo, y al abrir para escribir se muestra entero con fondo.
  */
 const CHAT_PANEL = {
   x: 8,
-  /** Línea de base: las líneas se apilan hacia ARRIBA desde aquí */
-  bottom: 488,
-  w: 440,
+  /** Pie de la línea más nueva: las demás se apilan hacia ARRIBA desde aquí */
+  bottom: 497,
+  w: 360,
   /** Cuántas líneas caben a la vez */
   lines: 8,
-  /** Alto de línea: la fuente pixel a 16 px más el hueco */
-  lineH: 20,
+  /** Alto de línea: la fuente pixel a 12 px (15 de caja) más 1 de aire */
+  lineH: 16,
 };
+/** Barra de escritura del chat, al pie */
+const CHAT_BARRA = { y: 508, h: 24 };
+
+/**
+ * Niveles de zoom. Enteros a propósito: a ×1,5 unos píxeles del arte
+ * saldrían dobles y otros sencillos, y el pixel art se deforma.
+ */
+const ZOOMS = [1, 2, 3] as const;
+/** Cuánto hay que girar la rueda para cambiar un nivel (los touchpads mandan pasitos) */
+const RUEDA_PASO = 60;
+/** Píxeles que tiene que moverse el puntero para que un clic pase a ser arrastre */
+const UMBRAL_ARRASTRE = 6;
 /** Con el chat cerrado, una línea se desvanece a los 12 s */
 const CHAT_FADE_MS = 12000;
 /** Historial guardado (más de lo que cabe en pantalla) */
@@ -248,7 +264,6 @@ export class MainScene extends Phaser.Scene {
   private rows = 0;
   private furniture: PlacedFurniture[] = [];
   private doors: Door[] = [];
-  private pendingDoor: Door | null = null;
   private transitioning = false;
 
   // Aspecto
@@ -297,6 +312,22 @@ export class MainScene extends Phaser.Scene {
   private peerMenuItems: MenuItem[] = [];
   /** Id del jugador al que pertenece el menú abierto */
   private peerMenuFor = "";
+
+  // Cámara
+  /**
+   * Cámara de la interfaz: sin zoom ni scroll. La principal hace zoom sobre
+   * la sala; si la interfaz fuera en ella, también se ampliaría (y se
+   * saldría de la pantalla), aunque tenga `scrollFactor(0)`.
+   */
+  private camaraUI!: Phaser.Cameras.Scene2D.Camera;
+  /** Índice en ZOOMS */
+  private nivelZoom = 0;
+  /** La cámara dejó de seguir al avatar para mirar otra cosa (rueda o arrastre) */
+  private camaraLibre = false;
+  /** Rueda acumulada hasta completar un paso */
+  private ruedaAcum = 0;
+  /** Clic en el mundo en curso: dónde empezó y si ya es un arrastre */
+  private arrastre: { x: number; y: number; scrollX: number; scrollY: number; activo: boolean } | null = null;
 
   constructor() {
     super("main");
@@ -347,7 +378,9 @@ export class MainScene extends Phaser.Scene {
     this.sitMismatchSince = 0;
     this.furniture = [];
     this.doors = [];
-    this.pendingDoor = null;
+    this.camaraLibre = false;
+    this.ruedaAcum = 0;
+    this.arrastre = null;
 
     const save = loadSave();
     // Con sesión, el aspecto es el de la cuenta; sin ella, el último guardado
@@ -367,6 +400,9 @@ export class MainScene extends Phaser.Scene {
         rows: this.rows,
         isBlocked: (c, r) => this.blocked[r][c],
         isOccupied: (c, r) => this.peerOccupies(c, r),
+        // Con el teclado también se entra en puertas y asientos
+        isDoor: (c, r) => this.doorAt(c, r) !== undefined,
+        seatAt: (c, r) => this.seatAtCell(c, r),
       },
       this.resolveStartCell(save),
       this.resolveStartFacing(save),
@@ -381,13 +417,25 @@ export class MainScene extends Phaser.Scene {
       .setDepth(worldDepth(p.depth));
     this.player.play(this.anim(`idle-${this.avatar.facing}`));
 
+    // Cámaras: la principal mira la sala (con zoom y siguiendo al avatar); la
+    // de la interfaz, encima, dibuja sólo la interfaz y nunca se mueve. Qué
+    // va en cuál lo decide la profundidad, justo antes de dibujar.
+    this.camaraUI = this.cameras.add(0, 0, this.scale.width, this.scale.height, false, "ui");
+    const repartir = () => this.repartirCamaras();
+    this.events.on(Phaser.Scenes.Events.PRE_RENDER, repartir);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.events.off(Phaser.Scenes.Events.PRE_RENDER, repartir));
+
+    const guardado = cargarZoom();
+    this.nivelZoom = Math.max(0, ZOOMS.indexOf((guardado ?? 1) as (typeof ZOOMS)[number]));
+    const cam = this.cameras.main;
+    cam.setZoom(ZOOMS[this.nivelZoom]);
     const [bx, by, bw, bh] = this.roomBounds();
-    this.cameras.main.setBounds(bx, by, bw, bh);
+    cam.setBounds(bx, by, bw, bh);
     // Centrar al cargar: con límites más pequeños que la ventana, Phaser
     // ancla el scroll al borde mínimo y la sala queda pegada arriba.
-    this.cameras.main.centerOn(bx + bw / 2, by + bh / 2);
-    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
-    this.cameras.main.fadeIn(250, 0, 0, 0);
+    cam.centerOn(bx + bw / 2, by + bh / 2);
+    cam.startFollow(this.player, true, 0.1, 0.1);
+    cam.fadeIn(250, 0, 0, 0);
 
     // Interfaz: piezas pixel art (una vez) y el HUD
     crearTexturasUI(this);
@@ -395,11 +443,13 @@ export class MainScene extends Phaser.Scene {
       chat: () => (this.chatOpen ? this.closeChat() : this.openChat()),
       vestidor: () => this.abrirVestidor(),
       perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
+      zoom: (paso) => this.cambiarZoom(paso),
     });
+    this.hud.nivelZoom(this.nivelZoom, 0, ZOOMS.length - 1);
 
     // Panel de chat: fondo (sólo visible mientras se escribe) + líneas
-    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 14;
-    this.chatPanelBg = pieza(this, "chip", CHAT_PANEL.x, CHAT_PANEL.bottom - alturaPanel + 8, CHAT_PANEL.w, alturaPanel)
+    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 10;
+    this.chatPanelBg = pieza(this, "chip", CHAT_PANEL.x, CHAT_PANEL.bottom + 5 - alturaPanel, CHAT_PANEL.w, alturaPanel)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
@@ -408,7 +458,7 @@ export class MainScene extends Phaser.Scene {
     this.chatLineTexts = [];
     for (let i = 0; i < CHAT_PANEL.lines; i++) {
       this.chatLineTexts.push(
-        texto(this, CHAT_PANEL.x + 10, 0, "", { tam: 2, color: CHAT_COLORS.other })
+        texto(this, CHAT_PANEL.x + 8, 0, "", { color: CHAT_COLORS.other, sombra: true })
           .setOrigin(0, 1)
           .setScrollFactor(0)
           .setDepth(LAYER.UI_PANEL + 1)
@@ -419,11 +469,11 @@ export class MainScene extends Phaser.Scene {
     this.time.addEvent({ delay: 500, loop: true, callback: () => this.renderChatPanel() });
 
     // Barra de escritura, alineada con el panel: un campo hundido
-    this.chatBg = pieza(this, "campo-activo", CHAT_PANEL.x, 498, CHAT_PANEL.w, 34)
+    this.chatBg = pieza(this, "campo-activo", CHAT_PANEL.x, CHAT_BARRA.y, CHAT_PANEL.w, CHAT_BARRA.h)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
-    this.chatLabel = texto(this, CHAT_PANEL.x + 12, 507, "", { tam: 2 })
+    this.chatLabel = texto(this, CHAT_PANEL.x + 8, yCentrada(CHAT_BARRA.y, CHAT_BARRA.h), "")
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL + 1)
       .setVisible(false);
@@ -463,6 +513,8 @@ export class MainScene extends Phaser.Scene {
         if (!this.chatOpen) {
           if (key === "Enter") this.openChat();
           else if (key === "c" || key === "C") this.abrirVestidor();
+          else if (key === "+" || key === "=") this.cambiarZoom(1);
+          else if (key === "-" || key === "_") this.cambiarZoom(-1);
           return;
         }
         if (key === "Enter") this.sendChat();
@@ -477,11 +529,14 @@ export class MainScene extends Phaser.Scene {
       });
     }
 
+    // Clic en el mundo: se decide al SOLTAR. Si entre medias el puntero se
+    // movió, era un arrastre para mirar la sala (con zoom) y no se camina.
     this.input.on(
       "pointerdown",
       (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
+        this.arrastre = null;
         if (pointer.button !== 0) return; // solo clic izquierdo
-        if (this.authModalOpen) return; // el modal se lleva todos los clics
+        if (this.authModalOpen || this.vestidor) return; // el modal se lleva todos los clics
 
         // El clic cayó sobre un elemento interactivo (botón, selector, avatar):
         // es suyo, no del mundo.
@@ -492,12 +547,44 @@ export class MainScene extends Phaser.Scene {
         // así que el botón no hacía nada ni en PC ni en móvil.
         if (sobre.length > 0) return;
 
-        // Un clic en el mundo con el menú de avatar abierto sólo lo cierra
-        if (this.peerMenuItems.length > 0) {
-          this.closePeerMenu();
-          return;
-        }
-        this.handleWorldClick(pointer);
+        const cam = this.cameras.main;
+        this.arrastre = { x: pointer.x, y: pointer.y, scrollX: cam.scrollX, scrollY: cam.scrollY, activo: false };
+      },
+    );
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      const a = this.arrastre;
+      if (!a || !pointer.isDown) return;
+      if (!a.activo && Math.hypot(pointer.x - a.x, pointer.y - a.y) < UMBRAL_ARRASTRE) return;
+      a.activo = true;
+      this.soltarCamara();
+      const cam = this.cameras.main;
+      cam.setScroll(a.scrollX - (pointer.x - a.x) / cam.zoom, a.scrollY - (pointer.y - a.y) / cam.zoom);
+    });
+    this.input.on("pointerup", (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
+      const a = this.arrastre;
+      this.arrastre = null;
+      if (!a || a.activo || this.authModalOpen || this.vestidor) return;
+      if (sobre.length > 0) return; // se soltó encima de un botón: es suyo
+      // Un clic en el mundo con el menú de avatar abierto sólo lo cierra
+      if (this.peerMenuItems.length > 0) {
+        this.closePeerMenu();
+        return;
+      }
+      this.handleWorldClick(pointer);
+    });
+
+    // Rueda: zoom hacia donde apunta el ratón
+    this.input.on(
+      "wheel",
+      (pointer: Phaser.Input.Pointer, _sobre: unknown, _dx: number, dy: number) => {
+        if (this.authModalOpen || this.vestidor) return;
+        // Cambiar de sentido empieza la cuenta de cero
+        if (Math.sign(dy) !== Math.sign(this.ruedaAcum)) this.ruedaAcum = 0;
+        this.ruedaAcum += dy;
+        if (Math.abs(this.ruedaAcum) < RUEDA_PASO) return;
+        const paso = this.ruedaAcum < 0 ? 1 : -1;
+        this.ruedaAcum = 0;
+        this.cambiarZoom(paso, { x: pointer.x, y: pointer.y });
       },
     );
 
@@ -558,23 +645,18 @@ export class MainScene extends Phaser.Scene {
     }
 
     if (dx !== 0 || dy !== 0) {
-      this.pendingDoor = null; // moverse cancela el camino de la puerta
       this.avatar.keyboardMove(dx * KEYBOARD_SPEED * dt, dy * KEYBOARD_SPEED * dt);
     } else {
       this.avatar.tick(dt);
     }
     this.sendMove(dx, dy);
 
-    // ¿Llegó a una puerta? → cruzar
-    if (this.pendingDoor && this.avatar.path.length === 0) {
-      const d = this.pendingDoor;
-      this.pendingDoor = null;
-      if (
-        Math.round(this.avatar.col) === d.col &&
-        Math.round(this.avatar.row) === d.row
-      ) {
-        this.transitionTo(d);
-      }
+    // ¿Está en una puerta sin camino por delante? → cruzar. Da igual cómo
+    // llegara: al final de un camino, con el teclado o por una corrección
+    // del servidor (que sólo te pone en una puerta si ibas hacia ella).
+    if (this.avatar.path.length === 0) {
+      const d = this.doorAt(Math.round(this.avatar.col), Math.round(this.avatar.row));
+      if (d) this.transitionTo(d);
     }
 
     // Estado -> render
@@ -582,6 +664,9 @@ export class MainScene extends Phaser.Scene {
     const moveX = p.x - old.x;
     const moveY = p.y - old.y;
     const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
+    // Si estabas mirando otra parte de la sala, al echar a andar la cámara
+    // vuelve contigo
+    if (moving && this.camaraLibre) this.seguirAvatar();
 
     if (moving && !this.avatar.sitting) this.avatar.updateFacing(moveX, moveY);
     this.player.play(
@@ -597,6 +682,77 @@ export class MainScene extends Phaser.Scene {
     this.syncPeers();
     this.movePeerMenu();
     this.moveBubbles();
+  }
+
+  // ---------- Cámara y zoom ----------
+
+  /**
+   * Cambia de nivel de zoom. Con `ancla` (la rueda), el punto de la sala que
+   * hay bajo el ratón se queda bajo el ratón, y la cámara deja de seguir al
+   * avatar para poder mirar de cerca otra cosa. Sin ancla (teclas, botones),
+   * se amplía sobre lo que ya se estaba viendo.
+   */
+  private cambiarZoom(paso: number, ancla?: { x: number; y: number }): void {
+    const nivel = Phaser.Math.Clamp(this.nivelZoom + paso, 0, ZOOMS.length - 1);
+    if (nivel === this.nivelZoom) return;
+    const cam = this.cameras.main;
+    const antes = ancla ? cam.getWorldPoint(ancla.x, ancla.y) : null;
+    this.nivelZoom = nivel;
+    const z = ZOOMS[nivel];
+    cam.setZoom(z);
+    // Los límites dependen del zoom: la vista mide la ventana entre el zoom
+    const [bx, by, bw, bh] = this.roomBounds();
+    cam.setBounds(bx, by, bw, bh);
+    if (antes && ancla) {
+      this.soltarCamara();
+      const w = cam.width;
+      const h = cam.height;
+      cam.setScroll(antes.x - w / 2 - (ancla.x - w / 2) / z, antes.y - h / 2 - (ancla.y - h / 2) / z);
+    }
+    this.hud?.nivelZoom(nivel, 0, ZOOMS.length - 1);
+    guardarZoom(z);
+  }
+
+  /** La cámara deja de seguir al avatar (para mirar la sala a gusto) */
+  private soltarCamara(): void {
+    if (this.camaraLibre) return;
+    this.camaraLibre = true;
+    this.cameras.main.stopFollow();
+  }
+
+  /** La cámara vuelve a seguir al avatar, deslizándose hasta él */
+  private seguirAvatar(): void {
+    this.camaraLibre = false;
+    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+  }
+
+  /**
+   * Reparte los objetos entre las dos cámaras según su profundidad: de
+   * `LAYER.WORLD_LABEL` para arriba (nombres, burbujas y toda la interfaz)
+   * sólo lo dibuja la cámara de la interfaz, a tamaño fijo; el resto es la
+   * sala y sólo lo dibuja la principal, con su zoom. Nombres y burbujas
+   * siguen a su avatar, pero en coordenadas de pantalla: ampliados ×2 o ×3
+   * volvían a verse gruesos. Va justo antes de dibujar, así que da igual
+   * cuándo o dónde se cree un objeto. (Con los filtros de cámara, el clic
+   * también va a la cámara correcta.)
+   */
+  private repartirCamaras(): void {
+    const sala = this.cameras.main.id;
+    const ui = this.camaraUI.id;
+    for (const o of this.children.list) {
+      const profundidad = (o as Phaser.GameObjects.GameObject & { depth?: number }).depth ?? 0;
+      o.cameraFilter = profundidad >= LAYER.WORLD_LABEL ? sala : ui;
+    }
+  }
+
+  /** Punto del mundo → punto de la pantalla (lienzo de 960×540), con el zoom */
+  private aPantalla(x: number, y: number): { x: number; y: number } {
+    const cam = this.cameras.main;
+    const z = cam.zoom;
+    return {
+      x: (x - cam.scrollX - cam.width / 2) * z + cam.width / 2,
+      y: (y - cam.scrollY - cam.height / 2) * z + cam.height / 2,
+    };
   }
 
   /**
@@ -631,7 +787,6 @@ export class MainScene extends Phaser.Scene {
     const start: Cell = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
     if (start.col === goal.col && start.row === goal.row) {
       this.avatar.cancelPath();
-      this.pendingDoor = null;
       if (this.avatar.sitting) {
         this.avatar.stand(); // segundo clic en el sofá: levantarse
         net.stand();
@@ -651,7 +806,7 @@ export class MainScene extends Phaser.Scene {
     );
     if (!path || path.length === 0) return;
 
-    this.pendingDoor = door ?? null;
+    // Si la meta es una puerta, se cruza sola al llegar (ver update)
     this.avatar.startPath(path, sitTarget);
     net.path(path); // el servidor simula el mismo camino con AvatarState
     this.showClickMarker(world.x, world.y);
@@ -737,7 +892,6 @@ export class MainScene extends Phaser.Scene {
     this.closeChat();
     this.closePeerMenu();
     this.avatar.cancelPath();
-    this.pendingDoor = null;
     this.vestidor = new Vestidor(this, {
       look: this.look,
       titulo: bienvenida ? "¡Bienvenido a Roomie!" : "Vestidor",
@@ -832,7 +986,6 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = true;
     this.chatText = "";
     this.avatar.cancelPath();
-    this.pendingDoor = null;
     this.chatBg.setVisible(true);
     this.chatLabel.setVisible(true);
     this.renderChatBar();
@@ -884,10 +1037,16 @@ export class MainScene extends Phaser.Scene {
 
   /** Punto donde flota la burbuja de un avatar ("me" o un id de la sala) */
   private bubbleAnchor(ownerId: string): { x: number; y: number } | null {
-    if (ownerId === "me") return { x: this.player.x, y: this.player.y - ALTO_NOMBRE };
+    if (ownerId === "me") return this.sobreCabeza(this.player, HUECO_NOMBRE);
     const peer = this.peers.get(ownerId);
     if (!peer) return null;
-    return { x: peer.sprite.x, y: peer.sprite.y - ALTO_BURBUJA }; // hueco para su nombre
+    return this.sobreCabeza(peer.sprite, HUECO_BURBUJA); // hueco para su nombre
+  }
+
+  /** Punto de PANTALLA `hueco` píxeles por encima de la cabeza de un avatar */
+  private sobreCabeza(sprite: Phaser.GameObjects.Sprite, hueco: number): { x: number; y: number } {
+    const c = this.aPantalla(sprite.x, sprite.y - ALTO_AVATAR);
+    return { x: Math.round(c.x), y: Math.round(c.y - hueco) };
   }
 
   /** Las burbujas siguen a su avatar (o desaparecen si el avatar ya no está) */
@@ -913,16 +1072,19 @@ export class MainScene extends Phaser.Scene {
     if (!at) return;
     this.bubbles.get(ownerId)?.destroy();
 
-    const txt = texto(this, 0, 0, partirTexto(message, 180, 2).join("\n"), { tam: 2, color: "#1a1a24", sombra: false });
-    const w = txt.width + 20;
-    const h = txt.height + 12;
+    // Borde de 1 px, 4 de aire sobre las mayúsculas y 4 bajo la línea base;
+    // la cola pisa el borde de abajo para abrirlo
+    const txt = texto(this, 0, 0, partirTexto(message, 150).join("\n"), { color: "#1a1a24" });
+    const w = txt.width + 12;
+    const h = txt.height + 4;
     const x0 = -Math.floor(w / 2);
-    const bg = pieza(this, "burbuja", x0, -h - 6, w, h);
-    const cola = this.add.image(-7, -8, "ui:cola").setOrigin(0, 0);
-    txt.setPosition(x0 + 10, -h);
+    const y0 = -h - 6;
+    const bg = pieza(this, "burbuja", x0, y0, w, h);
+    const cola = this.add.image(-2, y0 + h - 1, "ui:cola").setOrigin(0, 0);
+    txt.setPosition(x0 + 6, y0 + 2);
 
-    const container = this.add.container(Math.round(at.x), Math.round(at.y), [bg, cola, txt]);
-    container.setDepth(LAYER.WORLD_TOP);
+    const container = this.add.container(at.x, at.y, [bg, cola, txt]);
+    container.setScrollFactor(0).setDepth(LAYER.WORLD_TOP);
     container.setScale(0.4);
     this.bubbles.set(ownerId, container);
 
@@ -1056,10 +1218,9 @@ export class MainScene extends Phaser.Scene {
     this.renderChatPanel();
   }
 
-  /** Parte por palabras, y a lo bruto si una palabra no cabe */
   /** Parte un mensaje en líneas que quepan en el panel (la fuente es proporcional) */
   private wrapChat(text: string): string[] {
-    return partirTexto(text, CHAT_PANEL.w - 24, 2);
+    return partirTexto(text, CHAT_PANEL.w - 18);
   }
 
   /**
@@ -1086,7 +1247,7 @@ export class MainScene extends Phaser.Scene {
       obj
         .setText(linea.text)
         .setColor(linea.color)
-        .setPosition(CHAT_PANEL.x + 10, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
+        .setPosition(CHAT_PANEL.x + 8, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
         .setVisible(true);
     }
   }
@@ -1178,21 +1339,23 @@ export class MainScene extends Phaser.Scene {
     //
     // El aspecto ya no se elige aquí: tiene su vestidor, que se abre solo al
     // crear la cuenta y desde el botón del perfil.
-    const PAD = 22;
-    const TITULO = 20 + 14;
-    const CAMPO = 20 + 4 + 34 + 12; // etiqueta + caja + hueco
-    const MENSAJE = 26;
-    const INFO = 66; // datos de la cuenta en el perfil
-    const BOTONES = 36 + 10 + 36;
+    const PAD = 16;
+    const TITULO = 16 + 12; // rombo y título + hueco
+    const ALTO_CAMPO = 24;
+    const CAMPO = 15 + 3 + ALTO_CAMPO + 10; // etiqueta + caja + hueco
+    const MENSAJE = 36; // hasta dos líneas
+    const INFO = 44; // datos de la cuenta en el perfil
+    const ALTO_BOTON = 26;
+    const BOTONES = ALTO_BOTON + 8 + ALTO_BOTON;
     const nCampos = perfil ? 0 : registro ? 3 : 2;
-    const W = 400;
+    const W = 300;
     const H = PAD + TITULO + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
     // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro)
-    const LOGO = perfil ? 0 : 78;
+    const LOGO = perfil ? 0 : 64;
     const X = 480 - W / 2;
     const Y = Math.round((540 - LOGO - H) / 2) + LOGO;
-    const colX = X + 24;
-    const anchoCampo = W - 48;
+    const colX = X + 16;
+    const anchoCampo = W - 32;
 
     const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
       o: T,
@@ -1204,32 +1367,41 @@ export class MainScene extends Phaser.Scene {
     };
 
     // Velo: la sala se intuye detrás, oscurecida; se come todos los clics
-    add(this.add.rectangle(480, 270, 960, 540, 0x07070d, perfil ? 0.7 : 0.82).setInteractive(), 0);
+    add(this.add.rectangle(480, 270, 960, 540, UI_HEX.velo, perfil ? 0.7 : 0.82).setInteractive(), 0);
 
     if (!perfil) {
-      const logo = texto(this, 0, 0, "Roomie", { tam: 4, color: UI.titulo });
+      // El logo es lo único a 24 px: la casa y la palabra, a la par
+      const logo = texto(this, 0, 0, "Roomie", { tam: 2, color: UI.titulo });
       const casa = icono(this, "casa", 0, 0).setScale(2);
-      const ancho = casa.displayWidth + 12 + logo.width;
+      const ancho = casa.displayWidth + 10 + logo.width;
       const x0 = Math.round(480 - ancho / 2);
-      casa.setPosition(x0, Y - LOGO + 2);
-      logo.setPosition(x0 + casa.displayWidth + 12, Y - LOGO + 2);
+      const yLogo = Y - LOGO;
+      casa.setPosition(x0, yLogo + 4);
+      logo.setPosition(x0 + casa.displayWidth + 10, yLogo);
       add(casa, 2);
       add(logo, 2);
-      add(centrar(texto(this, 0, 0, "Tu casa, tu gente, tu mundo", { tam: 2, color: UI.suave }), 480, Y - 20), 2);
+      add(centrar(texto(this, 0, 0, "Tu casa, tu gente, tu mundo", { color: UI.suave }), 480, Y - 18), 2);
     }
 
     add(pieza(this, "panel", X, Y, W, H).setInteractive(), 1);
     const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : "Entrar";
-    add(centrar(texto(this, 0, 0, titulo, { tam: 2, color: UI.titulo }), 480, Y + PAD + 10), 2);
+    const tituloTxt = texto(this, 0, yCentrada(Y + PAD, 16), titulo, { color: UI.titulo });
+    const rombo = icono(this, "rombo", 0, 0);
+    const anchoTitulo = rombo.width + 6 + tituloTxt.width;
+    rombo.setPosition(Math.round(480 - anchoTitulo / 2), Y + PAD + 6);
+    tituloTxt.setX(rombo.x + rombo.width + 6);
+    add(rombo, 2);
+    add(tituloTxt, 2);
 
     let cursorY = Y + PAD + TITULO;
 
     // ---------- Campos de texto ----------
     this.authCampos = [];
     const campo = (clave: CampoClave, etiqueta: string, secreto: boolean, autocomplete: string, inicial = ""): void => {
-      add(texto(this, colX, cursorY, etiqueta, { tam: 2, color: UI.suave }), 2);
-      const fondo = add(pieza(this, "campo", colX, cursorY + 24, anchoCampo, 34).setInteractive({ useHandCursor: true }), 1);
-      const txt = add(texto(this, colX + 12, cursorY + 33, "", { tam: 2 }), 2);
+      add(texto(this, colX, cursorY, etiqueta, { color: UI.suave }), 2);
+      const yCaja = cursorY + 18;
+      const fondo = add(pieza(this, "campo", colX, yCaja, anchoCampo, ALTO_CAMPO).setInteractive({ useHandCursor: true }), 1);
+      const txt = add(texto(this, colX + 8, yCentrada(yCaja, ALTO_CAMPO), ""), 2);
 
       const c: CampoAuth = { clave, fondo, texto: txt, secreto, input: null };
       c.input = createTextInput({
@@ -1254,27 +1426,32 @@ export class MainScene extends Phaser.Scene {
     if (registro) campo("nickname", "Tu nombre en el juego", false, "nickname");
 
     // ---------- Mensaje (errores, "Conectando…") ----------
-    this.authError = add(texto(this, 480, cursorY, "", { tam: 2, color: UI.error, alinear: "center" }).setOrigin(0.5, 0), 2);
+    // Una o dos líneas centradas en su hueco (ver `mensajeAuth`)
+    this.authError = add(texto(this, 480, cursorY + 4, "", { color: UI.error, alinear: "center" }).setOrigin(0.5, 0), 2);
     cursorY += MENSAJE;
 
     // ---------- Datos de la cuenta (perfil) ----------
     if (perfil) {
       const yo = net.identidad;
       if (yo) {
-        add(centrar(texto(this, 0, 0, `${yo.nickname}  ·  @${yo.username}`, { tam: 2 }), 480, cursorY + 8), 2);
-        const saldo = texto(this, 0, 0, `${yo.saldo} monedas`, { tam: 2, color: UI.titulo });
-        const moneda = icono(this, "moneda", 0, 0);
-        const ancho = moneda.width + 8 + saldo.width;
-        moneda.setPosition(Math.round(480 - ancho / 2), cursorY + 30);
-        saldo.setPosition(moneda.x + moneda.width + 8, cursorY + 30);
+        const quien = texto(this, 0, cursorY, `${yo.nickname}  ·  @${yo.username}`);
+        quien.setX(Math.round(480 - quien.width / 2));
+        add(quien, 2);
+        const saldo = texto(this, 0, cursorY + 19, `${yo.saldo} monedas`, { color: UI.titulo });
+        const moneda = icono(this, "moneda", 0, cursorY + 22);
+        const ancho = moneda.width + 6 + saldo.width;
+        moneda.setX(Math.round(480 - ancho / 2));
+        saldo.setX(moneda.x + moneda.width + 6);
         add(moneda, 2);
         add(saldo, 2);
       }
       cursorY += INFO;
       // Sin campos de texto no hay Esc que valga: el perfil se cierra aquí
-      for (const o of boton(this, X + W - 38, Y + 8, 30, 30, "✕", () => this.closeAuthModal(), { capa: LAYER.UI_MODAL + 3 }).objetos) {
-        this.authUI.push(o);
-      }
+      const cerrar = boton(this, X + W - 28, Y + 8, 20, 20, "", () => this.closeAuthModal(), {
+        icono: "cerrar",
+        capa: LAYER.UI_MODAL + 3,
+      });
+      this.authUI.push(...cerrar.objetos);
     }
 
     // ---------- Botones ----------
@@ -1285,7 +1462,7 @@ export class MainScene extends Phaser.Scene {
       colX,
       cursorY,
       anchoCampo,
-      36,
+      ALTO_BOTON,
       principal,
       () => {
         if (!perfil) return this.submitAuth();
@@ -1298,9 +1475,9 @@ export class MainScene extends Phaser.Scene {
     const b2 = boton(
       this,
       colX,
-      cursorY + 46,
+      cursorY + ALTO_BOTON + 8,
       anchoCampo,
-      36,
+      ALTO_BOTON,
       segundo,
       () => {
         if (perfil) return this.cerrarSesion();
@@ -1343,14 +1520,16 @@ export class MainScene extends Phaser.Scene {
   }
 
   /**
-   * Mensaje bajo los campos. Si no cabe en una línea a 16 px baja a 8 px: el
-   * hueco es de una línea y dos líneas grandes pisarían los botones.
+   * Mensaje bajo los campos: cabe en dos líneas del ancho del panel. Si sale
+   * una sola, se baja media línea para que quede centrada en el hueco.
    */
   private mensajeAuth(texto: string, color: string = UI.error): void {
     if (!this.authError) return;
-    const tam = partirTexto(texto, 352, 2).length > 1 ? 1 : 2;
-    this.authError.setStyle(estiloTexto({ tam, color, alinear: "center" }));
-    this.authError.setText(partirTexto(texto, 352, tam).join("\n"));
+    const lineas = partirTexto(texto, 268).slice(0, 2);
+    if (!this.authError.getData("y0")) this.authError.setData("y0", this.authError.y);
+    const y0 = this.authError.getData("y0") as number;
+    this.authError.setColor(color).setText(lineas.join("\n"));
+    this.authError.setY(lineas.length > 1 ? y0 : y0 + 8);
   }
 
   private submitAuth(): void {
@@ -1374,7 +1553,7 @@ export class MainScene extends Phaser.Scene {
       return this.mensajeAuth("Sin conexión con el servidor.");
     }
 
-    this.mensajeAuth("Conectando...", "#9a9ad0");
+    this.mensajeAuth("Conectando…", UI.suave);
     // Al registrarse se parte del aspecto por defecto (o del último guardado);
     // el vestidor se abre nada más entrar para elegir el suyo.
     this.recienRegistrado = registro;
@@ -1456,14 +1635,18 @@ export class MainScene extends Phaser.Scene {
     return peer;
   }
 
-  /** Nombre sobre la cabeza: texto pixel a 1× sobre una pastilla oscura, anclado abajo al centro */
+  /**
+   * Nombre sobre la cabeza: pastilla oscura translúcida de 16 px con el texto
+   * a 12, anclada abajo al centro. La caja del texto empieza en el borde de
+   * arriba: sus 3 px de aire dejan las mayúsculas a 2 px del borde.
+   */
   private etiquetaNombre(nombre: string): Phaser.GameObjects.Container {
-    const t = texto(this, 0, 0, nombre, { tam: 1, color: UI.titulo, sombra: false });
-    const w = t.width + 8;
-    const h = 13;
+    const t = texto(this, 0, 0, nombre, { color: UI.titulo });
+    const w = t.width + 10;
+    const h = 16;
     const x0 = -Math.floor(w / 2);
     const fondo = pieza(this, "nombre", x0, -h, w, h);
-    t.setPosition(x0 + 4, -h + 3);
+    t.setPosition(x0 + 5, -h);
     return this.add.container(0, 0, [fondo, t]);
   }
 
@@ -1556,8 +1739,10 @@ export class MainScene extends Phaser.Scene {
       // frames: con un suavizado el delta nunca llega a cero exacto, así que el
       // remoto parpadeaba entre caminar y estar quieto.
       peer.sprite.play(animKey(peer.textureKey, this.animacion(v.id, v.facing, v.sitting, v.moving)), true);
-      // Redondeado: la pastilla a medio píxel emborronaría el texto
-      peer.label.setPosition(Math.round(p.x), Math.round(p.y - ALTO_NOMBRE)).setDepth(LAYER.WORLD_LABEL);
+      // En pantalla y redondeado: a tamaño fijo con cualquier zoom, y la
+      // pastilla a medio píxel emborronaría el texto
+      const nombre = this.sobreCabeza(peer.sprite, HUECO_NOMBRE);
+      peer.label.setPosition(nombre.x, nombre.y).setScrollFactor(0).setDepth(LAYER.WORLD_LABEL);
     }
 
     for (const id of [...this.peers.keys()]) {
@@ -1598,11 +1783,9 @@ export class MainScene extends Phaser.Scene {
 
     // Divergencia real, no deriva: adoptar la posición autoritativa.
     //
-    // La puerta pendiente NO se olvida: si me quedé atrás (pestaña congelada,
-    // un tirón) y el servidor ya me tiene en la puerta, el salto me deja en
-    // ella y hay que cruzar. Antes se borraba y el avatar se quedaba plantado
-    // en la puerta sin pasar a la otra sala. Si el salto me lleva a otro
-    // sitio no pasa nada: sólo se cruza estando EN la puerta.
+    // Si me quedé atrás (pestaña congelada, un tirón) y el servidor ya me
+    // tiene en una puerta, el salto me deja en ella y `update` cruza: estar
+    // en una puerta sin camino es cruzarla, venga de donde venga.
     if (drift > CORRECTION_TELEPORT) {
       this.avatar.col = self.col;
       this.avatar.row = self.row;
@@ -1650,7 +1833,6 @@ export class MainScene extends Phaser.Scene {
 
     this.sitMismatchSince = 0;
     this.avatar.cancelPath();
-    this.pendingDoor = null;
     if (self.sitting) {
       const col = Math.round(self.col);
       const row = Math.round(self.row);
@@ -1669,7 +1851,7 @@ export class MainScene extends Phaser.Scene {
    * dirigido a él. Los gestos son mensajes de chat normales, así que no hacen
    * falta eventos nuevos en el protocolo.
    */
-  private readonly MENU = { w: 240, h: 108 };
+  private readonly MENU = { w: 180, h: 92 };
 
   private openPeerMenu(id: string): void {
     if (this.authModalOpen || this.vestidor) return;
@@ -1693,28 +1875,29 @@ export class MainScene extends Phaser.Scene {
 
     // El fondo es interactivo para que un toque DENTRO del menú no lo cierre
     add(pieza(this, "panel", 0, 0, W, H).setInteractive(), 0, 0);
-    add(texto(this, 0, 0, peer.view.name, { tam: 2, color: UI.titulo }), 12, 10, LAYER.UI_PANEL + 1);
+    add(icono(this, "rombo", 0, 0), 8, 10, LAYER.UI_PANEL + 1);
+    add(texto(this, 0, 0, peer.view.name, { color: UI.titulo }), 22, yCentrada(0, 26), LAYER.UI_PANEL + 1);
 
-    // Gestos: botones con bisel; el emoji lo pinta el navegador
+    // Gestos: botones planos; el emoji lo pinta el navegador
     EMOTES.forEach((emote, i) => {
-      const dx = 12 + i * 36;
-      const fondo = add(pieza(this, "boton", 0, 0, 32, 30), dx, 34);
+      const dx = 8 + i * 28;
+      const fondo = add(pieza(this, "boton", 0, 0, 24, 24), dx, 28);
       fondo
         .setInteractive({ useHandCursor: true })
         .on("pointerover", () => fondo.setTexture("ui:boton-hover"))
         .on("pointerout", () => fondo.setTexture("ui:boton"))
         .on("pointerup", () => this.sendEmote(emote));
-      add(this.add.text(0, 0, emote, { fontSize: "16px" }).setOrigin(0.5), dx + 16, 49, LAYER.UI_PANEL + 1);
+      add(this.add.text(0, 0, emote, { fontSize: "13px" }).setOrigin(0.5), dx + 12, 40, LAYER.UI_PANEL + 1);
     });
 
-    const chat = add(pieza(this, "primario", 0, 0, W - 24, 30), 12, 70);
+    const chat = add(pieza(this, "primario", 0, 0, W - 16, 24), 8, 60);
     chat
       .setInteractive({ useHandCursor: true })
       .on("pointerover", () => chat.setTexture("ui:primario-hover"))
       .on("pointerout", () => chat.setTexture("ui:primario"))
       .on("pointerup", () => this.chatTo(peer.view.name));
-    const etiqueta = texto(this, 0, 0, `Escribir a ${peer.view.name}`, { tam: 1 });
-    add(etiqueta, Math.round((W - etiqueta.width) / 2), 81, LAYER.UI_PANEL + 1);
+    const etiqueta = texto(this, 0, 0, `Escribir a ${peer.view.name}`);
+    add(etiqueta, Math.round((W - etiqueta.width) / 2), yCentrada(60, 24), LAYER.UI_PANEL + 1);
 
     this.peerMenuItems = items;
     this.peerMenuFor = id;
@@ -1736,11 +1919,12 @@ export class MainScene extends Phaser.Scene {
       return;
     }
     const { w: W, h: H } = this.MENU;
-    const cam = this.cameras.main;
-    // Sobre la cabeza del avatar, pero sin salirse del lienzo; esquina en
-    // píxeles enteros para que el texto no se emborrone
-    const x = Phaser.Math.Clamp(peer.sprite.x - cam.scrollX, W / 2 + 4, this.scale.width - W / 2 - 4);
-    const y = Phaser.Math.Clamp(peer.sprite.y - cam.scrollY - 96, H / 2 + 4, this.scale.height - H / 2 - 4);
+    // Sobre la cabeza del avatar (esté la sala a un zoom u otro), pero sin
+    // salirse del lienzo; esquina en píxeles enteros para que el texto no se
+    // emborrone
+    const encima = this.sobreCabeza(peer.sprite, HUECO_NOMBRE + ALTO_ETIQUETA + 4); // sobre su nombre
+    const x = Phaser.Math.Clamp(encima.x, W / 2 + 4, this.scale.width - W / 2 - 4);
+    const y = Phaser.Math.Clamp(encima.y - H / 2, H / 2 + 4, this.scale.height - H / 2 - 4);
     const x0 = Math.round(x - W / 2);
     const y0 = Math.round(y - H / 2);
     for (const { o, dx, dy } of this.peerMenuItems) o.setPosition(x0 + dx, y0 + dy);
