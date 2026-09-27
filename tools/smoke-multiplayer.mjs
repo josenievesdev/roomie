@@ -668,6 +668,97 @@ check(
   Q2.sock.disconnect();
 }
 
+// ---------- 7d. La tienda y decorar ----------
+{
+  const once = (c, evento, ms = 4000) =>
+    new Promise((r) => {
+      const t = setTimeout(() => r(null), ms);
+      c.sock.once(evento, (p) => {
+        clearTimeout(t);
+        r(p);
+      });
+    });
+  const espera = () => sleep(300); // el freno de las acciones es de 250 ms
+  const D = makeClient();
+  await registrar(D, "Deco");
+  await until(() => D.sock.connected, 3000);
+  await join(D, "plaza", { col: 11, row: 1 });
+  D.sock.emit("llaves");
+  const casa = await once(D, "casa");
+  D.sock.emit("irACasa");
+  const datos = await once(D, "salaDatos");
+  D.sock.emit("room", { room: casa.id, col: 5, row: 1, facing: 4 });
+  await until(() => view(D)?.room === casa.id);
+
+  D.sock.emit("tienda");
+  const tienda = await once(D, "tienda");
+  const sofa = tienda?.articulos.find((a) => a.code === "sofa");
+  check(
+    !!sofa && sofa.precio === 60 && sofa.moneda === "monedas" && !tienda.articulos.some((a) => a.code === "cajas"),
+    "la tienda vende el sofá (60 monedas) y no las cajas de regalo",
+  );
+
+  D.sock.emit("comprar", "sofa");
+  const [compra, saldo, mochila] = await Promise.all([once(D, "resultado"), once(D, "saldo"), once(D, "mochila")]);
+  const miSofa = mochila?.cosas.find((c) => c.code === "sofa");
+  check(compra?.ok && saldo?.monedas === 440 && !!miSofa, `comprar el sofá: -60 monedas y a la mochila (${saldo?.monedas})`);
+  await espera();
+  D.sock.emit("comprar", "cajas");
+  check((await once(D, "resultado"))?.ok === false, "lo regalado no se puede comprar");
+
+  // Colocar: en su sitio sí; en la entrada de la puerta o en los pies de la cama, no
+  await espera();
+  D.sock.emit("colocar", { item: miSofa.id, col: 4, row: 5, rot: 0 });
+  const [puesto, muebles] = await Promise.all([once(D, "resultado"), once(D, "muebles")]);
+  check(puesto?.ok && muebles?.muebles.some((m) => m.id === miSofa.id && m.col === 4 && m.row === 5), "el sofá se pone en la casa y a quien está dentro le llegan los muebles nuevos");
+  await espera();
+  D.sock.emit("colocar", { item: miSofa.id, col: 5, row: 1, rot: 0 });
+  check((await once(D, "resultado"))?.ok === false, "no se puede tapar la entrada de la puerta");
+  await espera();
+  D.sock.emit("colocar", { item: miSofa.id, col: 1, row: 1, rot: 0 });
+  check((await once(D, "resultado"))?.ok === false, "ni ponerlo en los pies de la cama");
+
+  // El servidor respeta el sofá nuevo: no se puede terminar un camino encima
+  await espera();
+  const antes = { ...view(D) };
+  const conSofa = mundoDesdeMapa(datos.mapa, muebles.muebles);
+  const alSofa = findPath(celda(view(D)), { col: 4, row: 5 }, conSofa.cols, conSofa.rows, conSofa.isBlocked, true);
+  if (alSofa) D.sock.emit("path", alSofa);
+  await until(() => view(D)?.sitting, 5000);
+  const v = view(D);
+  check(v.sitting && en(v, { col: 4, row: 5 }), `el servidor ya conoce el sofá nuevo: el camino acaba sentándote en él (${alSofa?.length ?? "sin"} celdas; ${v.col.toFixed(2)},${v.row.toFixed(2)} ${v.sitting ? "sentado" : "de pie"})`);
+
+  // Guardar y vender
+  D.sock.emit("stand");
+  await espera();
+  D.sock.emit("recoger", miSofa.id);
+  const [guardado, mueblesSin] = await Promise.all([once(D, "resultado"), once(D, "muebles")]);
+  check(guardado?.ok && !mueblesSin?.muebles.some((m) => m.id === miSofa.id), "guardar el sofá lo quita de la casa");
+  await espera();
+  D.sock.emit("vender", miSofa.id);
+  const [venta, saldoVenta] = await Promise.all([once(D, "resultado"), once(D, "saldo")]);
+  check(venta?.ok && saldoVenta?.monedas === 470, `venderlo devuelve la mitad (+30: ${saldoVenta?.monedas})`);
+
+  // Girar: lo de dos caras (el armario) se gira sin moverlo de su sitio
+  const armario = datos.muebles.find((m) => m.code === "armario");
+  await espera();
+  D.sock.emit("colocar", { item: armario.id, col: armario.col, row: armario.row, rot: armario.rot === 1 ? 0 : 1 });
+  const [giro, mueblesGiro] = await Promise.all([once(D, "resultado"), once(D, "muebles")]);
+  const girado = mueblesGiro?.muebles.find((m) => m.id === armario.id);
+  check(
+    giro?.texto === "¡Girado!" && girado?.rot !== armario.rot && girado?.col === armario.col && girado?.row === armario.row,
+    `girar el armario lo gira en su sitio (${giro?.texto})`,
+  );
+
+  // Fuera de casa no se decora
+  D.sock.emit("room", { room: "plaza", col: 11, row: 1, facing: 4 });
+  await until(() => view(D)?.room === "plaza");
+  await espera();
+  D.sock.emit("colocar", { item: datos.muebles[0].id, col: 3, row: 3, rot: 0 });
+  check((await once(D, "resultado"))?.ok === false, "fuera de tu casa no se puede decorar");
+  D.sock.disconnect();
+}
+
 // ---------- 8. Las salas no se mezclan ----------
 check(
   view(A, B.id) === undefined,

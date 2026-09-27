@@ -123,7 +123,9 @@ progreso (las tareas de la llegada) y tu energía.
 **Si no:** "apareces en tu casa", la llegada y el hambre no tienen dónde vivir.
 
 ### C4. Objetos de todo tipo, y dos monedas
-Hoy un objeto sólo puede ser un mueble de suelo o de pared, y el saldo es uno.
+Hoy un objeto sólo puede ser un mueble de suelo o de pared. (Las dos monedas
+ya están, desde la fase 10: el libro mayor, los saldos y los precios llevan
+moneda.)
 
 - Tipos: mueble, prenda, vehículo, comida, ingrediente, especial.
 - Cantidad, para lo que se gasta (tres manzanas son una fila, no tres).
@@ -215,10 +217,12 @@ Habbo, lo que más daño hizo fueron las cuentas robadas para quitarles los
 objetos valiosos: sin correo y recuperación, el comercio y los créditos son un
 imán para eso.
 
-### C10. Interfaz que se adapta
-El lienzo mide 960×540 fijo y los paneles se colocan con números a mano.
-Anclas (arriba a la izquierda, centro...) **antes** de hacer los paneles nuevos
-(tienda, inventario, mapa, amigos, comercio).
+### C10. Interfaz que se adapta (hecho, fase 10)
+El lienzo medía 960×540 fijo y los paneles se colocaban con números a mano.
+Ahora mide lo que mide la pantalla y todo se coloca con `this.scale` y
+`medidas()` (`src/ui/pantalla.ts`), con el dedo más grande y la barra de
+botones abajo. Los paneles nuevos (mapa, amigos, comercio) salen del panel
+base (`src/ui/panel.ts`).
 
 **Si no:** jugar bien en el móvil, que es donde está la gente, obligaría a
 rehacer cada panel.
@@ -302,8 +306,14 @@ El gancho: llegar, ganarse las llaves y tener algo tuyo.
 - al volver al juego apareces en tu casa;
 - muebles de varias celdas (C6).
 
-**Falta:** la tienda y el inventario (con C4), colocar muebles y la interfaz
-que se adapta (C10).
+**Hecho (fase 10):**
+- dos monedas en el libro mayor y el premio del día (C4);
+- la tienda y la mochila, con vender por la mitad (S1);
+- poner, mover, girar y guardar muebles, con las reglas compartidas entre el
+  fantasma del cliente y el servidor (S2);
+- la interfaz que se adapta, y el móvil al 100 % (C10).
+
+**Falta:** las tareas de la llegada y las visitas (que esperan a los amigos).
 
 - **Cimientos:** C1 (lugares y puertas en el servidor), C3, C4 (objetos y dos
   monedas), C6 (al menos la cama de dos celdas), C10 (anclas).

@@ -73,10 +73,12 @@ Hecho:
 - [x] **Seguridad para niños y niñas**: edad privada, chat de frases, filtro de datos personales, bloquear y reportar
 - [x] **La Plaza de la Llave**: la primera zona de La Manzana, al aire libre, y la entrada del juego
 - [x] **Tu casa**: la portería da las llaves de un piso recién mudado; al volver, apareces en él
+- [x] **Economía y decorar**: dos monedas, premio del día, tienda, mochila, vender; poner, mover, girar y guardar muebles
+- [x] **El móvil al 100 %**: pantalla de cualquier tamaño, botones al alcance del pulgar, pellizco para el zoom
 
 Siguiente:
 
-- [ ] **Mi primer piso**: llegar a la terminal, ganarse las llaves, decorar tu casa
+- [ ] **Mi primer piso** (lo que falta): las tareas de la llegada y las visitas
 - [ ] **Salir a La Manzana**: el barrio, amigos y compartir ubicación
 - [ ] **Vivir**: trabajo, hambre y comida, vehículos propios
 - [ ] **Presumir**: caras, rasgos y moda por estilos; comercio seguro
@@ -95,6 +97,7 @@ src/
 ├── state/                   # PURO (sin Phaser) — lo ejecuta el SERVIDOR
 │   ├── avatarState.ts       #   movimiento y colisiones
 │   ├── furniture-catalog.ts #   qué mueble estorba y en cuál se sienta uno
+│   ├── decorar.ts           #   dónde cabe cada mueble en una casa
 │   └── look.ts              #   catálogo del aspecto: estilos, colores, validación
 ├── net/
 │   ├── protocol.ts          # PURO — eventos y tipos compartidos
@@ -107,7 +110,7 @@ src/
 │   ├── muebleSheet.ts       # PURO — materiales y color de los muebles por tema
 │   └── texturas.ts          # capas → texturas de Phaser
 ├── entities/                # avatar (texturas por jugador) y mobiliario
-├── ui/                      # kit pixel art, HUD, vestidor, <input> real (móvil)
+├── ui/                      # kit pixel art, HUD, tienda, mochila, vestidor, <input> real (móvil)
 └── utils/                   # iso, A*, guardado local, rampas de color
 
 server/                      # paquete Node aparte

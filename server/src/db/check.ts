@@ -13,6 +13,10 @@ import {
   guardarReporte,
   inventarioDe,
   moverSaldo,
+  premioDiario,
+  saldosDe,
+  vender,
+  PREMIO_DIARIO,
   purgarChat,
   registrarChat,
   saldoDe,
@@ -64,6 +68,15 @@ try {
   const sobran = enBd.filter((c) => !enCodigo.includes(c));
   ok(faltan.length === 0, "todo lo que el cliente dibuja se puede comprar", faltan.join(", "));
   ok(sobran.length === 0, "nada del catálogo es indibujable", sobran.join(", "));
+  // Los avisos del servidor ("Sofá: ¡puesto!") usan el nombre del código; la
+  // tienda, el de la base. Tienen que ser el mismo.
+  const nombres = await sql<{ code: string; name: string }[]>`select code, name from catalog_items`;
+  const distintos = nombres.filter((r) => FURNITURE[r.code] && FURNITURE[r.code].nombre !== r.name);
+  ok(
+    distintos.length === 0,
+    "cada cosa se llama igual en la tienda que en los avisos",
+    distintos.map((r) => `${r.code}: "${r.name}" / "${FURNITURE[r.code].nombre}"`).join(", "),
+  );
 
   // ------------------------------------------------------ reglas
   console.log("\n=== Reglas que deben ser imposibles de romper ===");
@@ -225,6 +238,51 @@ try {
   ok(enCasa === regalo.length, "los muebles de regalo están colocados en la casa", `${enCasa} colocados`);
   ok((await falla(() => comprar(id, "cajas"))) !== null, "las cajas de la mudanza se regalan: no se pueden comprar");
   ok((await casaDe(id))?.id === primera.casa.id, "la casa queda apuntada a su dueño");
+
+  // ------------------------------------------------------ economía
+  console.log("\n=== Economía ===");
+  const saldoAntes = (await saldosDe(id)).monedas;
+  ok((await premioDiario(id)) === null, "el día que te registras, el premio diario ya es el de bienvenida");
+  await sql`delete from premios_diarios where account_id = ${id}`; // como si fuera otro día
+  const conPremio = await premioDiario(id);
+  ok(conPremio === saldoAntes + PREMIO_DIARIO, `al día siguiente llega el premio diario (+${PREMIO_DIARIO})`, String(conPremio));
+  ok((await premioDiario(id)) === null, "y sólo una vez al día");
+
+  ok(
+    (await falla(() => sql`select mover_saldo(${id}::uuid, -1::bigint, 'prueba', null, null, 'creditos')`)) !== null,
+    "los créditos tampoco pueden quedar en negativo",
+  );
+  ok(
+    (await falla(() => sql`select mover_saldo(${id}::uuid, 5::bigint, 'prueba', null, null, 'doblones')`)) !== null,
+    "no existe otra moneda que monedas y créditos",
+  );
+
+  // Un artículo de prueba que se paga en créditos
+  await sql`
+    insert into catalog_items (code, name, kind, price, tradable, for_sale, currency)
+    values (${"chk-" + sufijo}, 'Prueba en créditos', 'floor', 3, true, true, 'creditos')
+  `;
+  const sinCreditos = await falla(() => comprar(id, "chk-" + sufijo));
+  ok(sinCreditos !== null, "sin créditos no se compra lo que se paga en créditos");
+  await sql`select mover_saldo(${id}::uuid, 5::bigint, 'prueba', null, null, 'creditos')`;
+  const monedasAntes = (await saldosDe(id)).monedas;
+  await comprar(id, "chk-" + sufijo);
+  const tras = await saldosDe(id);
+  ok(tras.creditos === 2 && tras.monedas === monedasAntes, "cada cosa se paga en su moneda (3 créditos, ni una moneda)", JSON.stringify(tras));
+
+  // Vender: la mitad, y el objeto desaparece
+  const sofaNuevo = await comprar(id, "sofa");
+  const antesVenta = (await saldosDe(id)).monedas;
+  const venta = await vender(id, sofaNuevo.id);
+  ok(venta.recibe === 30 && (await saldosDe(id)).monedas === antesVenta + 30, "vender un sofá (60) da la mitad: 30");
+  ok((await inventarioDe(id)).every((i) => i.id !== sofaNuevo.id), "y el sofá ya no está");
+  ok((await falla(() => vender(id, sofaNuevo.id))) !== null, "no se puede vender dos veces");
+  const [puesto] = await sql<{ id: string }[]>`select id from items where room_id = ${primera.casa.id} limit 1`;
+  ok((await falla(() => vender(id, puesto.id))) !== null, "ni vender lo que está puesto en tu casa (primero se guarda)");
+  const [{ n: descuadres }] = await sql<{ n: number }[]>`select count(*)::int as n from saldos_descuadrados`;
+  ok(descuadres === 0, "el libro y los saldos cuadran, moneda a moneda");
+  await sql`delete from items where code = ${"chk-" + sufijo}`;
+  await sql`delete from catalog_items where code = ${"chk-" + sufijo}`;
 
   // ------------------------------------------------------ limpieza
   await sql`delete from accounts where id = ${id}`;

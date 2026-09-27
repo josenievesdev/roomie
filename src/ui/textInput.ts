@@ -48,12 +48,12 @@ export function createTextInput(opts: TextInputOptions): TextInput {
   el.setAttribute("aria-hidden", "true");
 
   el.style.cssText = [
-    // Centrado en la ventana para que, al enfocarlo, el móvil no desplace la
-    // página buscándolo.
+    // Arriba del todo: al enfocarlo, el móvil desplaza la página si el campo
+    // queda bajo el teclado (que sale por abajo), y con él se iría el juego
+    // entero. Arriba nunca lo tapa.
     "position:fixed",
-    "left:50%",
-    "top:50%",
-    "transform:translate(-50%,-50%)",
+    "left:0",
+    "top:0",
     "width:200px",
     "height:40px",
     // Invisible pero ENFOCABLE: con `display:none` o `visibility:hidden` el

@@ -47,6 +47,27 @@ export function mascaraAlfombra(col: number, row: number, esAlfombra: (c: number
 }
 
 /**
+ * La textura de una variante de mueble con los colores de un tema (se crea
+ * la primera vez). La usan el mundo y las miniaturas de la tienda y de la
+ * mochila: el mueble que compras es el mismo que luego pones.
+ */
+export function texturaMueble(
+  scene: Phaser.Scene,
+  tipo: string,
+  sufijo: string | number | undefined,
+  tema: RoomTheme,
+): { key: string; w: number; h: number; ax: number; ay: number } | null {
+  const v = variante(tipo, sufijo);
+  const e = (scene.cache.json.get(MANIFIESTO) as ManifiestoMuebles | undefined)?.[v];
+  if (!e || !scene.textures.exists(texCapa(v))) return null;
+  const key = `mueble:${v}:${tema.nombre}`;
+  if (!scene.textures.exists(key)) {
+    texturaDesde(scene, key, componerMueble(pixelesDe(scene, texCapa(v)), e, tema), e.w, e.h);
+  }
+  return { key, w: e.w, h: e.h, ax: e.ax, ay: e.ay };
+}
+
+/**
  * Crea un mueble en su celda. `sufijo` elige la variante (pared, alfombra,
  * orientación): ver `variante()` en muebleSheet.ts.
  */
@@ -58,13 +79,10 @@ export function crearMueble(
   row: number,
   tema: RoomTheme,
 ): Phaser.GameObjects.Image | null {
-  const v = variante(tipo, sufijo);
-  const e = (scene.cache.json.get(MANIFIESTO) as ManifiestoMuebles | undefined)?.[v];
-  if (!e || !scene.textures.exists(texCapa(v))) return null;
-  const key = `mueble:${v}:${tema.nombre}`;
-  if (!scene.textures.exists(key)) {
-    texturaDesde(scene, key, componerMueble(pixelesDe(scene, texCapa(v)), e, tema), e.w, e.h);
-  }
+  const t = texturaMueble(scene, tipo, sufijo, tema);
+  if (!t) return null;
+  const { key } = t;
+  const e = t;
   const pos = toScreen(col, row);
   const def = FURNITURE[tipo];
   // Lo plano va pegado al suelo; lo de pared, justo encima de su trozo de
@@ -122,7 +140,7 @@ const colorLuz = (tema: RoomTheme): number => rampasDeTema(tema)(MAT_MUEBLE.LUZ)
  * por la ventana. Se suma (blend ADD) a lo que hay debajo, así que nunca
  * oscurece.
  */
-export function crearLuz(scene: Phaser.Scene, tipo: string, col: number, row: number, tema: RoomTheme): void {
+export function crearLuz(scene: Phaser.Scene, tipo: string, col: number, row: number, tema: RoomTheme): Phaser.GameObjects.GameObject[] {
   const pos = toScreen(col, row);
   const luz = colorLuz(tema);
   const lado = ladoPared(col, row);
@@ -131,29 +149,32 @@ export function crearLuz(scene: Phaser.Scene, tipo: string, col: number, row: nu
   if (tipo === "lampara" || tipo === "farola") {
     // La farola alumbra más suelo: está más alta
     const [rx, ry] = tipo === "farola" ? [66, 33] : [46, 23];
-    scene.add
-      .image(pos.x, pos.y, halo(scene, `halo:suelo:${tipo}:${tema.nombre}`, rx, ry, luz))
-      .setDepth(LAYER.ALFOMBRA + 0.5)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    return;
+    return [
+      scene.add
+        .image(pos.x, pos.y, halo(scene, `halo:suelo:${tipo}:${tema.nombre}`, rx, ry, luz))
+        .setDepth(LAYER.ALFOMBRA + 0.5)
+        .setBlendMode(Phaser.BlendModes.ADD),
+    ];
   }
   if (tipo === "llave") {
     // El rombo del ojo de la Llave brilla (a unos 103 px del suelo)
-    scene.add
-      .image(pos.x, pos.y - 103, halo(scene, `halo:llave:${tema.nombre}`, 26, 26, luz))
-      .setDepth(worldDepth(pos.y) + 0.05)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    return;
+    return [
+      scene.add
+        .image(pos.x, pos.y - 103, halo(scene, `halo:llave:${tema.nombre}`, 26, 26, luz))
+        .setDepth(worldDepth(pos.y) + 0.05)
+        .setBlendMode(Phaser.BlendModes.ADD),
+    ];
   }
   if (tipo === "aplique" || tipo === "neon") {
     // La luz queda alrededor de la pieza, sobre el muro (a ~63 px del suelo)
     const alto = tipo === "neon" ? 57 : 63;
     const r = tipo === "neon" ? 22 : 16;
-    scene.add
-      .image(pos.x + signo * 12, pos.y - alto, halo(scene, `halo:muro:${tipo}:${tema.nombre}`, r, Math.round(r * 1.1), luz))
-      .setDepth(worldDepth(pos.y) + 0.05)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    return;
+    return [
+      scene.add
+        .image(pos.x + signo * 12, pos.y - alto, halo(scene, `halo:muro:${tipo}:${tema.nombre}`, r, Math.round(r * 1.1), luz))
+        .setDepth(worldDepth(pos.y) + 0.05)
+        .setBlendMode(Phaser.BlendModes.ADD),
+    ];
   }
   if (tipo === "ventana" && lado) {
     // El sol entra inclinado: el hueco de la ventana se proyecta en el suelo
@@ -167,7 +188,9 @@ export function crearLuz(scene: Phaser.Scene, tipo: string, col: number, row: nu
     const aPantalla = ([X, Z]: [number, number]) => ({ x: pos.x + (X - Z) * 0.7071, y: pos.y + (X + Z) * 0.3536 });
     g.fillStyle(0xfff1c4, 0.13);
     g.fillPoints(esquinas.map(aPantalla), true);
+    return [g];
   }
+  return [];
 }
 
 /**

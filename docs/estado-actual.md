@@ -31,15 +31,22 @@ edificios, farolas, árboles y bancos; las dos salas son ahora edificios de la
 plaza (`docs/fase8-plaza-de-la-llave.md`). En la Fase 9, **tu casa**: la
 portería de la plaza da las llaves de un piso recién mudado (cama, armario y
 cajas), sólo entra su dueño y al volver al juego apareces en él
-(`docs/fase9-mi-primer-piso.md`).
+(`docs/fase9-mi-primer-piso.md`). En la Fase 10, **la economía y decorar**:
+dos monedas en el libro mayor, el premio del día, la tienda, la mochila,
+vender por la mitad y poner, mover, girar y guardar muebles en tu casa con el
+servidor validando cada celda; y **el móvil al 100 %**: el lienzo mide lo que
+mide la pantalla, en vertical o en horizontal, con botones al alcance del
+pulgar, pellizco para el zoom y todos los paneles adaptables
+(`docs/fase10-economia-tienda-movil.md`).
 Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
 
 Hacia dónde va el mundo (barrio, direcciones, transporte, economía, moda y
 caras) está pensado en `docs/vision-mundo.md`.
 
-Lo que **no** existe todavía: tienda, inventario visible, salas propias,
-trabajos ni economía. Las tablas están y probadas, pero sin interfaz.
+Lo que **no** existe todavía: trabajos (la única forma de ganar monedas es el
+premio del día y vender), visitas a otras casas, amigos ni comercio entre
+jugadores.
 
 ## Arquitectura
 
@@ -91,6 +98,11 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | La Plaza de la Llave: entrada del juego, con puertas a las dos salas | smoke test (7b) + navegador |
 | Tu casa: llaves una sola vez, piso recién mudado, sólo entra el dueño | smoke test (7c) + `db:check` + navegador |
 | Muebles de varias celdas (la cama, 1×2) | smoke test + navegador |
+| Dos monedas, premio del día, vender por la mitad | `db:check` (Economía) + smoke test (7d) |
+| Tienda y mochila, con dos toques para comprar y vender | smoke test (7d) + navegador |
+| Poner, mover, girar y guardar muebles; el fantasma verde o rojo | smoke test (7d) + `prueba-normas` + navegador |
+| Pantalla de cualquier tamaño, en vertical y en horizontal | navegador (390×740, 844×390 y escritorio) |
+| Con el dedo: barra abajo, pellizco, chat arriba, paneles a lo ancho | navegador, con toques simulados |
 
 ## Las decisiones que no hay que deshacer
 
@@ -108,7 +120,16 @@ desfase constante frenaría al jugador.
 toca dentro de la misma transacción que su apunte, y un `check (amount >= 0)`
 hace imposible quedarse en negativo sin depender de que el código se acuerde de
 comprobarlo. Con un saldo mutable no se puede auditar y un fallo de
-concurrencia imprime dinero en silencio.
+concurrencia imprime dinero en silencio. Cada apunte y cada saldo llevan su
+moneda (monedas o créditos); el precio de cada cosa, también.
+
+**Dónde cabe un mueble lo dice un solo módulo** (`src/state/decorar.ts`), que
+usan el fantasma del cliente y el servidor. Si cada lado tuviera sus reglas,
+el verde del fantasma podría mentir.
+
+**Nada se coloca con un 960×540 escrito a mano.** El lienzo mide lo que mida
+la pantalla; todo pregunta a `this.scale` y a `medidas()` (`src/ui/pantalla.ts`)
+y se rehace al girar el móvil (`alRedimensionar`).
 
 **Un objeto está o en tu inventario o colocado en una sala, nunca a medias.**
 Lo fuerza un `CHECK`, más un trigger que limpia las coordenadas si se queda sin
@@ -178,13 +199,14 @@ para funciones que no existen.
 ```
 accounts (fecha de nacimiento, permiso del tutor) ─┬─ avatars (nickname, look)
           ├─ sessions (token HASHEADO, caducidad)
-          ├─ balances (caché)  ←→  ledger (append-only, la verdad)
-          ├─ items (uno por mueble; en inventario o colocado)
-          ├─ rooms (owner NULL = pública)
+          ├─ balances (caché, por moneda)  ←→  ledger (append-only, la verdad)
+          ├─ premios_diarios (uno por cuenta y día)
+          ├─ items (uno por mueble; en la mochila o colocado)
+          ├─ rooms (owner NULL = pública; las casas, `personal`)
           ├─ blocks (a quién ha bloqueado cada uno)
           ├─ reports (con el chat de alrededor como contexto)
           └─ chat_log (lo que se escribe; se borra solo a los 30 días)
-catalog_items (la tienda)        login_attempts (freno a fuerza bruta)
+catalog_items (la tienda: precio, moneda, sección)   login_attempts (freno a fuerza bruta)
 ```
 
 Migraciones en `db/migrations/*.sql`, se aplican con
@@ -205,12 +227,12 @@ contenido y la cima, subiendo por hitos jugables:
 
 0. **Seguros (hecho).** El cimiento más bajo: edades, frases para los niños,
    filtro, bloquear y reportar.
-1. **Mi primer piso** (a medias: ya hay casa; faltan la tienda, el inventario
-   y colocar muebles). Llegar a la terminal, ganarse las llaves con tres tareas
-   cortas y tener un piso recién mudado (cama y clóset) que se decora con la
-   tienda. Trae los cimientos grandes: lugares como datos con las puertas en el
-   servidor, el estado del jugador en el servidor, objetos de todo tipo con
-   dos monedas, objetos de varias celdas e interfaz que se adapta.
+1. **Mi primer piso** (casi entero: casa, tienda, mochila, decorar y móvil;
+   faltan las tareas de la llegada y las visitas). Llegar a la terminal,
+   ganarse las llaves con tres tareas cortas y tener un piso recién mudado
+   (cama y clóset) que se decora con la tienda. Trajo los cimientos grandes:
+   casas como datos, dos monedas, objetos de varias celdas e interfaz que se
+   adapta.
 2. **Salir a La Manzana.** Seis zonas alrededor de la Plaza de la Llave,
    amigos, compartir ubicación y una red que aguante 50 personas por zona.
 3. **Vivir.** Trabajo en el café, hambre y comida, vehículos propios.
@@ -220,9 +242,12 @@ contenido y la cima, subiendo por hitos jugables:
 
 ## Deuda conocida
 
-- **Todos los muebles miden una celda y miran hacia un solo lado.** Un sofá de
-  dos plazas o una cama piden cortar el sprite por celdas para ordenarlo, y
-  girar muebles (la tabla `items` ya tiene `rot`) pide generar más variantes.
+- **Sólo gira lo que tiene dos caras** (estantería y armario, variante `-se`).
+  Girar el resto (el sofá, la cama) pide generar más variantes; la cama, que
+  mide 1×2, además cambiaría su huella.
+- **Sólo se gana dinero con el premio del día y vendiendo.** Hasta que llegue
+  el trabajo (Hito 3), la economía no tiene fuente de verdad; antes de tocar
+  precios hay que medirla (C11).
 - **Cada avatar en pantalla ocupa 1,8 MB de GPU** (hoja de 672×672). Con
   decenas de jugadores por sala habrá que generar sólo las direcciones en uso.
 - **El teclado atraviesa a la gente de pie**: con las flechas se puede pasar
@@ -231,15 +256,15 @@ contenido y la cima, subiendo por hitos jugables:
 - **El cambio de sala no se comprueba en el servidor**: acepta un `room` sin
   mirar si estabas en una puerta que lleva allí. Con salas como datos, la
   puerta y su destino deberían vivir en el servidor.
-- **No hay pellizco para el zoom en el móvil**: allí se usan los botones + / −.
 - **Antes de abrir al público con niños**:
   - falta el permiso del tutor por correo (las cuentas de menores de 13 se
     quedan "pendientes");
   - falta un panel de moderación y alguien que modere;
   - falta una revisión legal de las edades según el país.
   El filtro no entiende números escritos con letras ni otros idiomas.
-- **El lienzo es 960×540 fijo con `Scale.FIT`**: en un móvil en vertical queda
-  una franja pequeña. Falta diseño adaptable.
+- **El táctil se ha probado con toques simulados**, no en un teléfono de
+  verdad. Falta probarlo en uno (iOS y Android), sobre todo el teclado del
+  sistema con el modal de cuenta y con el chat.
 - **La interpolación usa la hora de llegada**, no la de simulación, así que
   queda un temblor residual acotado. Arreglarlo pide un sello de tiempo en el
   snapshot: cambio de protocolo.
@@ -271,6 +296,7 @@ contenido y la cima, subiendo por hitos jugables:
 | `fase7-seguridad-menores.md` | Niños seguros: edad privada, frases, filtro, bloquear y reportar |
 | `fase8-plaza-de-la-llave.md` | La primera zona de La Manzana: la plaza al aire libre, con la Llave |
 | `fase9-mi-primer-piso.md` | Tu casa: la portería, las llaves, el piso recién mudado; casas como datos y muebles de varias celdas |
+| `fase10-economia-tienda-movil.md` | Dos monedas, premio del día, tienda, mochila y decorar; el móvil al 100 % (y el lienzo que no se redimensionaba al girar) |
 | `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
 | `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |

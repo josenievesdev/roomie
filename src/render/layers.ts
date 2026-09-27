@@ -65,6 +65,9 @@ export const LAYER = {
 
   /** Modal de entrada/perfil: se come todo lo anterior */
   UI_MODAL: 300_000,
+
+  /** Avisos flotantes ("¡Comprado!"): por encima de todo, se van solos */
+  UI_AVISO: 400_000,
 } as const;
 
 /**

@@ -2,15 +2,38 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Sin zoom del navegador: el juego tiene el suyo (pellizcar), y un doble
+         toque que ampliara la página descolocaría todo -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#12121a" />
+    <!-- Añadido a la pantalla de inicio, se abre como una app, sin barras -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Roomie" />
     <title>Roomie</title>
     <style>
       html,
       body {
         margin: 0;
         padding: 0;
+        width: 100%;
+        height: 100%;
         background: #12121a;
         overflow: hidden;
+        /* El dedo es del juego: ni arrastrar la página, ni el rebote del
+           final del scroll, ni seleccionar texto, ni el flash azul al tocar */
+        touch-action: none;
+        overscroll-behavior: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      /* El juego llena la ventana entera (el lienzo lo dimensiona src/main.ts) */
+      #game {
+        position: fixed;
+        inset: 0;
       }
       /* Fuente pixel propia (tools/genfuente.mjs): 12 px por em, así que a 12 y
          24 px cada píxel de la letra cae en píxeles enteros. `block`: mejor
@@ -24,6 +47,7 @@
       canvas {
         image-rendering: -moz-crisp-edges;
         image-rendering: pixelated;
+        touch-action: none;
       }
     </style>
   </head>

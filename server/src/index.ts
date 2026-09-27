@@ -20,6 +20,8 @@ import {
 } from "../../src/state/normas.ts";
 import { filtrarChat, type MotivoBloqueo } from "../../src/state/filtroChat.ts";
 import { frasePorId } from "../../src/state/frases.ts";
+import { motivoNoCabe, pisoDe, planoDesdeMapa } from "../../src/state/decorar.ts";
+import { FURNITURE, isFurniture } from "../../src/state/furniture-catalog.ts";
 import {
   CHAT_COOLDOWN_MS,
   CHAT_MAX,
@@ -56,6 +58,9 @@ import {
   bloquear,
   bloqueadosDe,
   casaDe,
+  catalogo,
+  colocar,
+  comprar,
   crearCuenta,
   darLlaves,
   datosDeCasa,
@@ -63,11 +68,18 @@ import {
   guardarLook,
   guardarNacimiento,
   guardarReporte,
+  inventarioDe,
   nicknameLibre,
   nicknamesDe,
   nombreLibre,
+  objetoDe,
+  premioDiario,
   purgarChat,
+  recoger,
   registrarChat,
+  saldosDe,
+  vender,
+  PREMIO_DIARIO,
   type Casa,
   type Consentimiento,
   type MuebleInicial,
@@ -122,6 +134,18 @@ const MUEBLES_INICIALES: MuebleInicial[] = [
 
 const idDeCasa = (c: Casa): CasaId => `casa:${c.id}`;
 const infoDeCasa = (c: Casa | null): CasaInfo | null => (c ? { id: idDeCasa(c), nombre: c.nombre } : null);
+
+/**
+ * Recarga una casa (después de decorarla) y se lo cuenta a quien esté
+ * dentro: a todos les llegan los muebles nuevos, y sus avatares chocan con
+ * ellos (el mundo se consulta en el momento, ver `newState`).
+ */
+async function emitirMuebles(id: CasaId): Promise<void> {
+  const datos = await cargarCasa(id);
+  if (!datos) return;
+  for (const p of players.values()) if (p.room === id) p.world = worlds.get(id)!;
+  io.to(id).emit("muebles", { sala: id, muebles: datos.muebles });
+}
 
 /**
  * Carga (o recarga) el mundo de una casa desde la base: su mapa y sus
@@ -220,17 +244,19 @@ function occupied(room: RoomId, col: number, row: number, except: string): boole
  * nuevo, así que la sala puede quedar fija aquí dentro.
  */
 function newState(id: string, room: RoomId, start: Cell, facing: Facing): AvatarState {
-  const world = worlds.get(room)!;
+  // El mundo se busca en cada consulta, no se guarda aquí: una casa se
+  // recarga al decorarla, y el avatar tiene que chocar con los muebles NUEVOS
+  const w = () => worlds.get(room)!;
   return new AvatarState(
     {
-      cols: world.cols,
-      rows: world.rows,
-      isBlocked: world.isBlocked,
+      cols: w().cols,
+      rows: w().rows,
+      isBlocked: (col, row) => w().isBlocked(col, row),
       isOccupied: (col, row) => occupied(room, col, row, id),
       // Las mismas puertas y asientos que ve el cliente: con el teclado se
       // entra en ellos igual en los dos lados
-      isDoor: (col, row) => world.doorCells.has(cellKey(col, row)),
-      seatAt: (col, row) => world.seats.get(cellKey(col, row)) ?? null,
+      isDoor: (col, row) => w().doorCells.has(cellKey(col, row)),
+      seatAt: (col, row) => w().seats.get(cellKey(col, row)) ?? null,
     },
     start,
     facing,
@@ -468,20 +494,47 @@ io.on("connection", (socket) => {
     const franja = franjaDeCuenta(s.account.nacimiento);
     const bloqueados = await bloqueadosDe(s.account.id);
     const casa = await casaDe(s.account.id);
+    // El premio del día, al entrar (una vez al día: lo garantiza la base)
+    const premio = franja === null ? null : await premioDiario(s.account.id);
+    const saldos = await saldosDe(s.account.id);
     sesiones.set(socket.id, { ...s, franja, bloqueados, casa });
     socket.emit("authOk", {
       token: s.token,
       username: s.account.username,
       nickname: s.avatar.nickname,
       look: sanitizeLook(s.avatar.look),
-      saldo: s.saldo,
+      saldo: saldos.monedas,
+      creditos: saldos.creditos,
       // Sin fecha todavía, lo más seguro
       modoChat: modoChat(franja ?? "nino"),
       necesitaNacimiento: franja === null,
       bloqueados: await nicknamesDe([...bloqueados]),
       casa: infoDeCasa(casa),
     });
+    if (premio !== null) aviso(`Premio del día: +${PREMIO_DIARIO} monedas. ¡Vuelve mañana a por otro!`);
   };
+
+  // ---------- La tienda, la mochila y decorar ----------
+
+  const resultado = (ok: boolean, texto: string): void => {
+    socket.emit("resultado", { ok, texto });
+  };
+  /** Un freno sencillo: una acción de tienda o de decorar cada 250 ms */
+  let ultimaAccion = 0;
+  const frenar = (): boolean => {
+    const ahora = Date.now();
+    if (ahora - ultimaAccion < 250) return true;
+    ultimaAccion = ahora;
+    return false;
+  };
+  const enviarSaldo = async (accountId: string): Promise<void> => {
+    socket.emit("saldo", await saldosDe(accountId));
+  };
+  const enviarMochila = async (accountId: string): Promise<void> => {
+    const cosas = (await inventarioDe(accountId)).map((i) => ({ id: i.id, code: i.code }));
+    socket.emit("mochila", { cosas });
+  };
+  const nombreDe = (code: string): string => (isFurniture(code) ? FURNITURE[code].nombre : code);
 
   /**
    * La sala a la que puede ir este jugador, o null. Las fijas, siempre; una
@@ -753,6 +806,105 @@ io.on("connection", (socket) => {
       socket.emit("salaDatos", { id, mapa: datos.mapa, muebles: datos.muebles });
     } catch (e) {
       console.error("[roomie] irACasa:", e);
+    }
+  });
+
+  socket.on("tienda", async () => {
+    try {
+      if (!sesiones.get(socket.id)) return;
+      socket.emit("tienda", { articulos: await catalogo() });
+    } catch (e) {
+      console.error("[roomie] tienda:", e);
+    }
+  });
+
+  socket.on("comprar", async (code: unknown) => {
+    const s = sesiones.get(socket.id);
+    if (!s || s.franja === null || typeof code !== "string" || frenar()) return;
+    try {
+      await comprar(s.account.id, code);
+      resultado(true, `¡Comprado! ${nombreDe(code)} ya está en tu mochila.`);
+      await enviarSaldo(s.account.id);
+      await enviarMochila(s.account.id);
+    } catch (e) {
+      // Sin fondos, el propio saldo de la base aborta la compra (no puede quedar en negativo)
+      const texto = String((e as Error)?.message ?? e);
+      resultado(false, texto.includes("no vende") ? "Eso no está a la venta." : "No te llega el dinero para eso.");
+    }
+  });
+
+  socket.on("mochila", async () => {
+    const s = sesiones.get(socket.id);
+    if (!s) return;
+    try {
+      await enviarMochila(s.account.id);
+    } catch (e) {
+      console.error("[roomie] mochila:", e);
+    }
+  });
+
+  socket.on("vender", async (item: unknown) => {
+    const s = sesiones.get(socket.id);
+    if (!s || typeof item !== "string" || frenar()) return;
+    try {
+      const v = await vender(s.account.id, item);
+      resultado(true, v.recibe > 0 ? `Vendido: +${v.recibe} ${v.moneda}.` : `Has tirado ${nombreDe(v.code).toLowerCase()}.`);
+      await enviarSaldo(s.account.id);
+      await enviarMochila(s.account.id);
+    } catch {
+      resultado(false, "Eso no está en tu mochila.");
+    }
+  });
+
+  // Poner o mover algo tuyo en TU casa. Las reglas de dónde cabe son las
+  // mismas que ve el cliente (src/state/decorar.ts); aquí, además, que sea tuyo.
+  socket.on("colocar", async (p: unknown) => {
+    const s = sesiones.get(socket.id);
+    const q = p as { item?: unknown; col?: unknown; row?: unknown; rot?: unknown } | null;
+    if (!me || !s?.casa || frenar()) return;
+    const casaId = idDeCasa(s.casa);
+    if (me.room !== casaId) return resultado(false, "Sólo puedes decorar tu casa.");
+    try {
+      const obj = await objetoDe(s.account.id, String(q?.item ?? ""));
+      if (!obj) return resultado(false, "Eso no es tuyo.");
+      if (obj.room_id !== null && obj.room_id !== s.casa.id) return resultado(false, "Eso está puesto en otro sitio.");
+      const col = Number(q?.col);
+      const row = Number(q?.row);
+      const rot = q?.rot === 1 ? 1 : 0;
+      const datos = await cargarCasa(casaId);
+      if (!datos) return;
+      const plano = planoDesdeMapa(datos.mapa as never);
+      const pisadas = [...players.values()]
+        .filter((pl) => pl.room === casaId)
+        .map((pl) => ({ col: Math.round(pl.state.col), row: Math.round(pl.state.row) }));
+      const motivo = motivoNoCabe(plano, datos.muebles, obj.code, col, row, { excepto: obj.id, pisadas });
+      if (motivo) return resultado(false, motivo);
+      await colocar(obj.id, s.account.id, s.casa.id, col, row, pisoDe(obj.code), rot);
+      const girado = obj.room_id !== null && obj.col === col && obj.row === row;
+      resultado(true, obj.room_id === null ? `${nombreDe(obj.code)}: ¡puesto!` : girado ? "¡Girado!" : "¡Movido!");
+      await emitirMuebles(casaId);
+      await enviarMochila(s.account.id);
+    } catch (e) {
+      // El índice de la base tampoco deja dos cosas en la misma celda y el mismo piso
+      console.error("[roomie] colocar:", e);
+      resultado(false, "Ahí no cabe.");
+    }
+  });
+
+  socket.on("recoger", async (item: unknown) => {
+    const s = sesiones.get(socket.id);
+    if (!me || !s?.casa || typeof item !== "string" || frenar()) return;
+    const casaId = idDeCasa(s.casa);
+    if (me.room !== casaId) return resultado(false, "Sólo puedes recoger lo de tu casa.");
+    try {
+      const obj = await objetoDe(s.account.id, item);
+      if (!obj || obj.room_id !== s.casa.id) return resultado(false, "Eso no está en tu casa.");
+      await recoger(obj.id, s.account.id);
+      resultado(true, `${nombreDe(obj.code)}: a la mochila.`);
+      await emitirMuebles(casaId);
+      await enviarMochila(s.account.id);
+    } catch (e) {
+      console.error("[roomie] recoger:", e);
     }
   });
 

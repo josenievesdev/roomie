@@ -106,7 +106,10 @@ export type AuthOkPayload = {
   username: string;
   nickname: string;
   look: Look;
+  /** Tus monedas (las que se ganan jugando) */
   saldo: number;
+  /** Tus créditos (se comprarán con dinero real; de momento, 0) */
+  creditos: number;
   /**
    * Cómo hablas: con frases del menú o con texto propio. Lo decide el
    * servidor por tu edad; tu edad en sí no viaja nunca.
@@ -122,6 +125,29 @@ export type AuthOkPayload = {
 
 /** Tu casa: su sala y cómo se llama */
 export type CasaInfo = { id: CasaId; nombre: string };
+
+// ---------------------------------------------------------------- Economía
+//
+// Dos monedas: las monedas se ganan jugando; los créditos se comprarán con
+// dinero real (todavía no). Los precios los pone SIEMPRE el servidor.
+
+export type Moneda = "monedas" | "creditos";
+export type Saldos = { monedas: number; creditos: number };
+
+/** Secciones de la tienda */
+export type CategoriaTienda = "salon" | "dormitorio" | "fiesta" | "deco" | "pared";
+
+/** Un artículo de la tienda */
+export type ArticuloTienda = { code: string; nombre: string; precio: number; moneda: Moneda; categoria: CategoriaTienda };
+
+/** Algo tuyo que no está puesto en ninguna sala (en tu mochila) */
+export type CosaMochila = { id: string; code: string };
+
+/** Poner (o mover) un objeto tuyo en tu casa. `rot` 1 = girado. */
+export type ColocarPayload = { item: string; col: number; row: number; rot: number };
+
+/** Cómo salió una compra, una venta o colocar algo: para avisar en pantalla */
+export type ResultadoPayload = { ok: boolean; texto: string };
 
 /** Un mueble puesto en una sala (una fila de la tabla `items`) */
 export type MuebleColocado = { id: string; code: string; col: number; row: number; rot: number };
@@ -211,6 +237,18 @@ export interface ClientEvents {
   llaves: () => void;
   /** Ir a tu casa: el servidor contesta con `salaDatos` y ya se puede entrar */
   irACasa: () => void;
+  /** Pedir la tienda (contesta `tienda`) */
+  tienda: () => void;
+  /** Comprar un artículo de la tienda, por su código */
+  comprar: (code: string) => void;
+  /** Pedir tu mochila (contesta `mochila`) */
+  mochila: () => void;
+  /** Vender algo de tu mochila (la tienda lo recompra por la mitad) */
+  vender: (item: string) => void;
+  /** Poner o mover un objeto tuyo en tu casa */
+  colocar: (p: ColocarPayload) => void;
+  /** Guardar en la mochila un objeto puesto en tu casa */
+  recoger: (item: string) => void;
 }
 
 /** Eventos que el servidor emite y el cliente escucha */
@@ -233,4 +271,14 @@ export interface ServerEvents {
   casa: (p: CasaInfo) => void;
   /** El mapa y los muebles de una sala que no está en los ficheros (tu casa) */
   salaDatos: (p: SalaDatosPayload) => void;
+  /** Lo que vende la tienda */
+  tienda: (p: { articulos: ArticuloTienda[] }) => void;
+  /** Lo que tienes en la mochila */
+  mochila: (p: { cosas: CosaMochila[] }) => void;
+  /** Tus saldos cambiaron */
+  saldo: (p: Saldos) => void;
+  /** Los muebles de una sala cambiaron (alguien decoró su casa) */
+  muebles: (p: { sala: RoomId; muebles: MuebleColocado[] }) => void;
+  /** Cómo salió lo último que pediste (compra, venta, colocar) */
+  resultado: (p: ResultadoPayload) => void;
 }

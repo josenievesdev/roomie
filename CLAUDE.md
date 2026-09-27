@@ -71,7 +71,19 @@ TODAS las celdas de `celdasDe()`, en el cliente y en el servidor. El catálogo l
 discreparían sobre qué celdas están libres.
 
 **El dinero sólo se mueve con `mover_saldo()`.** Nunca un `update balances`
-suelto: el libro mayor y el saldo se tocan en la misma transacción.
+suelto: el libro mayor y el saldo se tocan en la misma transacción. Hay dos
+monedas (`monedas`, que se ganan jugando, y `creditos`, que algún día se
+comprarán): cada apunte, cada saldo y cada precio lleva la suya.
+
+**Dónde cabe un mueble lo dice `motivoNoCabe()`** (`src/state/decorar.ts`,
+compartido). El fantasma del cliente y el servidor usan la misma función: si
+cada lado tuviera sus reglas, el verde del fantasma mentiría.
+
+**Nada se coloca con un 960×540 escrito a mano.** El lienzo mide lo que mide
+la pantalla (en un móvil, en vertical o en horizontal). Todo lo que va en
+pantalla se coloca con `this.scale.width/height` y `medidas()`
+(`src/ui/pantalla.ts`: con el dedo, todo más grande), y se rehace al girar el
+móvil en `alRedimensionar()` de `MainScene`.
 
 **El avatar se genera, no se dibuja.** `public/assets/avatar/*.png` no son
 colores: cada píxel es material + banda de luz + profundidad, y el navegador
@@ -81,8 +93,9 @@ nueva: estilo en `src/state/look.ts` + forma en `tools/avatar/model.mjs` +
 
 **Los muebles también se generan.** Modelo en `tools/muebles/modelos.mjs` +
 entrada en el catálogo + `node tools/genmuebles.mjs` + su fila en la tienda
-(migración): `db:check` falla si el cliente dibuja algo que no se puede
-comprar. El color lo pone el tema de la sala, no el PNG. Lo que pone la
+(migración, con precio, moneda y sección): `db:check` falla si el cliente
+dibuja algo que no se puede comprar, o si el mueble se llama distinto en la
+tienda y en el catálogo. El color lo pone el tema de la sala, no el PNG. Lo que pone la
 ciudad (farolas, árboles, el monumento) lleva `mundo: true` y no se vende.
 
 **Todo texto pasa por el kit** (`texto()` de `src/ui/kit.ts`): la fuente
@@ -124,8 +137,15 @@ reglas y sus números, en `docs/guia-de-estilo.md`.
   (`roomie:edad-rechazada`, 24 h) que impide registrarse: bórrala al acabar.
 - **Con la ventana de Chrome oculta** el juego va a 2 fps, los `setTimeout` se
   frenan a 1 por segundo y los clics reales no llegan. Para probar, mover el
-  bucle a mano cediendo con `MessageChannel` y simular `PointerEvent` sobre el
-  canvas (receta en `docs/fase4-avatar-y-convivencia.md`).
+  bucle a mano cediendo con `MessageChannel` y simular eventos sobre el
+  canvas (receta en `docs/fase4-avatar-y-convivencia.md`). El `mouseup`, sobre
+  el lienzo: si no, Phaser emite `pointerupoutside` y no `pointerup`. Los
+  `Touch` necesitan `pageX`/`pageY`, y nada encima del lienzo (Phaser mira
+  `elementFromPoint` en cada `touchmove`); en un PC sin pantalla táctil,
+  Phaser ni siquiera escucha toques (ver `docs/fase10-economia-tienda-movil.md`).
+- **En `Scale.NONE`, Phaser sólo pone el tamaño CSS del lienzo en `setZoom`.**
+  `setZoom` y luego `resize` dejaba el lienzo con la medida de antes de girar
+  el móvil: `main.ts` pone el zoom y el CSS y luego llama a `resize`.
 - **Vite en Windows a veces se pierde la última de varias escrituras seguidas**
   y sirve un módulo a medias (código nuevo mezclado con viejo). `touch` al
   fichero y recargar.

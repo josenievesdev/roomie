@@ -1,6 +1,6 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { sql } from "./index.ts";
-import type { MotivoReporte } from "../../../src/net/protocol.ts";
+import type { ArticuloTienda, CategoriaTienda, Moneda, MotivoReporte, Saldos } from "../../../src/net/protocol.ts";
 
 // Capa de datos. Todo lo que toca la base de datos pasa por aquí; el resto del
 // servidor no escribe SQL.
@@ -79,6 +79,11 @@ export async function crearCuenta(
     // hay forma de que aparezca dinero sin dejar rastro.
     const [{ mover_saldo: saldo }] = await tx<{ mover_saldo: string }[]>`
       select mover_saldo(${cuenta.id}::uuid, ${SALDO_INICIAL}::bigint, 'alta')
+    `;
+    // El regalo de bienvenida ya es el premio de hoy: el diario empieza mañana
+    await tx`
+      insert into premios_diarios (account_id, dia)
+      values (${cuenta.id}, (now() at time zone 'America/Bogota')::date)
     `;
     return { account: cuenta, avatar, saldo: Number(saldo) };
   });
@@ -214,11 +219,33 @@ export async function purgarChat(dias = 30): Promise<number> {
 
 // -------------------------------------------------------------------- Dinero
 
+/** Las monedas de una cuenta (la moneda que se gana jugando) */
 export async function saldoDe(accountId: string): Promise<number> {
-  const [fila] = await sql<{ amount: string }[]>`
-    select amount from balances where account_id = ${accountId}
+  return (await saldosDe(accountId)).monedas;
+}
+
+/** Las dos monedas de una cuenta */
+export async function saldosDe(accountId: string): Promise<Saldos> {
+  const filas = await sql<{ currency: Moneda; amount: string }[]>`
+    select currency, amount from balances where account_id = ${accountId}
   `;
-  return Number(fila?.amount ?? 0);
+  const de = (m: Moneda) => Number(filas.find((f) => f.currency === m)?.amount ?? 0);
+  return { monedas: de("monedas"), creditos: de("creditos") };
+}
+
+/** Cuánto da el premio diario */
+export const PREMIO_DIARIO = 50;
+
+/**
+ * El premio de hoy, si no se había cobrado: devuelve el saldo nuevo, o null.
+ * La base garantiza que es uno al día (`premios_diarios`), aunque lleguen dos
+ * peticiones a la vez.
+ */
+export async function premioDiario(accountId: string): Promise<number | null> {
+  const [fila] = await sql<{ premio_diario: string | null }[]>`
+    select premio_diario(${accountId}::uuid, ${PREMIO_DIARIO}::bigint)
+  `;
+  return fila.premio_diario === null ? null : Number(fila.premio_diario);
 }
 
 /**
@@ -277,13 +304,16 @@ export async function mueblesDeSala(roomId: string): Promise<Item[]> {
  */
 export async function comprar(accountId: string, code: string): Promise<Item> {
   return sql.begin(async (tx) => {
-    // Sólo lo que está a la venta: las cajas de la mudanza se regalan, no se compran
-    const [art] = await tx<{ price: number }[]>`
-      select price from catalog_items where code = ${code} and for_sale
+    // Sólo lo que está a la venta: las cajas de la mudanza se regalan, no se
+    // compran. El precio y la moneda salen de aquí, nunca del cliente.
+    const [art] = await tx<{ price: number; currency: Moneda }[]>`
+      select price, currency from catalog_items where code = ${code} and for_sale
     `;
     if (!art) throw new Error(`el catálogo no vende "${code}"`);
 
-    await tx`select mover_saldo(${accountId}::uuid, ${-art.price}::bigint, 'compra', 'item', ${code})`;
+    if (art.price > 0) {
+      await tx`select mover_saldo(${accountId}::uuid, ${-art.price}::bigint, 'compra', 'item', ${code}, ${art.currency})`;
+    }
 
     const [item] = await tx<Item[]>`
       insert into items (code, owner_id) values (${code}, ${accountId})
@@ -333,8 +363,8 @@ export async function darLlaves(
       `;
       for (const m of iniciales) {
         await tx`
-          insert into items (code, owner_id, room_id, col, "row")
-          values (${m.code}, ${accountId}, ${c.id}, ${m.col}, ${m.row})
+          insert into items (code, owner_id, room_id, col, "row", stack)
+          values (${m.code}, ${accountId}, ${c.id}, ${m.col}, ${m.row}, 1)
         `;
       }
       return c;
@@ -355,6 +385,47 @@ export async function datosDeCasa(roomId: string): Promise<{ dueno: string; mapa
   `;
   if (!sala) return null;
   return { dueno: sala.owner_id, mapa: sala.layout, muebles: await mueblesDeSala(roomId) };
+}
+
+/** La tienda: lo que está a la venta, por secciones y en su orden */
+export async function catalogo(): Promise<ArticuloTienda[]> {
+  const filas = await sql<{ code: string; name: string; price: number; currency: Moneda; category: CategoriaTienda }[]>`
+    select code, name, price, currency, category from catalog_items
+     where for_sale order by category, sort, price
+  `;
+  return filas.map((f) => ({ code: f.code, nombre: f.name, precio: f.price, moneda: f.currency, categoria: f.category }));
+}
+
+/**
+ * Vender algo de la mochila: la tienda te lo recompra por la mitad de lo que
+ * vale (en su moneda). El objeto desaparece y el dinero entra, en UNA
+ * transacción. Lo que no vale nada (las cajas) simplemente se tira.
+ */
+export async function vender(accountId: string, itemId: string): Promise<{ recibe: number; moneda: Moneda; code: string }> {
+  return sql.begin(async (tx) => {
+    const [it] = await tx<{ code: string; price: number; currency: Moneda }[]>`
+      select i.code, c.price, c.currency
+        from items i join catalog_items c on c.code = i.code
+       where i.id = ${itemId} and i.owner_id = ${accountId} and i.room_id is null
+         for update of i
+    `;
+    if (!it) throw new Error("ese objeto no es tuyo o no está en tu mochila");
+    const recibe = Math.floor(it.price / 2);
+    await tx`delete from items where id = ${itemId}`;
+    if (recibe > 0) {
+      await tx`select mover_saldo(${accountId}::uuid, ${recibe}::bigint, 'venta', 'item', ${it.code}, ${it.currency})`;
+    }
+    return { recibe, moneda: it.currency, code: it.code };
+  });
+}
+
+/** Un objeto de una cuenta, esté donde esté (o null si no es suyo) */
+export async function objetoDe(accountId: string, itemId: string): Promise<Item | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(itemId)) return null;
+  const [it] = await sql<Item[]>`
+    select id, code, room_id, col, "row", rot, stack from items where id = ${itemId} and owner_id = ${accountId}
+  `;
+  return it ?? null;
 }
 
 /** Coloca un objeto del inventario en una sala */

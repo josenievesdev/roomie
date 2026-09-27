@@ -9,6 +9,7 @@
 import { filtrarChat } from "../src/state/filtroChat.ts";
 import { edadEn, edadValida, franjaDe, modoChat, leeTextoLibre, parsearNacimiento, EDAD_MINIMA } from "../src/state/normas.ts";
 import { frasePorId, CATEGORIAS, GESTOS } from "../src/state/frases.ts";
+import { motivoNoCabe, pisoDe } from "../src/state/decorar.ts";
 
 let fallos = 0;
 const check = (ok, label) => {
@@ -97,6 +98,31 @@ check(new Set(ids).size === ids.length, `${ids.length} frases, sin ids repetidos
 check(frasePorId("hola")?.texto === "¡Hola!" && frasePorId("inventada") === undefined, "sólo existen las del catálogo");
 const todasLimpias = [...CATEGORIAS.flatMap((c) => c.frases), ...GESTOS].every((f) => filtrarChat(f.texto).tipo === "ok");
 check(todasLimpias, "ninguna frase del catálogo la tacharía el filtro");
+
+// ---------------------------------------------------------------- Decorar
+// El piso de 8×8 con la puerta en (5,0): dónde cabe cada cosa
+{
+  const plano = { cols: 8, rows: 8, puertas: [{ col: 5, row: 0 }] };
+  const puestos = [
+    { id: "a", code: "cama", col: 1, row: 0 }, // ocupa (1,0) y (1,1)
+    { id: "b", code: "cuadro", col: 3, row: 0 },
+    { id: "c", code: "alfombra", col: 3, row: 3 },
+  ];
+  const cabe = (code, col, row, o) => motivoNoCabe(plano, puestos, code, col, row, o);
+  check(cabe("sofa", 4, 4) === null, "un sofá cabe en medio del piso");
+  check(cabe("sofa", 1, 1) !== null, "no cabe en los pies de la cama (la cama ocupa dos celdas)");
+  check(cabe("cama", 2, 1) === null && cabe("cama", 2, 6) !== null, "la cama no se sale por delante (su huella entera cuenta)");
+  check(cabe("mesa", 5, 1) !== null && cabe("mesa", 5, 0) !== null, "la puerta y su entrada quedan libres");
+  check(cabe("sofa", 3, 3) === null, "un mueble puede ir encima de una alfombra");
+  check(cabe("alfombra", 3, 3) !== null, "pero dos alfombras no se pisan");
+  check(cabe("cuadro", 4, 0) === null && cabe("cuadro", 4, 4) !== null, "un cuadro va colgado en una pared, no en el suelo");
+  check(cabe("cuadro", 3, 0) !== null && cabe("cuadro", 5, 0) !== null, "ni encima de otro cuadro ni en la puerta");
+  check(cabe("sofa", 0, 0) !== null && cabe("sofa", 7, 3) !== null, "ni en la esquina ni en el borde de delante");
+  check(cabe("sofa", 4, 4, { pisadas: [{ col: 4, row: 4 }] }) !== null, "ni encima de quien está de pie");
+  check(cabe("cama", 1, 0, { excepto: "a" }) === null, "un mueble se puede dejar donde estaba al moverlo");
+  check(cabe("llave", 4, 4) !== null && cabe("inventado", 4, 4) !== null, "lo de la ciudad y lo inventado no se ponen");
+  check(pisoDe("alfombra") === 0 && pisoDe("sofa") === 1, "las alfombras van debajo, lo demás encima");
+}
 
 console.log(fallos === 0 ? "\nNORMAS OK" : `\n${fallos} comprobaciones fallidas`);
 process.exit(fallos === 0 ? 0 : 1);

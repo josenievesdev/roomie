@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { toScreen, toGrid } from "../utils/iso";
+import { toScreen, toGrid, TILE_W } from "../utils/iso";
 import {
   ALTO_AVATAR,
   ORIGEN,
@@ -16,6 +16,7 @@ import {
   ladoPared,
   mascaraAlfombra,
   preloadMuebles,
+  texturaMueble,
 } from "../entities/furniture";
 import { FURNITURE, celdasDe, isFurniture, seatAt, vaGirado, type FurnitureKind } from "../state/furniture-catalog";
 import { findPath, type Cell } from "../utils/pathfinding";
@@ -32,8 +33,25 @@ import { frasePorId, GESTOS, GESTO_SALUDO } from "../state/frases";
 import { parsearNacimiento } from "../state/normas";
 import { Vestidor } from "../ui/vestidor";
 import { MenuFrases } from "../ui/menuFrases";
+import { Tienda } from "../ui/tienda";
+import { Mochila } from "../ui/mochila";
+import { medidas } from "../ui/pantalla";
+import { motivoNoCabe, planoDesdeMapa, type Plano } from "../state/decorar";
 import { Hud } from "../ui/hud";
-import { boton, centrar, crearTexturasUI, icono, partirTexto, pieza, texto, UI, UI_HEX, yCentrada } from "../ui/kit";
+import {
+  anchoTexto,
+  avisoFlotante,
+  boton,
+  centrar,
+  crearTexturasUI,
+  icono,
+  partirTexto,
+  pieza,
+  texto,
+  UI,
+  UI_HEX,
+  yCentrada,
+} from "../ui/kit";
 import {
   loadSave,
   writeSave,
@@ -58,8 +76,11 @@ import {
   USER_MIN,
   esCasa,
   isRoomId,
+  type ArticuloTienda,
+  type CategoriaTienda,
   type ChatPayload,
   type MuebleColocado,
+  type Saldos,
   type SalaDatosPayload,
   type JoinErrorPayload,
   type AuthErrorPayload,
@@ -116,6 +137,40 @@ const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 const mueblesDeCasas = new Map<string, MuebleColocado[]>();
 /** Al entrar al juego se va a casa una sola vez; si no, cada reconexión te llevaría */
 let llegadaHecha = false;
+/** Lo que vende la tienda (lo manda el servidor; se guarda para la mochila) */
+let articulos: ArticuloTienda[] = [];
+
+/**
+ * Colocando un mueble: el fantasma que sigue al ratón (o al dedo) por las
+ * celdas, verde donde cabe y rojo donde no. Con el ratón, un clic lo pone;
+ * con el dedo, se toca (o se arrastra) y "Poner aquí" lo confirma.
+ */
+type Colocando = {
+  item: string;
+  code: string;
+  rot: number;
+  col: number;
+  row: number;
+  fantasma: Phaser.GameObjects.Image | null;
+  /** Las celdas que ocupará, marcadas en el suelo */
+  huella: Phaser.GameObjects.Graphics;
+  /** Variante de la textura del fantasma (cambia al pasar de una pared a otra) */
+  variante: string;
+  /** Cuándo se mandó al servidor (0 = aún no): mientras, no se manda otra vez */
+  enviadoEn: number;
+};
+
+/** Lo que se dibujó de un mueble de la casa, para rehacerlo, esconderlo o tocarlo */
+type DibujoCasa = {
+  mueble: MuebleColocado;
+  imagen: Phaser.GameObjects.Image | null;
+  objetos: Phaser.GameObjects.GameObject[];
+};
+
+/** Lo que tarda como mucho el servidor en contestar a "colocar" antes de dejar reintentar */
+const ESPERA_COLOCAR_MS = 2500;
+/** Colores de la huella en el suelo: cabe, no cabe, elegido */
+const HUELLA = { cabe: 0x7bed9f, noCabe: 0xff8a8a, elegido: 0xffe9a8 } as const;
 
 /** Cuánto dura el saludo del avatar cuando alguien manda 👋 */
 const SALUDO_MS = 1600;
@@ -168,19 +223,29 @@ const MOTIVOS_REPORTE: { motivo: MotivoReporte; texto: string }[] = [
 /**
  * Panel de chat de la esquina inferior izquierda: historial a la vista que
  * se desvanece solo, y al abrir para escribir se muestra entero con fondo.
+ * Dónde va exactamente depende de la pantalla (`calcularChat`).
  */
-const CHAT_PANEL = {
-  x: 8,
+type ColocacionChat = {
+  x: number;
   /** Pie de la línea más nueva: las demás se apilan hacia ARRIBA desde aquí */
-  bottom: 497,
-  w: 360,
+  bottom: number;
+  w: number;
   /** Cuántas líneas caben a la vez */
-  lines: 8,
+  lines: number;
+  /**
+   * Lo mismo con el chat abierto. Con el dedo, escribiendo, el historial va
+   * bajo la barra, arriba: abajo lo taparía el teclado del móvil.
+   */
+  bottomAbierto: number;
+  linesAbierto: number;
   /** Alto de línea: la fuente pixel a 12 px (15 de caja) más 1 de aire */
-  lineH: 16,
+  lineH: number;
+  /** La barra de escribir */
+  barraY: number;
+  barraH: number;
 };
-/** Barra de escritura del chat, al pie */
-const CHAT_BARRA = { y: 508, h: 24 };
+/** Líneas que se crean (luego se usan las que quepan) */
+const CHAT_LINEAS_MAX = 8;
 
 /**
  * Niveles de zoom. Enteros a propósito: a ×1,5 unos píxeles del arte
@@ -356,6 +421,10 @@ export class MainScene extends Phaser.Scene {
   private authCampos: CampoAuth[] = [];
   private campoActivo: CampoAuth | null = null;
   private authError: Phaser.GameObjects.Text | null = null;
+  /** El velo del modal (lo único que no sube con `asomarCampo`) */
+  private authVelo: Phaser.GameObjects.GameObject | null = null;
+  /** Cuánto ha subido el modal para que el teclado del móvil no tape el campo */
+  private authDesplazado = 0;
   /** Se acaba de crear la cuenta: al entrar se abre el vestidor */
   private recienRegistrado = false;
   /** <input> real del chat: sin él no hay teclado en el móvil */
@@ -370,6 +439,56 @@ export class MainScene extends Phaser.Scene {
   private menuFrases: MenuFrases | null = null;
   /** Botón "Frases" de la barra del chat, mientras está abierta */
   private chatFrasesBtn: Phaser.GameObjects.GameObject[] = [];
+  /** Dónde va el chat en esta pantalla */
+  private chat: ColocacionChat = {
+    x: 8,
+    bottom: 497,
+    w: 360,
+    lines: 8,
+    bottomAbierto: 497,
+    linesAbierto: 8,
+    lineH: 16,
+    barraY: 508,
+    barraH: 24,
+  };
+
+  // Tienda, mochila y decorar
+  private tienda: Tienda | null = null;
+  private mochila: Mochila | null = null;
+  /**
+   * Decorando tu casa: tocar un mueble lo elige (en vez de andar o sentarse)
+   * y sale su menú. Se entra con el botón de la casa estando en ella, o al
+   * poner algo de la mochila.
+   */
+  private decorando = false;
+  private colocando: Colocando | null = null;
+  /** Arrastrando el fantasma con el dedo (en vez de mover la cámara) */
+  private arrastrandoFantasma = false;
+  /**
+   * Dónde se agarró el fantasma, respecto al centro de su celda (en px del
+   * mundo): al arrastrarlo va "cogido" por ahí, sin saltar a poner la base
+   * bajo el dedo.
+   */
+  private agarre = { dx: 0, dy: 0 };
+  /** La barra de abajo mientras se decora: qué hacer y los botones */
+  private barraDeco: Phaser.GameObjects.GameObject[] = [];
+  /** Lo que ocupa esa barra (0 si no está): los menús se ponen encima */
+  private altoBarraDeco = 0;
+  /** Menú de un mueble de tu casa (Mover, Girar, Guardar) */
+  private menuMueble: Phaser.GameObjects.GameObject[] = [];
+  /** El mueble elegido (el del menú) o el que hay bajo el ratón, marcado en el suelo */
+  private elegido: { id: string; huella: Phaser.GameObjects.Graphics } | null = null;
+  /** Lo que se dibujó de cada mueble de la casa, por id (para rehacerlo al decorar) */
+  private objetosCasa = new Map<string, DibujoCasa>();
+  /** Las colisiones y los muebles de la sala SIN los de la casa (lo que trae el mapa) */
+  private bloqueoBase: boolean[][] = [];
+  private mueblesBase: PlacedFurniture[] = [];
+  /** Tamaño y puertas de la casa, para saber dónde cabe cada cosa (null fuera de una casa) */
+  private plano: Plano | null = null;
+  /** Pellizco con dos dedos: la distancia de partida */
+  private pellizco: { base: number } | null = null;
+  /** Se pidió la tienda y se abrirá al llegar el catálogo */
+  private quiereTienda = false;
 
   // Cámara
   /**
@@ -447,6 +566,18 @@ export class MainScene extends Phaser.Scene {
     this.arrastre = null;
     this.pidiendoCasa = false;
     this.porteria = [];
+    this.tienda = null;
+    this.mochila = null;
+    this.decorando = false;
+    this.colocando = null;
+    this.arrastrandoFantasma = false;
+    this.barraDeco = [];
+    this.menuMueble = [];
+    this.elegido = null;
+    this.objetosCasa = new Map();
+    this.plano = null;
+    this.pellizco = null;
+    this.quiereTienda = false;
     this.menuFrases = null;
     this.chatFrasesBtn = [];
 
@@ -508,27 +639,44 @@ export class MainScene extends Phaser.Scene {
 
     // Interfaz: piezas pixel art (una vez) y el HUD
     crearTexturasUI(this);
-    this.hud = new Hud(this, {
-      chat: () => this.alternarChat(),
-      vestidor: () => this.abrirVestidor(),
-      perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
-      casa: () => this.irACasa(),
-      zoom: (paso) => this.cambiarZoom(paso),
-    });
+    // En tu casa, el botón de la casa es el de decorarla
+    this.hud = new Hud(
+      this,
+      {
+        chat: () => this.alternarChat(),
+        vestidor: () => this.abrirVestidor(),
+        perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
+        casa: () => (this.enMiCasa() ? this.alternarDecorar() : this.irACasa()),
+        tienda: () => this.abrirTienda(),
+        mochila: () => this.abrirMochila(),
+        zoom: (paso) => this.cambiarZoom(paso),
+      },
+      {
+        enCasa: esCasa(this.roomId),
+        // Mientras se ve la chuleta, el chat va encima; al irse, baja
+        alIrseChuleta: () => {
+          if (!this.alive) return;
+          this.calcularChat();
+          this.colocarChat();
+        },
+      },
+    );
     this.hud.nivelZoom(this.nivelZoom, 0, ZOOMS.length - 1);
 
+    // Al girar el móvil o cambiar la ventana, se recoloca todo (ver main.ts)
+    const alCambiarTamano = () => this.alRedimensionar();
+    this.scale.on(Phaser.Scale.Events.RESIZE, alCambiarTamano);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.scale.off(Phaser.Scale.Events.RESIZE, alCambiarTamano));
+
     // Panel de chat: fondo (sólo visible mientras se escribe) + líneas
-    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 10;
-    this.chatPanelBg = pieza(this, "chip", CHAT_PANEL.x, CHAT_PANEL.bottom + 5 - alturaPanel, CHAT_PANEL.w, alturaPanel)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_PANEL)
-      .setVisible(false);
+    this.calcularChat();
+    this.chatPanelBg = pieza(this, "chip", 0, 0, 40, 40).setScrollFactor(0).setDepth(LAYER.UI_PANEL).setVisible(false);
 
     // Una línea = un objeto de texto reutilizado, para no recrearlos sin parar
     this.chatLineTexts = [];
-    for (let i = 0; i < CHAT_PANEL.lines; i++) {
+    for (let i = 0; i < CHAT_LINEAS_MAX; i++) {
       this.chatLineTexts.push(
-        texto(this, CHAT_PANEL.x + 8, 0, "", { color: CHAT_COLORS.other, sombra: true })
+        texto(this, 0, 0, "", { color: CHAT_COLORS.other, sombra: true })
           .setOrigin(0, 1)
           .setScrollFactor(0)
           .setDepth(LAYER.UI_PANEL + 1)
@@ -539,14 +687,9 @@ export class MainScene extends Phaser.Scene {
     this.time.addEvent({ delay: 500, loop: true, callback: () => this.renderChatPanel() });
 
     // Barra de escritura, alineada con el panel: un campo hundido
-    this.chatBg = pieza(this, "campo-activo", CHAT_PANEL.x, CHAT_BARRA.y, CHAT_PANEL.w, CHAT_BARRA.h)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_PANEL)
-      .setVisible(false);
-    this.chatLabel = texto(this, CHAT_PANEL.x + 8, yCentrada(CHAT_BARRA.y, CHAT_BARRA.h), "")
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_PANEL + 1)
-      .setVisible(false);
+    this.chatBg = pieza(this, "campo-activo", 0, 0, 40, 24).setScrollFactor(0).setDepth(LAYER.UI_PANEL).setVisible(false);
+    this.chatLabel = texto(this, 0, 0, "").setScrollFactor(0).setDepth(LAYER.UI_PANEL + 1).setVisible(false);
+    this.colocarChat();
 
     // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
     this.setupNet();
@@ -559,7 +702,10 @@ export class MainScene extends Phaser.Scene {
     if (net.autenticado) {
       // Cuenta de antes sin fecha de nacimiento: primero eso
       if (net.identidad?.necesitaNacimiento) this.showAuthModal("nacimiento");
-      else this.sendWhere();
+      else {
+        this.sendWhere();
+        this.hud.arrancarChuleta();
+      }
     } else if (!net.isOnline || !tokenGuardado()) this.showAuthModal("login");
 
     const kb = this.input.keyboard;
@@ -584,6 +730,31 @@ export class MainScene extends Phaser.Scene {
           this.cerrarPorteria();
           return;
         }
+        // Decorando, Esc deshace de uno en uno: el panel, lo que colocabas,
+        // el menú del mueble y, por último, el propio modo
+        if (key === "Escape" && (this.tienda || this.mochila)) {
+          this.cerrarTienda();
+          this.cerrarMochila();
+          return;
+        }
+        if (key === "Escape" && this.colocando) {
+          this.cancelarColocar();
+          return;
+        }
+        if (key === "Escape" && this.menuMueble.length > 0) {
+          this.cerrarMenuMueble();
+          return;
+        }
+        if (key === "Escape" && this.decorando) {
+          this.salirDecorar();
+          return;
+        }
+        // Con la tienda o la mochila abiertas, sólo sus teclas
+        if (this.tienda || this.mochila) {
+          if (key === "t" || key === "T") this.abrirTienda();
+          else if (key === "m" || key === "M") this.abrirMochila();
+          return;
+        }
         // Con el vestidor abierto, el teclado sólo lo cierra o gira la vista
         if (this.vestidor) {
           if (key === "Escape" || key === "c" || key === "C") this.cerrarVestidor();
@@ -594,6 +765,9 @@ export class MainScene extends Phaser.Scene {
         if (!this.chatOpen) {
           if (key === "Enter") this.alternarChat();
           else if (key === "c" || key === "C") this.abrirVestidor();
+          else if (key === "t" || key === "T") this.abrirTienda();
+          else if (key === "m" || key === "M") this.abrirMochila();
+          else if ((key === "r" || key === "R") && this.colocando) this.girarFantasma();
           else if (key === "+" || key === "=") this.cambiarZoom(1);
           else if (key === "-" || key === "_") this.cambiarZoom(-1);
           return;
@@ -616,6 +790,7 @@ export class MainScene extends Phaser.Scene {
       "pointerdown",
       (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
         this.arrastre = null;
+        this.arrastrandoFantasma = false;
         if (pointer.button !== 0) return; // solo clic izquierdo
         if (this.authModalOpen || this.vestidor) return; // el modal se lleva todos los clics
 
@@ -628,11 +803,56 @@ export class MainScene extends Phaser.Scene {
         // así que el botón no hacía nada ni en PC ni en móvil.
         if (sobre.length > 0) return;
 
+        // El segundo dedo: es un pellizco (zoom), no un paso ni un arrastre
+        const dedos = this.distanciaDedos();
+        if (dedos !== null) {
+          this.pellizco = { base: dedos };
+          this.arrastre = null;
+          this.arrastrandoFantasma = false;
+          return;
+        }
+
+        // Colocando, el dedo que cae sobre el fantasma lo arrastra (no mueve la cámara)
+        const c = this.colocando;
+        if (c?.fantasma && this.pixelBajo(c.fantasma, pointer)) {
+          const w = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+          const base = toScreen(c.col, c.row);
+          this.agarre = { dx: w.x - base.x, dy: w.y - base.y };
+          this.arrastrandoFantasma = true;
+          return;
+        }
+
         const cam = this.cameras.main;
         this.arrastre = { x: pointer.x, y: pointer.y, scrollX: cam.scrollX, scrollY: cam.scrollY, activo: false };
       },
     );
-    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
+      // Pellizcar: al separar los dedos un tercio más, se acerca un nivel
+      if (this.pellizco) {
+        const d = this.distanciaDedos();
+        if (d === null) return;
+        const r = d / this.pellizco.base;
+        if (r > 1.35 || r < 0.74) {
+          const a = this.input.pointer1;
+          const b = this.input.pointer2;
+          this.cambiarZoom(r > 1 ? 1 : -1, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+          this.pellizco.base = d;
+        }
+        return;
+      }
+      if (this.arrastrandoFantasma) {
+        this.moverFantasma(this.celdaBajo(pointer, this.agarre));
+        return;
+      }
+      // Con el ratón: colocando, el fantasma lo sigue (si no está sobre un
+      // botón); decorando, se marca el mueble que hay debajo
+      if (!pointer.wasTouch && !pointer.isDown) {
+        if (this.colocando && sobre.length === 0) this.moverFantasma(this.celdaBajo(pointer));
+        else if (this.decorando && !this.colocando && this.menuMueble.length === 0) {
+          this.elegir(sobre.length === 0 ? (this.muebleBajo(pointer)?.id ?? null) : null);
+        }
+        return;
+      }
       const a = this.arrastre;
       if (!a || !pointer.isDown) return;
       if (!a.activo && Math.hypot(pointer.x - a.x, pointer.y - a.y) < UMBRAL_ARRASTRE) return;
@@ -642,10 +862,37 @@ export class MainScene extends Phaser.Scene {
       cam.setScroll(a.scrollX - (pointer.x - a.x) / cam.zoom, a.scrollY - (pointer.y - a.y) / cam.zoom);
     });
     this.input.on("pointerup", (pointer: Phaser.Input.Pointer, sobre: Phaser.GameObjects.GameObject[]) => {
+      // Al levantar un dedo del pellizco, se acabó el pellizco (y el otro dedo no anda)
+      if (this.pellizco) {
+        if (!this.input.pointer1.isDown || !this.input.pointer2.isDown) this.pellizco = null;
+        this.arrastre = null;
+        return;
+      }
+      // Se soltó el fantasma: con el ratón, eso es ponerlo; con el dedo, se
+      // queda ahí hasta "Poner aquí"
+      if (this.arrastrandoFantasma) {
+        this.arrastrandoFantasma = false;
+        if (!pointer.wasTouch) this.confirmarColocar();
+        return;
+      }
       const a = this.arrastre;
       this.arrastre = null;
       if (!a || a.activo || this.authModalOpen || this.vestidor) return;
       if (sobre.length > 0) return; // se soltó encima de un botón: es suyo
+      // Colocando: con el ratón, el clic lo pone; con el dedo, lo lleva ahí
+      // (y "Poner aquí" lo confirma: con el dedo no hay "pasar por encima")
+      if (this.colocando) {
+        this.moverFantasma(this.celdaBajo(pointer));
+        if (!pointer.wasTouch) this.confirmarColocar();
+        return;
+      }
+      // Decorando: tocar un mueble lo elige; tocar el suelo, lo suelta
+      if (this.decorando) {
+        const m = this.muebleBajo(pointer);
+        if (m) this.abrirMenuMueble(m);
+        else this.cerrarMenuMueble();
+        return;
+      }
       // Un clic en el mundo con un menú abierto (de avatar, de frases) sólo lo cierra
       if (this.peerMenuItems.length > 0) {
         this.closePeerMenu();
@@ -662,11 +909,19 @@ export class MainScene extends Phaser.Scene {
       this.handleWorldClick(pointer);
     });
 
+    // Soltar fuera del lienzo (el ratón se fue de la ventana): nada de lo que
+    // estaba a medias sigue en marcha
+    this.input.on("pointerupoutside", () => {
+      this.arrastre = null;
+      this.arrastrandoFantasma = false;
+      this.pellizco = null;
+    });
+
     // Rueda: zoom hacia donde apunta el ratón
     this.input.on(
       "wheel",
       (pointer: Phaser.Input.Pointer, _sobre: unknown, _dx: number, dy: number) => {
-        if (this.authModalOpen || this.vestidor) return;
+        if (this.authModalOpen || this.vestidor || this.tienda || this.mochila) return;
         // Cambiar de sentido empieza la cuenta de cero
         if (Math.sign(dy) !== Math.sign(this.ruedaAcum)) this.ruedaAcum = 0;
         this.ruedaAcum += dy;
@@ -724,7 +979,7 @@ export class MainScene extends Phaser.Scene {
     // Entrada -> estado (el estado decide qué hacer)
     let dx = 0;
     let dy = 0;
-    if (!this.chatOpen && !this.vestidor) {
+    if (!this.chatOpen && !this.vestidor && !this.tienda && !this.mochila) {
       if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
       if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
       if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
@@ -807,6 +1062,55 @@ export class MainScene extends Phaser.Scene {
     guardarZoom(z);
   }
 
+  /** Distancia entre los dos primeros dedos, si hay dos en la pantalla (null si no) */
+  private distanciaDedos(): number | null {
+    const a = this.input.pointer1;
+    const b = this.input.pointer2;
+    if (!a?.isDown || !b?.isDown) return null;
+    return Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+  }
+
+  /**
+   * La pantalla cambió de tamaño (se giró el móvil, se cambió la ventana):
+   * cámaras, HUD y chat se recolocan; lo pasajero (los menús) se cierra, y
+   * los paneles abiertos se rehacen a la medida nueva sin perder lo que
+   * tenían (la sección de la tienda, lo escrito en el modal, el borrador del
+   * vestidor).
+   */
+  private alRedimensionar(): void {
+    if (!this.alive) return;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const cam = this.cameras.main;
+    cam.setSize(W, H);
+    this.camaraUI.setSize(W, H);
+    const [bx, by, bw, bh] = this.roomBounds();
+    cam.setBounds(bx, by, bw, bh);
+    this.hud?.recolocar();
+    this.calcularChat();
+    this.colocarChat();
+    if (this.chatOpen) this.ponerBotonFrases();
+    this.closePeerMenu();
+    this.cerrarFrases();
+    this.cerrarMenuMueble();
+    this.pintarBarraDeco();
+    if (this.porteria.length > 0) {
+      this.cerrarPorteria();
+      this.abrirPorteria();
+    }
+    if (this.tienda) {
+      const seccion = this.tienda.seccionActual;
+      this.cerrarTienda();
+      this.mostrarTienda(seccion);
+    }
+    if (this.mochila) {
+      this.cerrarMochila();
+      this.abrirMochila();
+    }
+    this.vestidor?.recolocar();
+    if (this.authModalOpen) this.rehacerAuthModal();
+  }
+
   /** La cámara deja de seguir al avatar (para mirar la sala a gusto) */
   private soltarCamara(): void {
     if (this.camaraLibre) return;
@@ -839,7 +1143,7 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  /** Punto del mundo → punto de la pantalla (lienzo de 960×540), con el zoom */
+  /** Punto del mundo → punto de la pantalla (del lienzo, mida lo que mida), con el zoom */
   private aPantalla(x: number, y: number): { x: number; y: number } {
     const cam = this.cameras.main;
     const z = cam.zoom;
@@ -868,8 +1172,11 @@ export class MainScene extends Phaser.Scene {
 
     const world = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
     const g = toGrid(world.x, world.y);
-    const goal: Cell = { col: Math.round(g.col), row: Math.round(g.row) };
+    this.caminarA({ col: Math.round(g.col), row: Math.round(g.row) });
+  }
 
+  /** Echa a andar hacia una celda (y, si es un asiento, a sentarse; si es una puerta, a cruzarla) */
+  private caminarA(goal: Cell): void {
     if (!this.inBounds(goal.col, goal.row)) return;
 
     const door = this.doorAt(goal.col, goal.row);
@@ -903,7 +1210,8 @@ export class MainScene extends Phaser.Scene {
     // Si la meta es una puerta, se cruza sola al llegar (ver update)
     this.avatar.startPath(path, sitTarget);
     net.path(path); // el servidor simula el mismo camino con AvatarState
-    this.showClickMarker(world.x, world.y);
+    const centro = toScreen(goal.col, goal.row);
+    this.showClickMarker(centro.x, centro.y);
   }
 
   /**
@@ -1019,14 +1327,17 @@ export class MainScene extends Phaser.Scene {
     this.closeChat();
     this.cerrarFrases();
     this.closePeerMenu();
-    const W = 320;
+    this.cerrarTienda();
+    this.cerrarMochila();
+    const alto = medidas().fila + 4;
+    const W = Math.min(320, this.scale.width - 16);
     const lineas = partirTexto(
       "¡Hola! Soy Rita, la portera. ¿Te acabas de mudar a La Manzana? Tu piso ya está listo: es pequeño, pero es tuyo. Aquí tienes las llaves.",
       W - 28,
     );
-    const H = 34 + lineas.length * 16 + 12 + 26 + 14;
-    const X = 480 - W / 2;
-    const Y = Math.round(270 - H / 2);
+    const H = 34 + lineas.length * 16 + 12 + alto + 14;
+    const X = Math.round((this.scale.width - W) / 2);
+    const Y = Math.round((this.scale.height - H) / 2);
     const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(o: T, capa = 1): T => {
       o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
       this.porteria.push(o);
@@ -1036,13 +1347,13 @@ export class MainScene extends Phaser.Scene {
     add(icono(this, "casa", X + 14, Y + 11));
     add(texto(this, X + 32, yCentrada(Y + 8, 16), "Portería · Edificio Roomie", { color: UI.titulo }));
     add(texto(this, X + 14, Y + 32, lineas.join("\n"), { interlineado: 1 }));
-    const yb = Y + H - 14 - 26;
+    const yb = Y + H - 14 - alto;
     this.porteria.push(
-      ...boton(this, X + 14, yb, W - 28 - 108, 26, "Recoger las llaves", () => this.recogerLlaves(), {
+      ...boton(this, X + 14, yb, W - 28 - 108, alto, "Recoger las llaves", () => this.recogerLlaves(), {
         primario: true,
         capa: LAYER.UI_PANEL + 2,
       }).objetos,
-      ...boton(this, X + W - 14 - 100, yb, 100, 26, "Ahora no", () => this.cerrarPorteria(), { capa: LAYER.UI_PANEL + 2 }).objetos,
+      ...boton(this, X + W - 14 - 100, yb, 100, alto, "Ahora no", () => this.cerrarPorteria(), { capa: LAYER.UI_PANEL + 2 }).objetos,
     );
   }
 
@@ -1064,6 +1375,512 @@ export class MainScene extends Phaser.Scene {
     if (enPorteria) this.irACasa();
   }
 
+  // ---------- Tienda y mochila ----------
+  //
+  // Lo que se vende, lo que cuesta y si te llega lo decide el servidor: aquí
+  // sólo se enseña (y se atenúa lo que no te llega).
+
+  /** ¿Estás en tu casa? Sólo ahí se decora */
+  private enMiCasa(): boolean {
+    const casa = net.identidad?.casa;
+    return !!casa && this.roomId === casa.id;
+  }
+
+  /** Tus saldos, tal como los dijo el servidor la última vez */
+  private saldos(): Saldos {
+    return { monedas: net.identidad?.saldo ?? 0, creditos: net.identidad?.creditos ?? 0 };
+  }
+
+  /** El nombre de un mueble como lo llama la tienda (o el catálogo, si no se vende) */
+  private nombreMueble(code: string): string {
+    return articulos.find((a) => a.code === code)?.nombre ?? (isFurniture(code) ? FURNITURE[code].nombre : code);
+  }
+
+  /** Cierra lo pasajero que estorba a un panel: el chat, los menús, la portería */
+  private despejar(): void {
+    this.closeChat();
+    this.cerrarFrases();
+    this.closePeerMenu();
+    this.cerrarPorteria();
+    this.cerrarMenuMueble();
+  }
+
+  /** La tienda (T). Si el catálogo aún no ha llegado, se pide y se abre al llegar */
+  private abrirTienda(): void {
+    if (this.tienda) return this.cerrarTienda();
+    if (this.authModalOpen || this.vestidor || !net.autenticado) return;
+    this.despejar();
+    this.cerrarMochila();
+    this.cancelarColocar();
+    this.quiereTienda = true;
+    if (articulos.length > 0) this.mostrarTienda();
+    else net.tienda();
+  }
+
+  private mostrarTienda(seccion?: CategoriaTienda): void {
+    this.quiereTienda = false;
+    if (this.tienda || this.authModalOpen || this.vestidor) return;
+    this.tienda = new Tienda(this, {
+      articulos,
+      saldos: this.saldos(),
+      seccion,
+      alComprar: (code) => net.comprar(code),
+      alCerrar: () => this.cerrarTienda(),
+    });
+  }
+
+  private cerrarTienda(): void {
+    this.quiereTienda = false;
+    this.tienda?.destroy();
+    this.tienda = null;
+  }
+
+  /** La mochila (M): lo tuyo que no está puesto. En tu casa, se pone desde aquí */
+  private abrirMochila(): void {
+    if (this.mochila) return this.cerrarMochila();
+    if (this.authModalOpen || this.vestidor || !net.autenticado) return;
+    this.despejar();
+    this.cerrarTienda();
+    this.cancelarColocar();
+    this.mochila = new Mochila(this, {
+      cosas: net.cosas,
+      enCasa: this.enMiCasa(),
+      articulos,
+      alPoner: (cosa) => this.empezarColocar(cosa.id, cosa.code, 0, null),
+      alVender: (cosa) => net.vender(cosa.id),
+      alTienda: () => {
+        this.cerrarMochila();
+        this.abrirTienda();
+      },
+      alCerrar: () => this.cerrarMochila(),
+    });
+    // Por si cambió desde otra pestaña
+    net.mochila();
+  }
+
+  private cerrarMochila(): void {
+    this.mochila?.destroy();
+    this.mochila = null;
+  }
+
+  // ---------- Decorar tu casa ----------
+  //
+  // Decorando, tocar un mueble lo elige y saca su menú (Mover, Girar,
+  // Guardar); fuera de ese modo, tocar un sofá sigue siendo sentarse. Dónde
+  // cabe cada cosa lo dicen las reglas de `src/state/decorar.ts`, las mismas
+  // que aplica el servidor: si el fantasma sale verde, el servidor lo acepta
+  // (salvo que alguien se cruce justo entonces).
+
+  private alternarDecorar(): void {
+    if (this.decorando) this.salirDecorar();
+    else this.entrarDecorar();
+  }
+
+  private entrarDecorar(): void {
+    if (!this.enMiCasa() || this.authModalOpen || this.vestidor) return;
+    this.despejar();
+    this.cerrarTienda();
+    this.cerrarMochila();
+    this.decorando = true;
+    this.pintarBarraDeco();
+  }
+
+  private salirDecorar(): void {
+    this.cancelarColocar();
+    this.cerrarMenuMueble();
+    this.elegir(null);
+    this.decorando = false;
+    this.pintarBarraDeco();
+  }
+
+  /**
+   * Empieza a colocar algo: de la mochila (`desde` null) o algo ya puesto,
+   * para moverlo (`desde` es donde está; el original se esconde mientras).
+   * Sacado de la mochila, aparece en el sitio libre más cercano a ti.
+   */
+  private empezarColocar(item: string, code: string, rot: number, desde: Cell | null): void {
+    if (!this.enMiCasa() || !isFurniture(code)) return;
+    this.cancelarColocar();
+    this.cerrarMochila();
+    this.cerrarTienda();
+    this.despejar();
+    this.decorando = true;
+    const inicio = desde ??
+      this.sitioPara(code, item) ?? { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
+    this.colocando = {
+      item,
+      code,
+      rot,
+      col: inicio.col,
+      row: inicio.row,
+      fantasma: null,
+      huella: this.add.graphics().setDepth(LAYER.ALFOMBRA + 1),
+      variante: "",
+      enviadoEn: 0,
+    };
+    this.verOriginal(item, false);
+    this.pintarFantasma();
+    this.pintarBarraDeco();
+  }
+
+  /** Deja de colocar. Con `restaurar`, lo que se estaba moviendo vuelve a verse donde estaba */
+  private cancelarColocar(restaurar = true): void {
+    const c = this.colocando;
+    if (!c) return;
+    c.fantasma?.destroy();
+    c.huella.destroy();
+    this.colocando = null;
+    this.arrastrandoFantasma = false;
+    if (restaurar) this.verOriginal(c.item, true);
+    this.pintarBarraDeco();
+  }
+
+  /** Lleva el fantasma a otra celda (sin salirse de la sala) */
+  private moverFantasma(celda: Cell): void {
+    const c = this.colocando;
+    if (!c) return;
+    const col = Phaser.Math.Clamp(celda.col, 0, this.cols - 1);
+    const row = Phaser.Math.Clamp(celda.row, 0, this.rows - 1);
+    if (col === c.col && row === c.row) return;
+    c.col = col;
+    c.row = row;
+    this.pintarFantasma();
+  }
+
+  /** Gira lo que se coloca (sólo lo que tiene dos caras: la estantería, el armario) */
+  private girarFantasma(): void {
+    const c = this.colocando;
+    if (!c || !FURNITURE[c.code]?.orientable) return;
+    c.rot = c.rot === 1 ? 0 : 1;
+    this.pintarFantasma();
+  }
+
+  /**
+   * Dibuja el fantasma donde está: el mueble en su celda (con su cara de
+   * pared o su giro) y, en el suelo, las celdas que ocupará: verdes si cabe,
+   * rojas si no.
+   */
+  private pintarFantasma(): void {
+    const c = this.colocando;
+    if (!c) return;
+    const def = FURNITURE[c.code];
+    let sufijo: string | number | undefined;
+    // Una alfombra suelta lleva la cenefa por los cuatro lados
+    if (def.plano) sufijo = 15;
+    else if (def.pared) sufijo = ladoPared(c.col, c.row) ?? (c.col >= c.row ? "der" : "izq");
+    else if (vaGirado(c.code, c.col, c.rot === 1)) sufijo = "se";
+    const variante = String(sufijo ?? "");
+    if (!c.fantasma || c.variante !== variante) {
+      c.fantasma?.destroy();
+      const t = texturaMueble(this, c.code, sufijo, this.theme);
+      c.fantasma = t ? this.add.image(0, 0, t.key).setOrigin(t.ax / t.w, t.ay / t.h).setAlpha(0.85) : null;
+      c.variante = variante;
+    }
+    const cabe = this.motivoEn(c.code, c.col, c.row, c.item) === null;
+    const pos = toScreen(c.col, c.row);
+    const celdas = celdasDe(c.code, c.col, c.row);
+    const frente = toScreen(celdas[celdas.length - 1].col, celdas[celdas.length - 1].row);
+    // Donde iría el de verdad (ver `crearMueble`), un pelo por delante
+    const z = def.plano ? LAYER.ALFOMBRA + 0.5 : def.pared ? worldDepth(pos.y) + 0.2 : worldDepth(frente.y) + 0.2;
+    c.fantasma?.setPosition(pos.x, pos.y).setDepth(z).setTint(cabe ? 0xd8ffe2 : 0xff9a9a);
+    this.pintarHuella(c.huella, c.code, c.col, c.row, cabe ? HUELLA.cabe : HUELLA.noCabe);
+  }
+
+  /** Rombos en el suelo sobre las celdas que ocupa (u ocuparía) un mueble */
+  private pintarHuella(g: Phaser.GameObjects.Graphics, code: string, col: number, row: number, color: number): void {
+    g.clear();
+    for (const c of celdasDe(code, col, row)) {
+      const p = toScreen(c.col, c.row);
+      const rombo = [
+        { x: p.x, y: p.y - 15 },
+        { x: p.x + 30, y: p.y },
+        { x: p.x, y: p.y + 15 },
+        { x: p.x - 30, y: p.y },
+      ];
+      g.fillStyle(color, 0.22);
+      g.fillPoints(rombo, true);
+      g.lineStyle(1, color, 0.85);
+      g.strokePoints(rombo, true);
+    }
+  }
+
+  /** Pone lo que se coloca donde está el fantasma, si cabe (si no, dice por qué) */
+  private confirmarColocar(): void {
+    const c = this.colocando;
+    if (!c) return;
+    // Ya se mandó: se espera la respuesta (o, si no llega, un rato)
+    if (c.enviadoEn && this.time.now - c.enviadoEn < ESPERA_COLOCAR_MS) return;
+    const motivo = this.motivoEn(c.code, c.col, c.row, c.item);
+    if (motivo) {
+      avisoFlotante(this, motivo, false);
+      return;
+    }
+    c.enviadoEn = this.time.now;
+    net.colocar({ item: c.item, col: c.col, row: c.row, rot: c.rot });
+  }
+
+  /**
+   * Por qué no cabe `code` ahí, o null si cabe. Las reglas del servidor, con
+   * los muebles de ahora y la gente que hay de pie (a nadie se le pone un
+   * armario encima).
+   */
+  private motivoEn(code: string, col: number, row: number, excepto: string): string | null {
+    if (!this.plano) return "Sólo puedes decorar tu casa.";
+    const pisadas: Cell[] = [{ col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) }];
+    for (const v of this.netPlayers) {
+      if (v.id === net.id || v.room !== this.roomId) continue;
+      pisadas.push({ col: Math.round(v.col), row: Math.round(v.row) });
+    }
+    return motivoNoCabe(this.plano, mueblesDeCasas.get(this.roomId) ?? [], code, col, row, { excepto, pisadas });
+  }
+
+  /** La celda más cercana a ti donde cabe `code` (null si no cabe en ninguna) */
+  private sitioPara(code: string, excepto: string): Cell | null {
+    const yo = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
+    let mejor: Cell | null = null;
+    let distancia = Infinity;
+    for (let row = 0; row < this.rows; row++) {
+      for (let col = 0; col < this.cols; col++) {
+        const d = Math.abs(col - yo.col) + Math.abs(row - yo.row);
+        if (d >= distancia || this.motivoEn(code, col, row, excepto) !== null) continue;
+        mejor = { col, row };
+        distancia = d;
+      }
+    }
+    return mejor;
+  }
+
+  /**
+   * La celda que señala el puntero para lo que se coloca. Lo de pared sólo
+   * mira la X: la pared de la fila 0 va de la esquina hacia la derecha y la
+   * de la columna 0 hacia la izquierda, así que basta con saber cuánto a un
+   * lado u otro de la esquina está el puntero (esté a la altura que esté).
+   */
+  private celdaBajo(pointer: Phaser.Input.Pointer, agarre = { dx: 0, dy: 0 }): Cell {
+    const p = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const w = { x: p.x - agarre.dx, y: p.y - agarre.dy };
+    const code = this.colocando?.code;
+    if (code && isFurniture(code) && FURNITURE[code].pared) {
+      const x = w.x / (TILE_W / 2);
+      return x >= 0 ? { col: Math.round(x), row: 0 } : { col: 0, row: Math.round(-x) };
+    }
+    const g = toGrid(w.x, w.y);
+    return { col: Math.round(g.col), row: Math.round(g.row) };
+  }
+
+  /** ¿El puntero está sobre un píxel pintado de esa imagen del mundo? (lo transparente no cuenta) */
+  private pixelBajo(img: Phaser.GameObjects.Image, pointer: Phaser.Input.Pointer): boolean {
+    if (!img.visible) return false;
+    const w = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const x = Math.floor(w.x - (img.x - img.displayOriginX));
+    const y = Math.floor(w.y - (img.y - img.displayOriginY));
+    if (x < 0 || y < 0 || x >= img.width || y >= img.height) return false;
+    return (this.textures.getPixelAlpha(x, y, img.texture.key) ?? 0) > 0;
+  }
+
+  /** El mueble de tu casa que hay bajo el puntero (el de delante, si se tapan) */
+  private muebleBajo(pointer: Phaser.Input.Pointer): MuebleColocado | null {
+    let mejor: DibujoCasa | null = null;
+    for (const d of this.objetosCasa.values()) {
+      if (!d.imagen || !this.pixelBajo(d.imagen, pointer)) continue;
+      if (!mejor?.imagen || d.imagen.depth > mejor.imagen.depth) mejor = d;
+    }
+    return mejor?.mueble ?? null;
+  }
+
+  /** Enseña o esconde lo dibujado de un mueble de la casa (mientras se mueve, no está en dos sitios) */
+  private verOriginal(id: string, visible: boolean): void {
+    for (const o of this.objetosCasa.get(id)?.objetos ?? []) {
+      (o as unknown as Phaser.GameObjects.Components.Visible).setVisible(visible);
+    }
+  }
+
+  /** Marca en el suelo un mueble de la casa (el del menú, o el que hay bajo el ratón); null, ninguno */
+  private elegir(id: string | null): void {
+    if ((this.elegido?.id ?? null) === id) return;
+    this.elegido?.huella.destroy();
+    this.elegido = null;
+    const d = id ? this.objetosCasa.get(id) : undefined;
+    if (!d) return;
+    const g = this.add.graphics().setDepth(LAYER.ALFOMBRA + 1);
+    this.pintarHuella(g, d.mueble.code, d.mueble.col, d.mueble.row, HUELLA.elegido);
+    this.elegido = { id: d.mueble.id, huella: g };
+  }
+
+  /** Tocaste algo tuyo decorando: qué hacer con ello */
+  private abrirMenuMueble(m: MuebleColocado): void {
+    this.cerrarMenuMueble();
+    const def = FURNITURE[m.code];
+    if (!def) return;
+    this.elegir(m.id);
+    const acciones: { etiqueta: string; accion: () => void; primario?: boolean; icono?: string }[] = [
+      { etiqueta: "Mover", primario: true, accion: () => this.empezarColocar(m.id, m.code, m.rot, { col: m.col, row: m.row }) },
+    ];
+    if (def.orientable) {
+      acciones.push({
+        etiqueta: "Girar",
+        icono: "girar",
+        accion: () => {
+          this.cerrarMenuMueble();
+          net.colocar({ item: m.id, col: m.col, row: m.row, rot: m.rot === 1 ? 0 : 1 });
+        },
+      });
+    }
+    acciones.push({
+      etiqueta: "Guardar",
+      icono: "mochila",
+      accion: () => {
+        this.cerrarMenuMueble();
+        net.recoger(m.id);
+      },
+    });
+
+    const f = medidas().fila;
+    const W = 150;
+    const H = 30 + acciones.length * (f + 4) + 4;
+    // Encima del mueble (a la escala que esté la sala), sin salirse de la
+    // pantalla ni tapar el HUD o la barra de decorar
+    const img = this.objetosCasa.get(m.id)?.imagen;
+    const suelo = toScreen(m.col, m.row);
+    const ancla = img ? this.aPantalla(img.x, img.y - img.displayOriginY) : this.aPantalla(suelo.x, suelo.y);
+    const arriba = (this.hud?.altoSuperior ?? 0) + 4;
+    const abajo = this.scale.height - (this.hud?.altoInferior ?? 0) - this.altoBarraDeco - 8;
+    const x0 = Math.round(Phaser.Math.Clamp(ancla.x - W / 2, 8, this.scale.width - W - 8));
+    const y0 = Math.round(Phaser.Math.Clamp(ancla.y - H - 6, arriba, Math.max(arriba, abajo - H)));
+    const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(o: T, capa = 0): T => {
+      o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
+      this.menuMueble.push(o);
+      return o;
+    };
+    // El fondo se come los toques: tocar dentro del menú no elige otro mueble
+    add(pieza(this, "panel", x0, y0, W, H).setInteractive());
+    add(icono(this, "rombo", x0 + 8, y0 + 11), 1);
+    let nombre = this.nombreMueble(m.code);
+    while (anchoTexto(nombre) > W - 30 && nombre.length > 3) nombre = nombre.slice(0, -2) + "…";
+    add(texto(this, x0 + 22, yCentrada(y0, 26), nombre, { color: UI.titulo }), 1);
+    acciones.forEach((a, i) => {
+      const b = boton(this, x0 + 8, y0 + 30 + i * (f + 4), W - 16, f, a.etiqueta, a.accion, {
+        primario: a.primario,
+        icono: a.icono,
+        capa: LAYER.UI_PANEL + 2,
+      });
+      this.menuMueble.push(...b.objetos);
+    });
+  }
+
+  private cerrarMenuMueble(): void {
+    for (const o of this.menuMueble) o.destroy();
+    this.menuMueble = [];
+    this.elegir(null);
+  }
+
+  /**
+   * La barra de decorar, abajo (encima de la de botones): qué se puede hacer
+   * y sus botones. Colocando: "Poner aquí" (con el dedo), Girar y Cancelar;
+   * si no, la mochila y "Listo".
+   */
+  private pintarBarraDeco(): void {
+    for (const o of this.barraDeco) o.destroy();
+    this.barraDeco = [];
+    this.altoBarraDeco = 0;
+    if (!this.decorando) return;
+    // La chuleta de controles va en el mismo sitio: decorando, sobra
+    this.hud?.quitarChuleta();
+    const m = medidas();
+    const c = this.colocando;
+    const W = this.scale.width;
+    const H = this.scale.height;
+    let pista: string;
+    const botones: { etiqueta: string; icono?: string; primario?: boolean; accion: () => void }[] = [];
+    if (c) {
+      const nombre = this.nombreMueble(c.code);
+      pista = m.tactil ? `${nombre}: toca dónde va y pulsa «Poner aquí».` : `${nombre}: haz clic en su sitio.`;
+      if (m.tactil) botones.push({ etiqueta: "Poner aquí", primario: true, accion: () => this.confirmarColocar() });
+      if (FURNITURE[c.code]?.orientable) {
+        botones.push({ etiqueta: m.tactil ? "Girar" : "Girar · R", icono: "girar", accion: () => this.girarFantasma() });
+      }
+      botones.push({ etiqueta: m.tactil ? "Cancelar" : "Cancelar · Esc", accion: () => this.cancelarColocar() });
+    } else {
+      pista = m.tactil
+        ? "Decorando: toca un mueble para moverlo, girarlo o guardarlo."
+        : "Decorando: haz clic en un mueble para moverlo, girarlo o guardarlo.";
+      botones.push({ etiqueta: "Mochila", icono: "mochila", accion: () => this.abrirMochila() });
+      botones.push({ etiqueta: "Listo", primario: true, accion: () => this.salirDecorar() });
+    }
+
+    const f = m.fila;
+    const anchos = botones.map((b) => anchoTexto(b.etiqueta) + (b.icono ? 15 : 0) + 20);
+    const anchoBotones = anchos.reduce((a, b) => a + b, 0) + (botones.length - 1) * 6;
+    const anchoMax = Math.min(W - 16, 440);
+    const lineas = partirTexto(pista, anchoMax - 24);
+    const anchoLineas = Math.max(...lineas.map((l) => anchoTexto(l)));
+    const w = Math.min(anchoMax, Math.max(anchoBotones, anchoLineas) + 24);
+    const h = 8 + lineas.length * 16 + 6 + f + 8;
+    const x = Math.round((W - w) / 2);
+    const y = Math.round(H - (this.hud?.altoInferior ?? 0) - 8 - h);
+    const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(o: T, capa: number): T => {
+      o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
+      this.barraDeco.push(o);
+      return o;
+    };
+    // Por encima del historial del chat, que puede quedar debajo
+    add(pieza(this, "panel", x, y, w, h).setInteractive(), 2);
+    add(centrar(texto(this, 0, 0, lineas.join("\n"), { alinear: "center", interlineado: 1 }), x + w / 2, y + 8 + (lineas.length * 16) / 2 - 1), 3);
+    let bx = Math.round(x + (w - anchoBotones) / 2);
+    const by = y + 8 + lineas.length * 16 + 6;
+    botones.forEach((b, i) => {
+      const bt = boton(this, bx, by, anchos[i], f, b.etiqueta, b.accion, {
+        primario: b.primario,
+        icono: b.icono,
+        capa: LAYER.UI_PANEL + 3,
+      });
+      this.barraDeco.push(...bt.objetos);
+      bx += anchos[i] + 6;
+    });
+    this.altoBarraDeco = h + 8;
+  }
+
+  /**
+   * Los muebles de una casa: no vienen en el mapa, son del jugador y los
+   * manda el servidor (al entrar y cada vez que se decora). De cada uno se
+   * recuerda lo dibujado, para rehacerlo, esconderlo o tocarlo.
+   */
+  private ponerMueblesCasa(): void {
+    const muebles = mueblesDeCasas.get(this.roomId) ?? [];
+    // Las alfombras eligen su cenefa según sus vecinas, como las del mapa
+    const alfombras = new Set(muebles.filter((m) => isFurniture(m.code) && FURNITURE[m.code].plano).map((m) => `${m.col},${m.row}`));
+    const esAlfombra = (c: number, r: number) => alfombras.has(`${c},${r}`);
+    for (const m of muebles) {
+      if (!isFurniture(m.code) || !this.inBounds(m.col, m.row)) continue;
+      const def = FURNITURE[m.code];
+      const girado = m.rot === 1;
+      let sufijo: string | number | undefined;
+      if (def.plano) sufijo = mascaraAlfombra(m.col, m.row, esAlfombra);
+      else if (def.pared) {
+        const lado = ladoPared(m.col, m.row);
+        if (!lado) continue;
+        sufijo = lado;
+      } else if (vaGirado(m.code, m.col, girado)) sufijo = "se";
+      this.objetosCasa.set(m.id, { mueble: m, ...this.ponerMueble(m.code, sufijo, m.col, m.row, girado) });
+    }
+  }
+
+  /** Cambiaron los muebles de la casa (se decoró): fuera los de antes, dentro los de ahora */
+  private rehacerMueblesCasa(): void {
+    for (const d of this.objetosCasa.values()) for (const o of d.objetos) o.destroy();
+    this.objetosCasa.clear();
+    this.blocked = this.bloqueoBase.map((fila) => [...fila]);
+    this.furniture = [...this.mueblesBase];
+    this.ponerMueblesCasa();
+    // El menú era de un mueble que quizá ya no está ahí; lo que se está
+    // moviendo sigue escondido, y el fantasma se vuelve a mirar (quizá ya no cabe)
+    this.cerrarMenuMueble();
+    if (this.colocando) {
+      this.verOriginal(this.colocando.item, false);
+      this.pintarFantasma();
+    }
+  }
+
   // ---------- Aspecto ----------
 
   /**
@@ -1072,14 +1889,16 @@ export class MainScene extends Phaser.Scene {
    */
   private abrirVestidor(bienvenida = false): void {
     if (this.vestidor || this.authModalOpen) return;
-    this.closeChat();
-    this.closePeerMenu();
-    this.cerrarFrases();
+    this.despejar();
+    this.cerrarTienda();
+    this.cerrarMochila();
+    this.salirDecorar();
     this.avatar.cancelPath();
+    const pista = medidas().tactil ? undefined : "C o Esc para cerrar · ←/→ giran";
     this.vestidor = new Vestidor(this, {
       look: this.look,
       titulo: bienvenida ? "¡Bienvenido a Roomie!" : "Vestidor",
-      subtitulo: bienvenida ? "Elige cómo quieres que te vean" : "C o Esc para cerrar · ←/→ giran",
+      subtitulo: bienvenida ? "Elige cómo quieres que te vean" : pista,
       onGuardar: (look) => {
         this.applyLook(look);
         this.cerrarVestidor();
@@ -1165,6 +1984,40 @@ export class MainScene extends Phaser.Scene {
 
   // ---------- Chat ----------
 
+  /**
+   * Dónde va el chat en esta pantalla. El historial, abajo a la izquierda
+   * (encima de la barra de botones si la hay). La barra de escribir, debajo
+   * del historial; pero con el dedo va ARRIBA: abajo la taparía el teclado
+   * del móvil al escribir.
+   */
+  private calcularChat(): void {
+    const m = medidas();
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const abajo = this.hud?.altoInferior ?? 0;
+    const barraH = m.barra;
+    const barraY = m.tactil ? (this.hud?.altoSuperior ?? 36) + 6 : H - 8 - abajo - barraH;
+    const bottom = m.tactil ? H - abajo - 12 - (this.hud?.altoChuleta ?? 0) : barraY - 11;
+    // Como mucho, algo menos de media pantalla de historial
+    const lines = Math.max(3, Math.min(CHAT_LINEAS_MAX, Math.floor((H * 0.42) / 16)));
+    // Escribiendo con el dedo: bajo la barra, hasta donde empieza el teclado (media pantalla)
+    const debajo = barraY + barraH + 6;
+    const linesAbierto = m.tactil ? Math.max(3, Math.min(CHAT_LINEAS_MAX, Math.floor((H * 0.45 - debajo) / 16))) : lines;
+    const bottomAbierto = m.tactil ? debajo + 15 + (linesAbierto - 1) * 16 : bottom;
+    this.chat = { x: 8, bottom, w: Math.min(360, W - 16), lines, bottomAbierto, linesAbierto, lineH: 16, barraY, barraH };
+  }
+
+  /** Coloca los objetos del chat donde dice `this.chat` */
+  private colocarChat(): void {
+    const c = this.chat;
+    // El fondo sólo se ve con el chat abierto: va donde va el historial entonces
+    const alturaPanel = c.linesAbierto * c.lineH + 10;
+    this.chatPanelBg.setPosition(c.x, c.bottomAbierto + 5 - alturaPanel).setSize(c.w, alturaPanel);
+    this.chatBg.setPosition(c.x, c.barraY).setSize(c.w, c.barraH);
+    this.chatLabel.setPosition(c.x + 8, yCentrada(c.barraY, c.barraH));
+    this.renderChatPanel();
+  }
+
   /** El botón y la tecla del chat: texto propio, o el menú de frases si hablas con frases */
   private alternarChat(): void {
     if (net.hablaConFrases) {
@@ -1188,6 +2041,7 @@ export class MainScene extends Phaser.Scene {
         this.cerrarFrases();
       },
       alCerrar: () => this.cerrarFrases(),
+      abajo: this.hud?.altoInferior ?? 0,
     });
   }
 
@@ -1233,15 +2087,19 @@ export class MainScene extends Phaser.Scene {
       onCancel: () => this.closeChat(),
     });
     this.chatInput.focus();
+    this.ponerBotonFrases();
+  }
 
-    // Las frases, a mano también para quien escribe (rápidas, y en el móvil)
+  /** Las frases, a mano también para quien escribe (rápidas, y en el móvil), al final de la barra */
+  private ponerBotonFrases(): void {
+    for (const o of this.chatFrasesBtn) o.destroy();
     const anchoBtn = 56;
     this.chatFrasesBtn = boton(
       this,
-      CHAT_PANEL.x + CHAT_PANEL.w - 3 - anchoBtn,
-      CHAT_BARRA.y + 3,
+      this.chat.x + this.chat.w - 3 - anchoBtn,
+      this.chat.barraY + 3,
       anchoBtn,
-      CHAT_BARRA.h - 6,
+      this.chat.barraH - 6,
       "Frases",
       () => this.abrirFrases(),
       { capa: LAYER.UI_PANEL + 2 },
@@ -1275,9 +2133,9 @@ export class MainScene extends Phaser.Scene {
   }
 
   private renderChatBar(): void {
-    this.chatLabel.setText(
-      this.chatText ? `${this.chatText}▌` : "Escribe algo…  (Enter envía, Esc cancela)",
-    );
+    // Con el dedo no hay Enter ni Esc: envía la tecla del teclado del móvil
+    const pista = medidas().tactil ? "Escribe algo…" : "Escribe algo…  (Enter envía, Esc cancela)";
+    this.chatLabel.setText(this.chatText ? `${this.chatText}▌` : pista);
   }
 
   /** Punto donde flota la burbuja de un avatar ("me" o un id de la sala) */
@@ -1395,6 +2253,33 @@ export class MainScene extends Phaser.Scene {
       onSalaDatos: (p) => {
         if (this.alive) this.onSalaDatos(p);
       },
+      onTienda: (lista) => {
+        articulos = lista;
+        if (this.alive && this.quiereTienda) this.mostrarTienda();
+      },
+      onMochila: (cosas) => {
+        if (this.alive) this.mochila?.actualizar(cosas);
+      },
+      onSaldo: (s) => {
+        if (!this.alive) return;
+        this.updateStatusHud();
+        this.tienda?.actualizarSaldo(s);
+      },
+      onMuebles: (sala, muebles) => {
+        mueblesDeCasas.set(sala, muebles);
+        if (this.alive && sala === this.roomId) this.rehacerMueblesCasa();
+      },
+      onResultado: (r) => {
+        if (!this.alive) return;
+        avisoFlotante(this, r.texto, r.ok);
+        // Colocando: si salió bien se termina (el mueble de verdad llega con
+        // `muebles`, así que el original no se vuelve a enseñar); si no, se
+        // sigue probando
+        if (this.colocando?.enviadoEn) {
+          if (r.ok) this.cancelarColocar(false);
+          else this.colocando.enviadoEn = 0;
+        }
+      },
     });
     net.connect();
     this.netOnline = net.isOnline;
@@ -1472,7 +2357,7 @@ export class MainScene extends Phaser.Scene {
 
   /** Parte un mensaje en líneas que quepan en el panel (la fuente es proporcional) */
   private wrapChat(text: string): string[] {
-    return partirTexto(text, CHAT_PANEL.w - 18);
+    return partirTexto(text, this.chat.w - 18);
   }
 
   /**
@@ -1482,9 +2367,11 @@ export class MainScene extends Phaser.Scene {
   private renderChatPanel(): void {
     if (this.chatLineTexts.length === 0) return;
     const ahora = this.time.now;
+    const c = this.chat;
+    const bottom = this.chatOpen ? c.bottomAbierto : c.bottom;
     const visibles = this.chatLines
       .filter((l) => this.chatOpen || ahora - l.at < CHAT_FADE_MS)
-      .slice(-CHAT_PANEL.lines);
+      .slice(-(this.chatOpen ? c.linesAbierto : c.lines));
 
     this.chatPanelBg.setVisible(this.chatOpen);
 
@@ -1499,7 +2386,7 @@ export class MainScene extends Phaser.Scene {
       obj
         .setText(linea.text)
         .setColor(linea.color)
-        .setPosition(CHAT_PANEL.x + 8, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
+        .setPosition(c.x + 8, bottom - i * c.lineH)
         .setVisible(true);
     }
   }
@@ -1515,6 +2402,7 @@ export class MainScene extends Phaser.Scene {
       enLinea: this.netOnline,
       gente: Math.max(here, 1),
       saldo: net.identidad?.saldo ?? null,
+      creditos: net.identidad?.creditos ?? 0,
     });
   }
 
@@ -1538,6 +2426,11 @@ export class MainScene extends Phaser.Scene {
     this.pushChatLine(`Hola, ${p.nickname}. Tienes ${p.saldo} monedas.`, CHAT_COLORS.mine);
     this.sendWhere();
     this.updateStatusHud();
+    // El catálogo y la mochila, para tenerlos a mano al abrir la tienda o la mochila
+    if (articulos.length === 0) net.tienda();
+    net.mochila();
+    // Ya se está en el mundo: la chuleta de controles empieza a contar
+    this.hud?.arrancarChuleta();
     // Al entrar al juego se aparece en casa, si la hay (una vez por visita:
     // no en cada reconexión). Quien aún no tiene, empieza en la plaza.
     if (!llegadaHecha) {
@@ -1593,10 +2486,11 @@ export class MainScene extends Phaser.Scene {
     this.authModalOpen = true;
     this.authMode = modo;
     this.chatOpen = false;
-    this.closeChat();
-    this.closePeerMenu();
-    this.cerrarFrases();
+    this.despejar();
     this.cerrarVestidor();
+    this.cerrarTienda();
+    this.cerrarMochila();
+    this.salirDecorar();
     // El teclado del juego se apaga entero: si no, escribir una "c" abre el
     // vestidor y Enter abre el chat detrás del modal.
     this.setGameKeyboard(false);
@@ -1604,31 +2498,40 @@ export class MainScene extends Phaser.Scene {
     const registro = modo === "register";
     const perfil = modo === "profile";
     const nacimiento = modo === "nacimiento";
+    const tactil = medidas().tactil;
+    const SW = this.scale.width;
+    const SH = this.scale.height;
+    const cx = Math.round(SW / 2);
+    // En una pantalla bajita (un móvil en horizontal) todo va más junto
+    const apretado = SH < 420;
 
     // La altura se CALCULA a partir de lo que va dentro, no se elige a ojo.
     // Puesta a mano, el botón acababa montado encima de lo de arriba.
     //
     // El aspecto ya no se elige aquí: tiene su vestidor, que se abre solo al
     // crear la cuenta y desde el botón del perfil.
-    const PAD = 16;
+    const PAD = apretado ? 10 : 16;
     const TITULO = 16 + 12; // rombo y título + hueco
-    const ALTO_CAMPO = 24;
-    const CAMPO = 15 + 3 + ALTO_CAMPO + 10; // etiqueta + caja + hueco
-    const MENSAJE = 36; // hasta dos líneas
+    const ALTO_CAMPO = tactil ? 28 : 24;
+    const CAMPO = 15 + 3 + ALTO_CAMPO + (apretado ? 4 : 10); // etiqueta + caja + hueco
+    const MENSAJE = apretado ? 32 : 36; // hasta dos líneas
     const INFO = 44; // datos de la cuenta en el perfil
-    const ALTO_BOTON = 26;
+    const ALTO_BOTON = tactil ? 30 : 26;
     const BOTONES = ALTO_BOTON + 8 + ALTO_BOTON;
     // Filas de campos: usuario, contraseña, nombre y fecha de nacimiento
     const nCampos = perfil ? 0 : nacimiento ? 1 : registro ? 4 : 2;
     const EXPLICA = nacimiento ? 40 : 0; // por qué se pide la fecha
-    const W = 300;
+    const W = Math.min(300, SW - 16);
     const H = PAD + TITULO + EXPLICA + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
-    // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro)
-    const LOGO = perfil ? 0 : 64;
-    const X = 480 - W / 2;
-    const Y = Math.round((540 - LOGO - H) / 2) + LOGO;
+    // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro;
+    // ni si no cabe)
+    const LOGO = perfil || SH < H + 64 + 16 ? 0 : 64;
+    const X = cx - Math.round(W / 2);
+    // Con el dedo, arriba: el teclado del móvil sale por abajo y taparía los campos
+    const Y = tactil && !perfil ? 8 + LOGO : Math.max(8, Math.round((SH - LOGO - H) / 2)) + LOGO;
     const colX = X + 16;
     const anchoCampo = W - 32;
+    this.authDesplazado = 0;
 
     const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
       o: T,
@@ -1640,20 +2543,20 @@ export class MainScene extends Phaser.Scene {
     };
 
     // Velo: la sala se intuye detrás, oscurecida; se come todos los clics
-    add(this.add.rectangle(480, 270, 960, 540, UI_HEX.velo, perfil ? 0.7 : 0.82).setInteractive(), 0);
+    this.authVelo = add(this.add.rectangle(SW / 2, SH / 2, SW, SH, UI_HEX.velo, perfil ? 0.7 : 0.82).setInteractive(), 0);
 
-    if (!perfil) {
+    if (LOGO > 0) {
       // El logo es lo único a 24 px: la casa y la palabra, a la par
       const logo = texto(this, 0, 0, "Roomie", { tam: 2, color: UI.titulo });
       const casa = icono(this, "casa", 0, 0).setScale(2);
       const ancho = casa.displayWidth + 10 + logo.width;
-      const x0 = Math.round(480 - ancho / 2);
+      const x0 = Math.round(cx - ancho / 2);
       const yLogo = Y - LOGO;
       casa.setPosition(x0, yLogo + 4);
       logo.setPosition(x0 + casa.displayWidth + 10, yLogo);
       add(casa, 2);
       add(logo, 2);
-      add(centrar(texto(this, 0, 0, "Tu casa, tu gente, tu mundo", { color: UI.suave }), 480, Y - 18), 2);
+      add(centrar(texto(this, 0, 0, "Tu casa, tu gente, tu mundo", { color: UI.suave }), cx, Y - 18), 2);
     }
 
     add(pieza(this, "panel", X, Y, W, H).setInteractive(), 1);
@@ -1661,7 +2564,7 @@ export class MainScene extends Phaser.Scene {
     const tituloTxt = texto(this, 0, yCentrada(Y + PAD, 16), titulo, { color: UI.titulo });
     const rombo = icono(this, "rombo", 0, 0);
     const anchoTitulo = rombo.width + 6 + tituloTxt.width;
-    rombo.setPosition(Math.round(480 - anchoTitulo / 2), Y + PAD + 6);
+    rombo.setPosition(Math.round(cx - anchoTitulo / 2), Y + PAD + 6);
     tituloTxt.setX(rombo.x + rombo.width + 6);
     add(rombo, 2);
     add(tituloTxt, 2);
@@ -1669,8 +2572,9 @@ export class MainScene extends Phaser.Scene {
     let cursorY = Y + PAD + TITULO;
 
     if (nacimiento) {
-      const explica = partirTexto("Para cuidar a todo el mundo en Roomie, dinos cuándo naciste. Nadie más lo verá.", 268);
-      add(texto(this, 480, cursorY, explica.join("\n"), { color: UI.suave, alinear: "center" }).setOrigin(0.5, 0), 2);
+      const explica = partirTexto("Para cuidar a todo el mundo en Roomie, dinos cuándo naciste. Nadie más lo verá.", anchoCampo);
+      const t = texto(this, 0, cursorY, explica.join("\n"), { color: UI.suave, alinear: "center" });
+      add(t.setX(Math.round(cx - t.width / 2)), 2);
       cursorY += EXPLICA;
     }
 
@@ -1703,10 +2607,12 @@ export class MainScene extends Phaser.Scene {
     const campoFecha = (): void => {
       add(texto(this, colX, cursorY, "Fecha de nacimiento", { color: UI.suave }), 2);
       const yCaja = cursorY + 18;
+      // Las tres cajas llenan el ancho del campo (día y mes, iguales; el año, algo más)
+      const corta = Math.floor((anchoCampo - 16) * 0.3);
       const cajas: [CampoClave, string, number, number, string][] = [
-        ["dia", "Día", 2, 52, "bday-day"],
-        ["mes", "Mes", 2, 52, "bday-month"],
-        ["anio", "Año", 4, 76, "bday-year"],
+        ["dia", "Día", 2, corta, "bday-day"],
+        ["mes", "Mes", 2, corta, "bday-month"],
+        ["anio", "Año", 4, anchoCampo - 16 - corta * 2, "bday-year"],
       ];
       let x = colX;
       for (const [clave, placeholder, max, ancho, autocomplete] of cajas) {
@@ -1748,7 +2654,8 @@ export class MainScene extends Phaser.Scene {
 
     // ---------- Mensaje (errores, "Conectando…") ----------
     // Una o dos líneas centradas en su hueco (ver `mensajeAuth`)
-    this.authError = add(texto(this, 480, cursorY + 4, "", { color: UI.error, alinear: "center" }).setOrigin(0.5, 0), 2);
+    this.authError = add(texto(this, cx, cursorY + 4, "", { color: UI.error, alinear: "center" }).setOrigin(0.5, 0), 2);
+    this.authError.setData("y0", cursorY + 4);
     cursorY += MENSAJE;
 
     // ---------- Datos de la cuenta (perfil) ----------
@@ -1756,19 +2663,21 @@ export class MainScene extends Phaser.Scene {
       const yo = net.identidad;
       if (yo) {
         const quien = texto(this, 0, cursorY, `${yo.nickname}  ·  @${yo.username}`);
-        quien.setX(Math.round(480 - quien.width / 2));
+        quien.setX(Math.round(cx - quien.width / 2));
         add(quien, 2);
-        const saldo = texto(this, 0, cursorY + 19, `${yo.saldo} monedas`, { color: UI.titulo });
+        const creditos = yo.creditos > 0 ? `  ·  ◆ ${yo.creditos}` : "";
+        const saldo = texto(this, 0, cursorY + 19, `${yo.saldo} monedas${creditos}`, { color: UI.titulo });
         const moneda = icono(this, "moneda", 0, cursorY + 22);
         const ancho = moneda.width + 6 + saldo.width;
-        moneda.setX(Math.round(480 - ancho / 2));
+        moneda.setX(Math.round(cx - ancho / 2));
         saldo.setX(moneda.x + moneda.width + 6);
         add(moneda, 2);
         add(saldo, 2);
       }
       cursorY += INFO;
       // Sin campos de texto no hay Esc que valga: el perfil se cierra aquí
-      const cerrar = boton(this, X + W - 28, Y + 8, 20, 20, "", () => this.closeAuthModal(), {
+      const lado = tactil ? 28 : 20;
+      const cerrar = boton(this, X + W - 8 - lado, Y + 8, lado, lado, "", () => this.closeAuthModal(), {
         icono: "cerrar",
         capa: LAYER.UI_MODAL + 3,
       });
@@ -1828,7 +2737,43 @@ export class MainScene extends Phaser.Scene {
   private enfocarCampo(c: CampoAuth): void {
     this.campoActivo = c;
     c.input?.focus();
+    this.asomarCampo(c);
     this.pintarCampos();
+  }
+
+  /**
+   * Con el dedo, el teclado del móvil tapa la mitad de abajo de la pantalla:
+   * si el campo que se va a escribir cae ahí, el modal entero sube hasta que
+   * asome (y baja otra vez al volver a uno de arriba). El velo no se mueve.
+   */
+  private asomarCampo(c: CampoAuth): void {
+    if (!medidas().tactil) return;
+    const limite = Math.round(this.scale.height * 0.45);
+    const pie = c.fondo.y - this.authDesplazado + c.fondo.height;
+    const destino = Math.min(0, limite - pie);
+    const paso = destino - this.authDesplazado;
+    if (paso === 0) return;
+    for (const o of this.authUI) {
+      if (o === this.authVelo) continue;
+      const t = o as unknown as Phaser.GameObjects.Components.Transform;
+      t.y += paso;
+    }
+    this.authDesplazado = destino;
+  }
+
+  /** El modal de cuenta a la medida nueva de la pantalla, sin perder lo que ya se había escrito */
+  private rehacerAuthModal(): void {
+    const modo = this.authMode;
+    const valores = this.authCampos.map((c) => ({ clave: c.clave, valor: c.input?.el.value ?? "" }));
+    const activo = this.campoActivo?.clave;
+    const mensaje = this.authError?.text ? { texto: this.authError.text.replace(/\n/g, " "), color: String(this.authError.style.color) } : null;
+    this.closeAuthModal();
+    this.showAuthModal(modo);
+    for (const v of valores) this.authCampos.find((c) => c.clave === v.clave)?.input?.setValue(v.valor);
+    const campo = this.authCampos.find((c) => c.clave === activo);
+    if (campo) this.enfocarCampo(campo);
+    this.pintarCampos();
+    if (mensaje) this.mensajeAuth(mensaje.texto, mensaje.color);
   }
 
   private enfocarSiguiente(): void {
@@ -1847,9 +2792,9 @@ export class MainScene extends Phaser.Scene {
    */
   private mensajeAuth(texto: string, color: string = UI.error): void {
     if (!this.authError) return;
-    const lineas = partirTexto(texto, 268).slice(0, 2);
-    if (!this.authError.getData("y0")) this.authError.setData("y0", this.authError.y);
-    const y0 = this.authError.getData("y0") as number;
+    const lineas = partirTexto(texto, Math.min(268, this.scale.width - 48)).slice(0, 2);
+    // Su sitio sin desplazar (ver `asomarCampo`), más lo que haya subido el modal
+    const y0 = (this.authError.getData("y0") as number) + this.authDesplazado;
     this.authError.setColor(color).setText(lineas.join("\n"));
     this.authError.setY(lineas.length > 1 ? y0 : y0 + 8);
   }
@@ -2211,36 +3156,42 @@ export class MainScene extends Phaser.Scene {
     const peer = this.peers.get(id);
     if (!peer) return;
 
-    this.menuTam = { w: 180, h: 118 };
-    const { w: W, h: H } = this.menuTam;
+    // Con el dedo, todo algo más grande (ver `medidas`)
+    const f = medidas().fila;
+    const g = f + 2; // lado de los botones de gesto
+    const W = 16 + GESTOS.length * (g + 4) - 4;
+    const yHablar = 28 + g + 8;
+    const yBloquear = yHablar + g + 6;
+    const H = yBloquear + f - 2 + 8;
+    this.menuTam = { w: W, h: H };
     const m = this.piezasMenu();
     m.fondo(W, H);
     m.cabecera(peer.view.name);
 
     // Gestos: el emoji lo pinta la fuente del sistema
-    GESTOS.forEach((g, i) => {
-      const dx = 8 + i * 28;
-      m.boton("", dx, 28, 24, 24, () => {
+    GESTOS.forEach((gesto, i) => {
+      const dx = 8 + i * (g + 4);
+      m.boton("", dx, 28, g, g, () => {
         this.closePeerMenu();
-        this.enviarFrase(g.id);
+        this.enviarFrase(gesto.id);
       });
-      m.add(this.add.text(0, 0, g.texto, { fontSize: "13px" }).setOrigin(0.5), dx + 12, 40, LAYER.UI_PANEL + 1);
+      m.add(this.add.text(0, 0, gesto.texto, { fontSize: "13px" }).setOrigin(0.5), dx + g / 2, 28 + g / 2, LAYER.UI_PANEL + 1);
     });
 
     // Hablarle: con texto propio, o con frases si hablas con frases
     if (net.hablaConFrases) {
-      m.boton("Decir algo", 8, 60, W - 16, 24, () => this.abrirFrases(), true);
+      m.boton("Decir algo", 8, yHablar, W - 16, g, () => this.abrirFrases(), true);
     } else {
-      m.boton(`Escribir a ${peer.view.name}`, 8, 60, W - 16, 24, () => this.chatTo(peer.view.name), true);
+      m.boton(`Escribir a ${peer.view.name}`, 8, yHablar, W - 16, g, () => this.chatTo(peer.view.name), true);
     }
 
     const bloqueado = net.tieneBloqueado(peer.view.name);
     const mitad = Math.floor((W - 16 - 4) / 2);
-    m.boton(bloqueado ? "Desbloquear" : "Bloquear", 8, 90, mitad, 20, () => {
+    m.boton(bloqueado ? "Desbloquear" : "Bloquear", 8, yBloquear, mitad, f - 2, () => {
       this.closePeerMenu();
       net.bloquear(peer.view.id, !bloqueado);
     });
-    m.boton("Reportar", 8 + mitad + 4, 90, mitad, 20, () => this.abrirReporte(peer.view.id));
+    m.boton("Reportar", 8 + mitad + 4, yBloquear, mitad, f - 2, () => this.abrirReporte(peer.view.id));
 
     this.peerMenuItems = m.items;
     this.peerMenuFor = id;
@@ -2252,19 +3203,20 @@ export class MainScene extends Phaser.Scene {
     const peer = this.peers.get(id);
     this.closePeerMenu();
     if (!peer) return;
+    const f = medidas().fila;
     const W = 220;
-    const H = 30 + (MOTIVOS_REPORTE.length + 1) * 26 + 4;
+    const H = 30 + (MOTIVOS_REPORTE.length + 1) * (f + 4) + 4;
     this.menuTam = { w: W, h: H };
     const m = this.piezasMenu();
     m.fondo(W, H);
     m.cabecera(`¿Qué pasa con ${peer.view.name}?`);
     MOTIVOS_REPORTE.forEach((r, i) => {
-      m.boton(r.texto, 8, 30 + i * 26, W - 16, 22, () => {
+      m.boton(r.texto, 8, 30 + i * (f + 4), W - 16, f, () => {
         this.closePeerMenu();
         net.reportar(peer.view.id, r.motivo);
       });
     });
-    m.boton("Cancelar", 8, 30 + MOTIVOS_REPORTE.length * 26, W - 16, 22, () => this.closePeerMenu());
+    m.boton("Cancelar", 8, 30 + MOTIVOS_REPORTE.length * (f + 4), W - 16, f, () => this.closePeerMenu());
     this.peerMenuItems = m.items;
     this.peerMenuFor = id;
     this.movePeerMenu();
@@ -2448,26 +3400,33 @@ export class MainScene extends Phaser.Scene {
       this.ponerMueble(kind, sufijo, col, row, girado);
     }
 
-    // Los muebles de una casa no vienen en el mapa: son del jugador, y los
-    // mandó el servidor al entrar
-    for (const m of mueblesDeCasas.get(this.roomId) ?? []) {
-      if (!isFurniture(m.code) || !this.inBounds(m.col, m.row)) continue;
-      this.ponerMueble(m.code, vaGirado(m.code, m.col, false) ? "se" : undefined, m.col, m.row, false);
-    }
+    // Hasta aquí, lo que trae el mapa. Los muebles de una casa van aparte
+    // (son del jugador) y se rehacen cada vez que se decora
+    this.bloqueoBase = this.blocked.map((fila) => [...fila]);
+    this.mueblesBase = [...this.furniture];
+    this.plano = esCasa(this.roomId) ? planoDesdeMapa(data) : null;
+    this.ponerMueblesCasa();
   }
 
   /**
    * Dibuja un mueble y marca lo que estorba: TODAS las celdas de su huella
    * (`celdasDe`, la misma regla que el servidor). Qué estorba y qué se pisa
-   * lo decide el catálogo, no un `if` aquí.
+   * lo decide el catálogo, no un `if` aquí. Devuelve lo dibujado.
    */
-  private ponerMueble(kind: FurnitureKind, sufijo: string | number | undefined, col: number, row: number, girado: boolean): void {
-    crearMueble(this, kind, sufijo, col, row, this.theme);
-    crearLuz(this, kind, col, row, this.theme);
+  private ponerMueble(
+    kind: FurnitureKind,
+    sufijo: string | number | undefined,
+    col: number,
+    row: number,
+    girado: boolean,
+  ): { imagen: Phaser.GameObjects.Image | null; objetos: Phaser.GameObjects.GameObject[] } {
+    const imagen = crearMueble(this, kind, sufijo, col, row, this.theme);
+    const luces = crearLuz(this, kind, col, row, this.theme);
     if (FURNITURE[kind].blocks) {
       for (const c of celdasDe(kind, col, row)) if (this.inBounds(c.col, c.row)) this.blocked[c.row][c.col] = true;
     }
     this.furniture.push({ kind, col, row, girado });
+    return { imagen, objetos: imagen ? [imagen, ...luces] : luces };
   }
 
   /**

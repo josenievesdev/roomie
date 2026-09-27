@@ -1,4 +1,6 @@
 import Phaser from "phaser";
+import { LAYER } from "../render/layers";
+import { medidas } from "./pantalla";
 
 // Kit de interfaz de Roomie: una fuente, unas piezas y unas reglas para que
 // cada panel, botón y etiqueta del juego sea de la misma familia.
@@ -195,6 +197,64 @@ const ICONOS: Record<string, Icono> = {
     ],
     c: { w: LINEA },
   },
+  // La tienda: una bolsa con asas
+  bolsa: {
+    mapa: [
+      "...www...",
+      "..w...w..",
+      "..w...w..",
+      "wwwwwwwww",
+      "w.......w",
+      "w..a.a..w",
+      "w.......w",
+      "w.......w",
+      "wwwwwwwww",
+    ],
+    c: { w: LINEA, a: "#ffd36b" },
+  },
+  // La mochila: lo tuyo que no está puesto
+  mochila: {
+    mapa: [
+      "...www...",
+      "..w...w..",
+      ".wwwwwww.",
+      "w.......w",
+      "w.wwwww.w",
+      "w.w.a.w.w",
+      "w.wwwww.w",
+      "w.......w",
+      ".wwwwwww.",
+    ],
+    c: { w: LINEA, a: "#62d6b4" },
+  },
+  // Decorar tu casa: un rodillo de pintar
+  decorar: {
+    mapa: [
+      "wwwwwwww.",
+      "waaaaaaw.",
+      "wwwwwwwww",
+      "........w",
+      "....wwwww",
+      "....w....",
+      "....w....",
+      "...www...",
+      "...www...",
+    ],
+    c: { w: LINEA, a: "#ff9ecb" },
+  },
+  // Girar un mueble: una flecha en círculo
+  girar: {
+    mapa: [
+      "..wwww.",
+      ".w....w",
+      "w....ww",
+      "w...w.w",
+      "w......",
+      ".w....w",
+      "..wwww.",
+    ],
+    c: { w: LINEA },
+  },
   mas: { mapa: ["...w...", "...w...", "...w...", "wwwwwww", "...w...", "...w...", "...w..."], c: { w: LINEA } },
   menos: { mapa: ["wwwwwww"], c: { w: LINEA } },
   cerrar: { mapa: ["w...w", ".w.w.", "..w..", ".w.w.", "w...w"], c: { w: LINEA } },
@@ -297,6 +357,13 @@ export type OpcionesBoton = {
   pista?: string;
   /** Hacia dónde sale la pista: debajo (por defecto), encima o a la izquierda */
   ladoPista?: "abajo" | "arriba" | "izquierda";
+  /**
+   * Cuánto crece la zona de toque por cada lado (con el dedo, más que el
+   * dibujo). Por defecto, lo que diga la pantalla (`medidas().toque`).
+   */
+  toque?: number;
+  /** Apagado: se ve atenuado y no responde */
+  apagado?: boolean;
 };
 
 export type Boton = {
@@ -335,18 +402,22 @@ export function boton(
     etiquetaObj = texto(scene, 0, 0, etiqueta).setScrollFactor(sf).setDepth(o.capa + 1);
     objetos.push(etiquetaObj);
   }
-  // Icono y texto centrados juntos; bajan 1 px al pulsar
+  // Icono y texto centrados juntos; bajan 1 px al pulsar. Se miden desde el
+  // fondo y no desde (x, y): así un botón se puede mover entero (el modal de
+  // cuenta sube cuando sale el teclado del móvil) y no se descoloca al pulsarlo.
   const colocar = (hundido: boolean) => {
     const d = hundido ? 1 : 0;
+    const bx = fondo.x;
+    const by = fondo.y;
     const anchoIcono = iconoObj ? iconoObj.width : 0;
     const hueco = iconoObj && etiquetaObj ? 6 : 0;
     const anchoEtiqueta = etiquetaObj ? etiquetaObj.width : 0;
-    let cx = Math.round(x + (w - anchoIcono - hueco - anchoEtiqueta) / 2);
+    let cx = Math.round(bx + (w - anchoIcono - hueco - anchoEtiqueta) / 2);
     if (iconoObj) {
-      iconoObj.setPosition(cx, Math.round(y + (h - iconoObj.height) / 2) + d);
+      iconoObj.setPosition(cx, Math.round(by + (h - iconoObj.height) / 2) + d);
       cx += anchoIcono + hueco;
     }
-    if (etiquetaObj) etiquetaObj.setPosition(cx, yCentrada(y, h) + d);
+    if (etiquetaObj) etiquetaObj.setPosition(cx, yCentrada(by, h) + d);
   };
   colocar(false);
 
@@ -362,14 +433,16 @@ export function boton(
     const t = texto(scene, 0, 0, o.pista, { color: UI.texto });
     const pw = t.width + 12;
     const ph = 20;
+    const bx = fondo.x;
+    const by = fondo.y;
     let px: number;
     let py: number;
     if (o.ladoPista === "izquierda") {
-      px = x - pw - 4;
-      py = y + Math.round((h - ph) / 2);
+      px = bx - pw - 4;
+      py = by + Math.round((h - ph) / 2);
     } else {
-      px = Phaser.Math.Clamp(x + w / 2 - pw / 2, 4, scene.scale.width - pw - 4);
-      py = o.ladoPista === "arriba" ? y - ph - 4 : y + h + 4;
+      px = Phaser.Math.Clamp(bx + w / 2 - pw / 2, 4, scene.scale.width - pw - 4);
+      py = o.ladoPista === "arriba" ? by - ph - 4 : by + h + 4;
     }
     const f = pieza(scene, "chip", px, py, pw, ph).setScrollFactor(sf).setDepth(o.capa + 2);
     t.setPosition(Math.round(px + 6), yCentrada(py, ph)).setScrollFactor(sf).setDepth(o.capa + 3);
@@ -377,8 +450,19 @@ export function boton(
   };
   fondo.once("destroy", quitarPista);
 
+  if (o.apagado) {
+    for (const obj of objetos) (obj as unknown as Phaser.GameObjects.Components.Alpha).setAlpha(0.4);
+    return { objetos, fondo, etiqueta: etiquetaObj };
+  }
+
+  // La zona de toque puede ser mayor que el dibujo: con el dedo se acierta
+  const t = o.toque ?? medidas().toque;
   fondo
-    .setInteractive({ useHandCursor: true })
+    .setInteractive({
+      hitArea: new Phaser.Geom.Rectangle(-t, -t, w + t * 2, h + t * 2),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+      useHandCursor: true,
+    })
     .on("pointerover", () => {
       fondo.setTexture(`ui:${base}-hover`);
       ponerPista();
@@ -398,6 +482,40 @@ export function boton(
       alPulsar();
     });
   return { objetos, fondo, etiqueta: etiquetaObj };
+}
+
+// ---------------------------------------------------------------- Aviso
+
+let avisoActual: Phaser.GameObjects.GameObject[] = [];
+
+/**
+ * Aviso flotante arriba al centro ("¡Comprado!"), que se va solo. Uno a la
+ * vez: el nuevo sustituye al anterior. Verde si salió bien, rojo si no.
+ */
+export function avisoFlotante(scene: Phaser.Scene, contenido: string, ok = true): void {
+  for (const o of avisoActual) o.destroy();
+  const ancho = Math.min(scene.scale.width - 32, 360);
+  const lineas = partirTexto(contenido, ancho - 24);
+  const t = texto(scene, 0, 0, lineas.join("\n"), { color: ok ? UI.exito : UI.error, alinear: "center", interlineado: 1 });
+  const w = Math.max(t.width + 24, 120);
+  const h = t.height + 12;
+  const x = Math.round(scene.scale.width / 2 - w / 2);
+  // Bajo el HUD de arriba; con el dedo, también bajo la barra del chat, que va ahí
+  const y = medidas().tactil ? 84 : 44;
+  const f = pieza(scene, "chip", x, y, w, h).setScrollFactor(0).setDepth(LAYER.UI_AVISO);
+  t.setPosition(Math.round(x + (w - t.width) / 2), y + 6).setScrollFactor(0).setDepth(LAYER.UI_AVISO + 1);
+  const estos = [f, t];
+  avisoActual = estos;
+  scene.tweens.add({
+    targets: estos,
+    alpha: 0,
+    delay: 2200,
+    duration: 400,
+    onComplete: () => {
+      for (const o of estos) o.destroy();
+      if (avisoActual === estos) avisoActual = [];
+    },
+  });
 }
 
 // ---------------------------------------------------------------- Medir

@@ -51,7 +51,11 @@ export type FurnitureDef = {
    * La cama mide 1×2: su celda y la de delante (+row).
    */
   huella?: { col: number; row: number };
-  /** Sólo para leer el código: qué es */
+  /**
+   * Qué es, como se le dice al jugador en los avisos ("Sofá: ¡puesto!"). Lo
+   * que se vende se llama IGUAL que en la tienda (la columna `name` de
+   * `catalog_items`); si no, el aviso y la tienda no dirían lo mismo.
+   */
   nombre: string;
 };
 
@@ -61,11 +65,11 @@ export const FURNITURE: Record<string, FurnitureDef> = {
   sofa: { nombre: "Sofá", blocks: true, sit: { alto: 14, dir: 5 } },
   // Los taburetes están delante de la barra, que queda al este de la
   // rejilla (+col): se mira al sureste (3), de cara al mostrador
-  taburete: { nombre: "Taburete", blocks: true, sit: { alto: 30, dir: 3 } },
+  taburete: { nombre: "Taburete de barra", blocks: true, sit: { alto: 30, dir: 3 } },
 
   // --- Superficies ---
   mesa: { nombre: "Mesa auxiliar", blocks: true },
-  barra: { nombre: "Barra / mostrador", blocks: true },
+  barra: { nombre: "Módulo de barra", blocks: true },
 
   // --- Decoración que estorba ---
   planta: { nombre: "Planta", blocks: true },
@@ -74,12 +78,12 @@ export const FURNITURE: Record<string, FurnitureDef> = {
   estanteria: { nombre: "Estantería", blocks: true, orientable: true },
 
   // --- Decoración que NO estorba (se pisa) ---
-  alfombra: { nombre: "Alfombra / pista", blocks: false, plano: true },
+  alfombra: { nombre: "Alfombra", blocks: false, plano: true },
 
   // --- De pared ---
   ventana: { nombre: "Ventana", blocks: false, pared: true },
   cuadro: { nombre: "Cuadro", blocks: false, pared: true },
-  reloj: { nombre: "Reloj", blocks: false, pared: true },
+  reloj: { nombre: "Reloj de pared", blocks: false, pared: true },
   aplique: { nombre: "Aplique", blocks: false, pared: true },
   estante: { nombre: "Balda con libros", blocks: false, pared: true },
   neon: { nombre: "Neón", blocks: false, pared: true },

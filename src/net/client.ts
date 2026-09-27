@@ -1,19 +1,26 @@
 import { io, Socket } from "socket.io-client";
 import type { Cell } from "../utils/pathfinding.ts";
 import type {
+  ArticuloTienda,
   AuthErrorPayload,
   AuthOkPayload,
   AuthPayload,
   CasaInfo,
   ChatPayload,
   ClientEvents,
+  ColocarPayload,
+  CosaMochila,
   JoinErrorPayload,
   JoinPayload,
   Look,
   MotivoReporte,
+  MuebleColocado,
   PlayerView,
+  ResultadoPayload,
+  RoomId,
   RoomPayload,
   SalaDatosPayload,
+  Saldos,
   ServerEvents,
 } from "./protocol.ts";
 
@@ -37,6 +44,16 @@ export type NetHandlers = {
   onCasa?: (casa: CasaInfo) => void;
   /** El mapa y los muebles de tu casa: ya se puede entrar */
   onSalaDatos?: (p: SalaDatosPayload) => void;
+  /** Lo que vende la tienda */
+  onTienda?: (articulos: ArticuloTienda[]) => void;
+  /** Lo que tienes en la mochila */
+  onMochila?: (cosas: CosaMochila[]) => void;
+  /** Tus saldos cambiaron */
+  onSaldo?: (s: Saldos) => void;
+  /** Los muebles de tu sala cambiaron */
+  onMuebles?: (sala: RoomId, muebles: MuebleColocado[]) => void;
+  /** Cómo salió lo último que pediste */
+  onResultado?: (r: ResultadoPayload) => void;
 };
 
 /**
@@ -74,6 +91,8 @@ class NetClient {
 
   /** Tu id en el servidor (vacío si no hay conexión) */
   id = "";
+  /** Lo último que se supo de tu mochila */
+  cosas: CosaMochila[] = [];
   /** Identidad confirmada por el servidor (null mientras no hayas entrado) */
   identidad: AuthOkPayload | null = null;
 
@@ -157,6 +176,17 @@ class NetClient {
       this.handlers.onCasa?.(p);
     });
     socket.on("salaDatos", (p) => this.handlers.onSalaDatos?.(p));
+    socket.on("tienda", (p) => this.handlers.onTienda?.(p.articulos));
+    socket.on("mochila", (p) => {
+      this.cosas = p.cosas;
+      this.handlers.onMochila?.(p.cosas);
+    });
+    socket.on("saldo", (p) => {
+      if (this.identidad) this.identidad = { ...this.identidad, saldo: p.monedas, creditos: p.creditos };
+      this.handlers.onSaldo?.(p);
+    });
+    socket.on("muebles", (p) => this.handlers.onMuebles?.(p.sala, p.muebles));
+    socket.on("resultado", (p) => this.handlers.onResultado?.(p));
     socket.on("bloqueos", (p) => {
       if (this.identidad) this.identidad = { ...this.identidad, bloqueados: p.bloqueados };
       this.handlers.onBloqueos?.(p.bloqueados);
@@ -259,6 +289,32 @@ class NetClient {
   /** Ir a tu casa (el servidor contesta con su mapa: `onSalaDatos`) */
   irACasa(): void {
     if (this.online) this.socket?.emit("irACasa");
+  }
+
+  // ---------- Economía y decorar (los precios y las reglas, en el servidor)
+
+  tienda(): void {
+    if (this.online) this.socket?.emit("tienda");
+  }
+
+  comprar(code: string): void {
+    if (this.online) this.socket?.emit("comprar", code);
+  }
+
+  mochila(): void {
+    if (this.online) this.socket?.emit("mochila");
+  }
+
+  vender(item: string): void {
+    if (this.online) this.socket?.emit("vender", item);
+  }
+
+  colocar(p: ColocarPayload): void {
+    if (this.online) this.socket?.emit("colocar", p);
+  }
+
+  recoger(item: string): void {
+    if (this.online) this.socket?.emit("recoger", item);
   }
 
   /** ¿Tienes bloqueado a alguien con ese nombre? */
