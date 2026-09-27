@@ -29,6 +29,8 @@ import {
 } from "../state/avatarState";
 import { DEFAULT_LOOK, mismoLook, sanitizeLook } from "../state/look";
 import { Vestidor } from "../ui/vestidor";
+import { Hud } from "../ui/hud";
+import { boton, centrar, crearTexturasUI, estiloTexto, icono, partirTexto, pieza, texto, UI } from "../ui/kit";
 import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
 import { themeFor, type RoomTheme } from "../render/theme";
@@ -105,7 +107,7 @@ type CampoClave = "username" | "password" | "nickname";
 /** Un campo de texto del modal: lo dibuja Phaser, lo escribe un <input> real */
 type CampoAuth = {
   clave: CampoClave;
-  fondo: Phaser.GameObjects.Rectangle;
+  fondo: Phaser.GameObjects.NineSlice;
   texto: Phaser.GameObjects.Text;
   secreto: boolean;
   input: TextInput | null;
@@ -117,15 +119,14 @@ type CampoAuth = {
  * muestra entero con fondo.
  */
 const CHAT_PANEL = {
-  x: 10,
+  x: 8,
   /** Línea de base: las líneas se apilan hacia ARRIBA desde aquí */
-  bottom: 492,
-  w: 392,
+  bottom: 488,
+  w: 440,
   /** Cuántas líneas caben a la vez */
-  lines: 10,
-  lineH: 15,
-  /** Caracteres por línea antes de partir (monoespaciada de 12px) */
-  wrap: 52,
+  lines: 8,
+  /** Alto de línea: la fuente pixel a 16 px más el hueco */
+  lineH: 20,
 };
 /** Con el chat cerrado, una línea se desvanece a los 12 s */
 const CHAT_FADE_MS = 12000;
@@ -152,7 +153,12 @@ const EMOTES = ["👋", "😀", "😂", "❤️", "👍", "🎉"] as const;
  * calculaba las zonas de toque con una transformación distinta a la del
  * dibujo — los botones se veían pero no recibían el clic.
  */
-type MenuItem = { o: Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text; dx: number; dy: number };
+type MenuItem = {
+  o: Phaser.GameObjects.GameObject & Phaser.GameObjects.Components.Transform;
+  /** Desplazamiento desde la esquina superior izquierda del menú */
+  dx: number;
+  dy: number;
+};
 
 // ---------- Sincronización multijugador (Fase 1) ----------
 
@@ -201,7 +207,8 @@ const SIT_MISMATCH_MS = 400;
 type Peer = {
   view: PlayerView;
   sprite: Phaser.GameObjects.Sprite;
-  label: Phaser.GameObjects.Text;
+  /** Nombre sobre la cabeza: pastilla oscura y texto pixel a 1× */
+  label: Phaser.GameObjects.Container;
   /** Posición interpolada en celdas (va detrás del snapshot del servidor) */
   col: number;
   row: number;
@@ -254,16 +261,16 @@ export class MainScene extends Phaser.Scene {
   // Chat
   private chatOpen = false;
   private chatText = "";
-  private chatBg!: Phaser.GameObjects.Rectangle;
+  private chatBg!: Phaser.GameObjects.NineSlice;
   private chatLabel!: Phaser.GameObjects.Text;
-  private statusText!: Phaser.GameObjects.Text;
+  private hud: Hud | null = null;
   /** Burbujas por avatar: "me" o el id del jugador remoto */
   private bubbles = new Map<string, Phaser.GameObjects.Container>();
   /** Historial del panel de chat (ya partido en líneas) */
   private chatLines: ChatLine[] = [];
   /** Objetos de texto reutilizados, uno por línea visible */
   private chatLineTexts: Phaser.GameObjects.Text[] = [];
-  private chatPanelBg!: Phaser.GameObjects.Rectangle;
+  private chatPanelBg!: Phaser.GameObjects.NineSlice;
 
   // Multijugador (Fase 7)
   private peers = new Map<string, Peer>();
@@ -382,39 +389,17 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
     this.cameras.main.fadeIn(250, 0, 0, 0);
 
-    this.add
-      .text(8, 8, `Roomie — ${this.roomId}\nClic/WASD · Enter: chat · C: vestidor`, {
-        fontFamily: "monospace",
-        fontSize: "14px",
-        color: "#ffffff",
-      })
-      .setScrollFactor(0)
-      // Sin esta línea se quedaba en profundidad 0 y el SUELO de la sala
-      // (que llega a ~352) lo tapaba en cuanto la cámara ponía baldosas
-      // detrás de esa esquina.
-      .setDepth(LAYER.UI_HUD);
+    // Interfaz: piezas pixel art (una vez) y el HUD
+    crearTexturasUI(this);
+    this.hud = new Hud(this, {
+      chat: () => (this.chatOpen ? this.closeChat() : this.openChat()),
+      vestidor: () => this.abrirVestidor(),
+      perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
+    });
 
-    // Estado de la conexión (multijugador)
-    const statusStyle: Phaser.Types.GameObjects.Text.TextStyle = {
-      fontFamily: "monospace",
-      fontSize: "13px",
-      color: "#ffe9a8",
-    };
-    this.statusText = this.add
-      .text(8, 46, "", statusStyle)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD);
     // Panel de chat: fondo (sólo visible mientras se escribe) + líneas
-    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 10;
-    this.chatPanelBg = this.add
-      .rectangle(
-        CHAT_PANEL.x + CHAT_PANEL.w / 2,
-        CHAT_PANEL.bottom - alturaPanel / 2 + 6,
-        CHAT_PANEL.w,
-        alturaPanel,
-        0x000000,
-        0.55,
-      )
+    const alturaPanel = CHAT_PANEL.lines * CHAT_PANEL.lineH + 14;
+    this.chatPanelBg = pieza(this, "chip", CHAT_PANEL.x, CHAT_PANEL.bottom - alturaPanel + 8, CHAT_PANEL.w, alturaPanel)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
@@ -423,12 +408,7 @@ export class MainScene extends Phaser.Scene {
     this.chatLineTexts = [];
     for (let i = 0; i < CHAT_PANEL.lines; i++) {
       this.chatLineTexts.push(
-        this.add
-          .text(CHAT_PANEL.x + 8, 0, "", {
-            fontFamily: "monospace",
-            fontSize: "12px",
-            color: CHAT_COLORS.other,
-          })
+        texto(this, CHAT_PANEL.x + 10, 0, "", { tam: 2, color: CHAT_COLORS.other })
           .setOrigin(0, 1)
           .setScrollFactor(0)
           .setDepth(LAYER.UI_PANEL + 1)
@@ -438,25 +418,15 @@ export class MainScene extends Phaser.Scene {
     // El desvanecido depende del reloj, no de que ocurra nada
     this.time.addEvent({ delay: 500, loop: true, callback: () => this.renderChatPanel() });
 
-    // Barra de escritura, alineada con el panel
-    this.chatBg = this.add
-      .rectangle(CHAT_PANEL.x + CHAT_PANEL.w / 2, 508, CHAT_PANEL.w, 24, 0x000000, 0.8)
+    // Barra de escritura, alineada con el panel: un campo hundido
+    this.chatBg = pieza(this, "campo-activo", CHAT_PANEL.x, 498, CHAT_PANEL.w, 34)
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL)
       .setVisible(false);
-    this.chatLabel = this.add
-      .text(CHAT_PANEL.x + 8, 508, "", {
-        fontFamily: "monospace",
-        fontSize: "13px",
-        color: "#ffffff",
-      })
-      .setOrigin(0, 0.5)
+    this.chatLabel = texto(this, CHAT_PANEL.x + 12, 507, "", { tam: 2 })
       .setScrollFactor(0)
       .setDepth(LAYER.UI_PANEL + 1)
       .setVisible(false);
-
-    this.buildProfileButton();
-    this.buildChatButton();
 
     // Red: registro los handlers de ESTA escena y aviso de mi sala/posición
     this.setupNet();
@@ -908,9 +878,7 @@ export class MainScene extends Phaser.Scene {
 
   private renderChatBar(): void {
     this.chatLabel.setText(
-      this.chatText
-        ? `> ${this.chatText}▌`
-        : "Escribe un mensaje... (Enter envía, Esc cancela)",
+      this.chatText ? `${this.chatText}▌` : "Escribe algo…  (Enter envía, Esc cancela)",
     );
   }
 
@@ -930,29 +898,30 @@ export class MainScene extends Phaser.Scene {
         bubble.destroy();
         this.bubbles.delete(id);
       } else {
-        bubble.setPosition(at.x, at.y);
+        bubble.setPosition(Math.round(at.x), Math.round(at.y));
       }
     }
   }
 
-  /** Burbuja blanca sobre la cabeza que dura 4 segundos */
+  /**
+   * Burbuja sobre la cabeza que dura 4 segundos: pieza pixel art con su
+   * cola, el texto partido a la medida. Va en el mundo (sigue al avatar), así
+   * que un Container vale: no es interactiva y no tiene scrollFactor 0.
+   */
   private showBubble(ownerId: string, message: string): void {
     const at = this.bubbleAnchor(ownerId);
     if (!at) return;
     this.bubbles.get(ownerId)?.destroy();
 
-    const txt = this.add
-      .text(0, 0, message, {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#1a1a24",
-      })
-      .setOrigin(0.5, 1);
-    const bg = this.add
-      .rectangle(0, -txt.height / 2 - 1, txt.width + 12, txt.height + 6, 0xffffff, 0.95)
-      .setStrokeStyle(1, 0x1a1a24, 1);
+    const txt = texto(this, 0, 0, partirTexto(message, 180, 2).join("\n"), { tam: 2, color: "#1a1a24", sombra: false });
+    const w = txt.width + 20;
+    const h = txt.height + 12;
+    const x0 = -Math.floor(w / 2);
+    const bg = pieza(this, "burbuja", x0, -h - 6, w, h);
+    const cola = this.add.image(-7, -8, "ui:cola").setOrigin(0, 0);
+    txt.setPosition(x0 + 10, -h);
 
-    const container = this.add.container(at.x, at.y, [bg, txt]);
+    const container = this.add.container(Math.round(at.x), Math.round(at.y), [bg, cola, txt]);
     container.setDepth(LAYER.WORLD_TOP);
     container.setScale(0.4);
     this.bubbles.set(ownerId, container);
@@ -1088,18 +1057,9 @@ export class MainScene extends Phaser.Scene {
   }
 
   /** Parte por palabras, y a lo bruto si una palabra no cabe */
+  /** Parte un mensaje en líneas que quepan en el panel (la fuente es proporcional) */
   private wrapChat(text: string): string[] {
-    const max = CHAT_PANEL.wrap;
-    const salida: string[] = [];
-    let resto = text;
-    while (resto.length > max) {
-      let corte = resto.lastIndexOf(" ", max);
-      if (corte <= 0) corte = max;
-      salida.push(resto.slice(0, corte));
-      resto = resto.slice(corte).trimStart();
-    }
-    if (resto.length > 0) salida.push(resto);
-    return salida;
+    return partirTexto(text, CHAT_PANEL.w - 24, 2);
   }
 
   /**
@@ -1126,28 +1086,25 @@ export class MainScene extends Phaser.Scene {
       obj
         .setText(linea.text)
         .setColor(linea.color)
-        .setPosition(CHAT_PANEL.x + 8, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
+        .setPosition(CHAT_PANEL.x + 10, CHAT_PANEL.bottom - i * CHAT_PANEL.lineH)
         .setVisible(true);
     }
   }
 
   /** Contador de la sala en la barra de estado */
   private updateStatusHud(): void {
-    if (!this.statusText) return;
-    if (!this.netOnline) {
-      this.statusText.setText("○ Sin servidor — single-player");
-      this.statusText.setColor("#8a8aa8");
-      return;
-    }
     // "netPlayers" es el snapshot de la sala que manda el servidor y YA me
     // incluye a mí. El "1 +" que había aquí me sumaba una segunda vez: estando
     // solo, el HUD mostraba "2 en room1".
     const here = this.netPlayers.filter((p) => p.room === this.roomId).length;
-    const yo = net.identidad;
-    const quien = yo ? `${yo.nickname} · ${yo.saldo}◎ — ` : "";
-    this.statusText.setText(`● ${quien}${here} en ${this.roomId}`);
-    this.statusText.setColor("#7bed9f");
+    this.hud?.actualizar({
+      sala: this.theme?.nombre ?? this.roomId,
+      enLinea: this.netOnline,
+      gente: Math.max(here, 1),
+      saldo: net.identidad?.saldo ?? null,
+    });
   }
+
 
   /**
    * Identidad confirmada: el aspecto y el saldo vienen del servidor, no del
@@ -1190,60 +1147,6 @@ export class MainScene extends Phaser.Scene {
     this.pushChatLine(err.message, CHAT_COLORS.system);
   }
 
-  /** Botón "Perfil" en el HUD (esquina superior derecha) */
-  private buildProfileButton(): void {
-    const btn = this.add
-      .rectangle(910, 20, 80, 28, 0x1a1a2e, 0.9)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD)
-      .setStrokeStyle(1, 0x6d6d94, 1)
-      .setInteractive({ useHandCursor: true })
-      .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
-      .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
-      .on("pointerdown", () => this.showAuthModal(net.autenticado ? "profile" : "login"));
-
-    this.add
-      .text(910, 20, "Perfil", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#ffe9a8",
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD + 1);
-
-    // OJO: este botón NO va en `loginUI`. Ahí estaba antes, y como
-    // `closeLoginModal` destruye todo lo que hay en esa lista, al cerrar el
-    // perfil una vez el botón desaparecía y ya no se podía volver a abrir.
-    // Vive lo que viva la escena; Phaser lo destruye en el SHUTDOWN.
-  }
-
-  /**
-   * Botón "Chat" del HUD. En un móvil no hay tecla Enter, así que sin él no
-   * habría forma de abrir la barra de chat.
-   */
-  private buildChatButton(): void {
-    const btn = this.add
-      .rectangle(820, 20, 80, 28, 0x1a1a2e, 0.9)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD)
-      .setStrokeStyle(1, 0x6d6d94, 1)
-      .setInteractive({ useHandCursor: true })
-      .on("pointerover", () => btn.setFillStyle(0x2a2a4e, 0.9))
-      .on("pointerout", () => btn.setFillStyle(0x1a1a2e, 0.9))
-      .on("pointerdown", () => (this.chatOpen ? this.closeChat() : this.openChat()));
-
-    this.add
-      .text(820, 20, "Chat", {
-        fontFamily: "monospace",
-        fontSize: "12px",
-        color: "#ffe9a8",
-      })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(LAYER.UI_HUD + 1);
-  }
-
   // ---------- Modal de cuenta ----------
   //
   // Tres modos sobre el mismo panel:
@@ -1275,90 +1178,60 @@ export class MainScene extends Phaser.Scene {
     //
     // El aspecto ya no se elige aquí: tiene su vestidor, que se abre solo al
     // crear la cuenta y desde el botón del perfil.
-    const CAMPO = 48; // etiqueta + caja
-    const INFO = 40; // datos de la cuenta en el perfil
-    const BOTONES = 76; // dos botones y su separación
+    const PAD = 22;
+    const TITULO = 20 + 14;
+    const CAMPO = 20 + 4 + 34 + 12; // etiqueta + caja + hueco
+    const MENSAJE = 26;
+    const INFO = 66; // datos de la cuenta en el perfil
+    const BOTONES = 36 + 10 + 36;
     const nCampos = perfil ? 0 : registro ? 3 : 2;
-
-    const W = 380;
-    const H = 52 + nCampos * CAMPO + 20 + (perfil ? INFO : 0) + BOTONES + 18;
+    const W = 400;
+    const H = PAD + TITULO + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
+    // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro)
+    const LOGO = perfil ? 0 : 78;
     const X = 480 - W / 2;
-    const Y = 270 - H / 2;
-    const colX = X + 26;
+    const Y = Math.round((540 - LOGO - H) / 2) + LOGO;
+    const colX = X + 24;
+    const anchoCampo = W - 48;
 
-    const add = <T extends Phaser.GameObjects.GameObject>(o: T): T => {
+    const add = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
+      o: T,
+      capa = 1,
+    ): T => {
+      o.setScrollFactor(0).setDepth(LAYER.UI_MODAL + capa);
       this.authUI.push(o);
       return o;
     };
 
-    add(
-      this.add
-        .rectangle(480, 270, 960, 540, 0x000000, 1)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL)
-        .setInteractive(),
-    );
-    const panel = add(
-      this.add
-        .rectangle(480, 270, W, H, 0x12121a, 0.98)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 1)
-        .setStrokeStyle(2, 0x6d6d94, 1)
-        .setInteractive(),
-    );
+    // Velo: la sala se intuye detrás, oscurecida; se come todos los clics
+    add(this.add.rectangle(480, 270, 960, 540, 0x07070d, perfil ? 0.7 : 0.82).setInteractive(), 0);
 
-    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : "Entrar a Roomie";
-    add(
-      this.add
-        .text(480, Y + 24, titulo, { fontFamily: "monospace", fontSize: "16px", color: "#ffe9a8" })
-        .setOrigin(0.5)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 2),
-    );
+    if (!perfil) {
+      const logo = texto(this, 0, 0, "Roomie", { tam: 4, color: UI.titulo });
+      const casa = icono(this, "casa", 0, 0).setScale(2);
+      const ancho = casa.displayWidth + 12 + logo.width;
+      const x0 = Math.round(480 - ancho / 2);
+      casa.setPosition(x0, Y - LOGO + 2);
+      logo.setPosition(x0 + casa.displayWidth + 12, Y - LOGO + 2);
+      add(casa, 2);
+      add(logo, 2);
+      add(centrar(texto(this, 0, 0, "Tu casa, tu gente, tu mundo", { tam: 2, color: UI.suave }), 480, Y - 20), 2);
+    }
 
-    let cursorY = Y + 52;
+    add(pieza(this, "panel", X, Y, W, H).setInteractive(), 1);
+    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : "Entrar";
+    add(centrar(texto(this, 0, 0, titulo, { tam: 2, color: UI.titulo }), 480, Y + PAD + 10), 2);
+
+    let cursorY = Y + PAD + TITULO;
 
     // ---------- Campos de texto ----------
     this.authCampos = [];
-    const campo = (
-      clave: CampoClave,
-      etiqueta: string,
-      secreto: boolean,
-      autocomplete: string,
-      inicial = "",
-    ): void => {
-      add(
-        this.add
-          .text(colX, cursorY, etiqueta, {
-            fontFamily: "monospace",
-            fontSize: "12px",
-            color: "#cccccc",
-          })
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 2),
-      );
-      const fondo = add(
-        this.add
-          .rectangle(colX, cursorY + 16, W - 52, 30, 0x1a1a2e, 1)
-          .setOrigin(0, 0)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 1)
-          .setStrokeStyle(1, 0x6d6d94, 1)
-          .setInteractive({ useHandCursor: true }),
-      );
-      const texto = add(
-        this.add
-          .text(colX + 8, cursorY + 23, "", {
-            fontFamily: "monospace",
-            fontSize: "13px",
-            color: "#ffffff",
-          })
-          .setOrigin(0, 0.5)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 2),
-      );
+    const campo = (clave: CampoClave, etiqueta: string, secreto: boolean, autocomplete: string, inicial = ""): void => {
+      add(texto(this, colX, cursorY, etiqueta, { tam: 2, color: UI.suave }), 2);
+      const fondo = add(pieza(this, "campo", colX, cursorY + 24, anchoCampo, 34).setInteractive({ useHandCursor: true }), 1);
+      const txt = add(texto(this, colX + 12, cursorY + 33, "", { tam: 2 }), 2);
 
-      const c: CampoAuth = { clave, fondo, texto, secreto, input: null };
+      const c: CampoAuth = { clave, fondo, texto: txt, secreto, input: null };
       c.input = createTextInput({
         maxLength: secreto ? PASS_MAX : NAME_MAX,
         initial: inicial,
@@ -1375,119 +1248,69 @@ export class MainScene extends Phaser.Scene {
     };
 
     if (!perfil) {
-      campo("username", "Usuario:", false, registro ? "username" : "username");
-      campo("password", "Contraseña:", true, registro ? "new-password" : "current-password");
+      campo("username", "Usuario", false, "username");
+      campo("password", "Contraseña", true, registro ? "new-password" : "current-password");
     }
-    if (registro) campo("nickname", "Tu nombre en el juego:", false, "nickname");
+    if (registro) campo("nickname", "Tu nombre en el juego", false, "nickname");
 
-    // ---------- Mensaje ----------
-    this.authError = add(
-      this.add
-        .text(480, cursorY + 2, "", {
-          fontFamily: "monospace",
-          fontSize: "11px",
-          color: "#ff6b6b",
-          wordWrap: { width: W - 40 },
-          align: "center",
-        })
-        .setOrigin(0.5, 0)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_MODAL + 2),
-    );
-    cursorY += 22;
+    // ---------- Mensaje (errores, "Conectando…") ----------
+    this.authError = add(texto(this, 480, cursorY, "", { tam: 2, color: UI.error, alinear: "center" }).setOrigin(0.5, 0), 2);
+    cursorY += MENSAJE;
 
     // ---------- Datos de la cuenta (perfil) ----------
     if (perfil) {
       const yo = net.identidad;
-      add(
-        this.add
-          .text(480, cursorY + 4, yo ? `${yo.nickname}  ·  @${yo.username}\n${yo.saldo} monedas` : "", {
-            fontFamily: "monospace",
-            fontSize: "12px",
-            color: "#cccccc",
-            align: "center",
-            lineSpacing: 6,
-          })
-          .setOrigin(0.5, 0)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 2),
-      );
+      if (yo) {
+        add(centrar(texto(this, 0, 0, `${yo.nickname}  ·  @${yo.username}`, { tam: 2 }), 480, cursorY + 8), 2);
+        const saldo = texto(this, 0, 0, `${yo.saldo} monedas`, { tam: 2, color: UI.titulo });
+        const moneda = icono(this, "moneda", 0, 0);
+        const ancho = moneda.width + 8 + saldo.width;
+        moneda.setPosition(Math.round(480 - ancho / 2), cursorY + 30);
+        saldo.setPosition(moneda.x + moneda.width + 8, cursorY + 30);
+        add(moneda, 2);
+        add(saldo, 2);
+      }
       cursorY += INFO;
       // Sin campos de texto no hay Esc que valga: el perfil se cierra aquí
-      const cerrar = add(
-        this.add
-          .text(X + W - 16, Y + 14, "✕", { fontFamily: "monospace", fontSize: "14px", color: "#9a9ad0" })
-          .setOrigin(0.5)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 3)
-          .setInteractive({ useHandCursor: true })
-          .on("pointerover", () => cerrar.setColor("#ffffff"))
-          .on("pointerout", () => cerrar.setColor("#9a9ad0"))
-          .on("pointerdown", () => this.closeAuthModal()),
-      );
+      for (const o of boton(this, X + W - 38, Y + 8, 30, 30, "✕", () => this.closeAuthModal(), { capa: LAYER.UI_MODAL + 3 }).objetos) {
+        this.authUI.push(o);
+      }
     }
 
     // ---------- Botones ----------
-    const boton = (
-      y: number,
-      ancho: number,
-      relleno: number,
-      hover: number,
-      etiqueta: string,
-      alPulsar: () => void,
-    ): void => {
-      const b = add(
-        this.add
-          .rectangle(480, y, ancho, 30, relleno, 1)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 2)
-          .setStrokeStyle(1, hover, 1)
-          .setInteractive({ useHandCursor: true })
-          .on("pointerover", () => b.setFillStyle(hover, 1))
-          .on("pointerout", () => b.setFillStyle(relleno, 1))
-          .on("pointerdown", alPulsar),
-      );
-      add(
-        this.add
-          .text(480, y, etiqueta, { fontFamily: "monospace", fontSize: "12px", color: "#ffffff" })
-          .setOrigin(0.5)
-          .setScrollFactor(0)
-          .setDepth(LAYER.UI_MODAL + 3),
-      );
-    };
-
     // Los botones cuelgan del final del contenido, no de una altura fija
-    const yPrincipal = cursorY + 18;
-    boton(
-      yPrincipal,
-      W - 52,
-      0x6c5ce7,
-      0x8c7ce7,
-      perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : "Entrar",
+    const principal = perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : "Entrar";
+    const b1 = boton(
+      this,
+      colX,
+      cursorY,
+      anchoCampo,
+      36,
+      principal,
       () => {
         if (!perfil) return this.submitAuth();
         this.closeAuthModal();
         this.abrirVestidor();
       },
+      { primario: true, icono: perfil ? "camiseta" : undefined, capa: LAYER.UI_MODAL + 2 },
     );
+    const segundo = perfil ? "Cerrar sesión" : registro ? "Ya tengo cuenta" : "Crear una cuenta nueva";
+    const b2 = boton(
+      this,
+      colX,
+      cursorY + 46,
+      anchoCampo,
+      36,
+      segundo,
+      () => {
+        if (perfil) return this.cerrarSesion();
+        this.closeAuthModal();
+        this.showAuthModal(registro ? "login" : "register");
+      },
+      { capa: LAYER.UI_MODAL + 2 },
+    );
+    this.authUI.push(...b1.objetos, ...b2.objetos);
 
-    if (perfil) {
-      boton(yPrincipal + 38, W - 52, 0x3a3a55, 0x4a4a75, "Cerrar sesión", () => this.cerrarSesion());
-    } else {
-      boton(
-        yPrincipal + 38,
-        W - 52,
-        0x2a2a3e,
-        0x3a3a55,
-        registro ? "Ya tengo cuenta" : "Crear una cuenta nueva",
-        () => {
-          this.closeAuthModal();
-          this.showAuthModal(registro ? "login" : "register");
-        },
-      );
-    }
-
-    void panel;
     this.pintarCampos();
     if (this.authCampos[0]) this.enfocarCampo(this.authCampos[0]);
   }
@@ -1499,7 +1322,7 @@ export class MainScene extends Phaser.Scene {
       const activo = c === this.campoActivo;
       const visible = c.secreto ? "•".repeat(valor.length) : valor;
       c.texto.setText(visible + (activo ? "▌" : ""));
-      c.fondo.setStrokeStyle(1, activo ? 0x8c7ce7 : 0x6d6d94, 1);
+      c.fondo.setTexture(activo ? "ui:campo-activo" : "ui:campo");
     }
   }
 
@@ -1519,8 +1342,15 @@ export class MainScene extends Phaser.Scene {
     return this.authCampos.find((c) => c.clave === clave)?.input?.el.value ?? "";
   }
 
-  private mensajeAuth(texto: string, color = "#ff6b6b"): void {
-    this.authError?.setText(texto).setColor(color);
+  /**
+   * Mensaje bajo los campos. Si no cabe en una línea a 16 px baja a 8 px: el
+   * hueco es de una línea y dos líneas grandes pisarían los botones.
+   */
+  private mensajeAuth(texto: string, color: string = UI.error): void {
+    if (!this.authError) return;
+    const tam = partirTexto(texto, 352, 2).length > 1 ? 1 : 2;
+    this.authError.setStyle(estiloTexto({ tam, color, alinear: "center" }));
+    this.authError.setText(partirTexto(texto, 352, tam).join("\n"));
   }
 
   private submitAuth(): void {
@@ -1611,15 +1441,7 @@ export class MainScene extends Phaser.Scene {
       .setInteractive(new Phaser.Geom.Rectangle(8, 6, 32, 76), Phaser.Geom.Rectangle.Contains)
       .on("pointerdown", () => this.openPeerMenu(v.id));
     if (sprite.input) sprite.input.cursor = "pointer";
-    const label = this.add
-      .text(0, 0, v.name, {
-        fontFamily: "monospace",
-        fontSize: "11px",
-        color: "#ffe9a8",
-        stroke: "#12121a",
-        strokeThickness: 3,
-      })
-      .setOrigin(0.5, 1);
+    const label = this.etiquetaNombre(v.name);
 
     const peer: Peer = {
       view: v,
@@ -1632,6 +1454,17 @@ export class MainScene extends Phaser.Scene {
     };
     this.peers.set(v.id, peer);
     return peer;
+  }
+
+  /** Nombre sobre la cabeza: texto pixel a 1× sobre una pastilla oscura, anclado abajo al centro */
+  private etiquetaNombre(nombre: string): Phaser.GameObjects.Container {
+    const t = texto(this, 0, 0, nombre, { tam: 1, color: UI.titulo, sombra: false });
+    const w = t.width + 8;
+    const h = 13;
+    const x0 = -Math.floor(w / 2);
+    const fondo = pieza(this, "nombre", x0, -h, w, h);
+    t.setPosition(x0 + 4, -h + 3);
+    return this.add.container(0, 0, [fondo, t]);
   }
 
   /** Borra un jugador remoto del mundo (y sus texturas) */
@@ -1723,7 +1556,8 @@ export class MainScene extends Phaser.Scene {
       // frames: con un suavizado el delta nunca llega a cero exacto, así que el
       // remoto parpadeaba entre caminar y estar quieto.
       peer.sprite.play(animKey(peer.textureKey, this.animacion(v.id, v.facing, v.sitting, v.moving)), true);
-      peer.label.setPosition(p.x, p.y - ALTO_NOMBRE).setDepth(LAYER.WORLD_LABEL);
+      // Redondeado: la pastilla a medio píxel emborronaría el texto
+      peer.label.setPosition(Math.round(p.x), Math.round(p.y - ALTO_NOMBRE)).setDepth(LAYER.WORLD_LABEL);
     }
 
     for (const id of [...this.peers.keys()]) {
@@ -1835,10 +1669,10 @@ export class MainScene extends Phaser.Scene {
    * dirigido a él. Los gestos son mensajes de chat normales, así que no hacen
    * falta eventos nuevos en el protocolo.
    */
-  private readonly MENU = { w: 216, h: 84 };
+  private readonly MENU = { w: 240, h: 108 };
 
   private openPeerMenu(id: string): void {
-    if (this.authModalOpen) return;
+    if (this.authModalOpen || this.vestidor) return;
     this.closePeerMenu();
 
     const peer = this.peers.get(id);
@@ -1846,59 +1680,41 @@ export class MainScene extends Phaser.Scene {
 
     const { w: W, h: H } = this.MENU;
     const items: MenuItem[] = [];
-    const add = (o: MenuItem["o"], dx: number, dy: number, capa: number = LAYER.UI_PANEL): void => {
+    const add = <T extends MenuItem["o"] & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
+      o: T,
+      dx: number,
+      dy: number,
+      capa: number = LAYER.UI_PANEL,
+    ): T => {
       o.setScrollFactor(0).setDepth(capa);
       items.push({ o, dx, dy });
+      return o;
     };
 
     // El fondo es interactivo para que un toque DENTRO del menú no lo cierre
-    add(
-      this.add.rectangle(0, 0, W, H, 0x12121a, 0.97).setStrokeStyle(1, 0x6d6d94, 1).setInteractive(),
-      0,
-      0,
-    );
-    add(
-      this.add
-        .text(0, 0, peer.view.name, { fontFamily: "monospace", fontSize: "12px", color: "#ffe9a8" })
-        .setOrigin(0.5),
-      0,
-      -H / 2 + 12,
-      LAYER.UI_PANEL + 1,
-    );
+    add(pieza(this, "panel", 0, 0, W, H).setInteractive(), 0, 0);
+    add(texto(this, 0, 0, peer.view.name, { tam: 2, color: UI.titulo }), 12, 10, LAYER.UI_PANEL + 1);
 
+    // Gestos: botones con bisel; el emoji lo pinta el navegador
     EMOTES.forEach((emote, i) => {
-      const dx = -W / 2 + 26 + i * 33;
-      const boton = this.add
-        .rectangle(0, 0, 28, 26, 0x1a1a2e, 1)
-        .setStrokeStyle(1, 0x3a3a55, 1)
+      const dx = 12 + i * 36;
+      const fondo = add(pieza(this, "boton", 0, 0, 32, 30), dx, 34);
+      fondo
         .setInteractive({ useHandCursor: true })
-        .on("pointerover", () => boton.setFillStyle(0x2a2a4e, 1))
-        .on("pointerout", () => boton.setFillStyle(0x1a1a2e, 1))
-        .on("pointerdown", () => this.sendEmote(emote));
-      add(boton, dx, -2);
-      add(this.add.text(0, 0, emote, { fontSize: "18px" }).setOrigin(0.5), dx, -2, LAYER.UI_PANEL + 1);
+        .on("pointerover", () => fondo.setTexture("ui:boton-hover"))
+        .on("pointerout", () => fondo.setTexture("ui:boton"))
+        .on("pointerup", () => this.sendEmote(emote));
+      add(this.add.text(0, 0, emote, { fontSize: "16px" }).setOrigin(0.5), dx + 16, 49, LAYER.UI_PANEL + 1);
     });
 
-    const chatBtn = this.add
-      .rectangle(0, 0, W - 24, 24, 0x6c5ce7, 1)
-      .setStrokeStyle(1, 0x8c7ce7, 1)
+    const chat = add(pieza(this, "primario", 0, 0, W - 24, 30), 12, 70);
+    chat
       .setInteractive({ useHandCursor: true })
-      .on("pointerover", () => chatBtn.setFillStyle(0x8c7ce7, 1))
-      .on("pointerout", () => chatBtn.setFillStyle(0x6c5ce7, 1))
-      .on("pointerdown", () => this.chatTo(peer.view.name));
-    add(chatBtn, 0, H / 2 - 17);
-    add(
-      this.add
-        .text(0, 0, `Escribir a ${peer.view.name}`, {
-          fontFamily: "monospace",
-          fontSize: "11px",
-          color: "#ffffff",
-        })
-        .setOrigin(0.5),
-      0,
-      H / 2 - 17,
-      LAYER.UI_PANEL + 1,
-    );
+      .on("pointerover", () => chat.setTexture("ui:primario-hover"))
+      .on("pointerout", () => chat.setTexture("ui:primario"))
+      .on("pointerup", () => this.chatTo(peer.view.name));
+    const etiqueta = texto(this, 0, 0, `Escribir a ${peer.view.name}`, { tam: 1 });
+    add(etiqueta, Math.round((W - etiqueta.width) / 2), 81, LAYER.UI_PANEL + 1);
 
     this.peerMenuItems = items;
     this.peerMenuFor = id;
@@ -1921,10 +1737,13 @@ export class MainScene extends Phaser.Scene {
     }
     const { w: W, h: H } = this.MENU;
     const cam = this.cameras.main;
-    // Sobre la cabeza del avatar, pero sin salirse del lienzo
+    // Sobre la cabeza del avatar, pero sin salirse del lienzo; esquina en
+    // píxeles enteros para que el texto no se emborrone
     const x = Phaser.Math.Clamp(peer.sprite.x - cam.scrollX, W / 2 + 4, this.scale.width - W / 2 - 4);
-    const y = Phaser.Math.Clamp(peer.sprite.y - cam.scrollY - 74, H / 2 + 4, this.scale.height - H / 2 - 4);
-    for (const { o, dx, dy } of this.peerMenuItems) o.setPosition(x + dx, y + dy);
+    const y = Phaser.Math.Clamp(peer.sprite.y - cam.scrollY - 96, H / 2 + 4, this.scale.height - H / 2 - 4);
+    const x0 = Math.round(x - W / 2);
+    const y0 = Math.round(y - H / 2);
+    for (const { o, dx, dy } of this.peerMenuItems) o.setPosition(x0 + dx, y0 + dy);
   }
 
   /** Un gesto es un mensaje de chat corriente: lo ve toda la sala */

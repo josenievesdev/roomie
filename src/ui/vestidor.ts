@@ -17,6 +17,7 @@ import {
   frameInicial,
   ORIGEN,
 } from "../entities/avatar";
+import { boton, pieza, texto, UI } from "./kit";
 
 // Vestidor: donde se elige el aspecto. Trabaja sobre un BORRADOR: nada llega
 // al avatar ni al servidor hasta pulsar Guardar, y Cancelar lo tira.
@@ -58,20 +59,6 @@ const COLOR_DE: Record<Pestana, { campo: keyof Look; catalogo: Record<string, nu
 const TEX_PREVIEW = "avatar:vestidor";
 const texMini = (parte: Parte, estilo: string): string => `vestidor:${parte}:${estilo}`;
 
-const C = {
-  fondo: 0x12121a,
-  caja: 0x1a1a2e,
-  cajaHover: 0x2a2a4e,
-  borde: 0x6d6d94,
-  bordeSuave: 0x3a3a55,
-  seleccion: 0xffe9a8,
-  primario: 0x6c5ce7,
-  primarioHover: 0x8c7ce7,
-  texto: "#ffffff",
-  titulo: "#ffe9a8",
-  suave: "#9a9ad0",
-} as const;
-
 export type OpcionesVestidor = {
   look: Look;
   titulo?: string;
@@ -81,18 +68,20 @@ export type OpcionesVestidor = {
 };
 
 /** Medidas del panel (lienzo de 960×540) */
-const W = 560;
-const H = 344;
+const W = 580;
+const H = 360;
 const X0 = 480 - W / 2;
 const Y0 = 270 - H / 2;
-const PREVIEW = { x: X0 + 20, y: Y0 + 56, w: 180, h: 228 };
-const DERECHA = X0 + 218;
+const PREVIEW = { x: X0 + 18, y: Y0 + 58, w: 184, h: 234 };
+const DERECHA = X0 + 220;
 const ANCHO_DER = W - 238;
+
+type Objeto = Phaser.GameObjects.GameObject & { setScrollFactor(v: number): Objeto; setDepth(v: number): Objeto };
 
 export class Vestidor {
   private fijos: Phaser.GameObjects.GameObject[] = [];
   private dinamicos: Phaser.GameObjects.GameObject[] = [];
-  private botonesPestana = new Map<Pestana, Phaser.GameObjects.Rectangle>();
+  private pestanas: Phaser.GameObjects.GameObject[] = [];
   private borrador: Look;
   private pestana: Pestana = "pelo";
   private dir: Facing = 4;
@@ -109,8 +98,9 @@ export class Vestidor {
 
   /** Cierra y libera texturas. Idempotente. */
   destroy(): void {
-    for (const obj of [...this.dinamicos, ...this.fijos]) obj.destroy();
+    for (const obj of [...this.dinamicos, ...this.pestanas, ...this.fijos]) obj.destroy();
     this.dinamicos = [];
+    this.pestanas = [];
     this.fijos = [];
     // Las texturas van DESPUÉS de destruir los sprites que las usaban
     destroyAvatarAssets(this.scene, TEX_PREVIEW);
@@ -124,131 +114,98 @@ export class Vestidor {
 
   /** Gira la vista previa (también con las flechas del teclado) */
   girar(paso: number): void {
-    this.dir = (((this.dir + paso) % 8) + 8) % 8 as Facing;
+    this.dir = ((((this.dir + paso) % 8) + 8) % 8) as Facing;
     this.repintarPreview();
   }
 
   // ---------------------------------------------------------------- Construcción
 
-  private fijo<T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
-    o: T,
-    capa = 1,
-  ): T {
-    o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
-    this.fijos.push(o);
+  private poner<T extends Phaser.GameObjects.GameObject>(lista: Phaser.GameObjects.GameObject[], o: T, capa: number): T {
+    (o as unknown as Objeto).setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
+    lista.push(o);
     return o;
   }
-
-  private dinamico<T extends Phaser.GameObjects.GameObject & { setScrollFactor(v: number): T; setDepth(v: number): T }>(
-    o: T,
-    capa = 2,
-  ): T {
-    o.setScrollFactor(0).setDepth(LAYER.UI_PANEL + capa);
-    this.dinamicos.push(o);
-    return o;
+  private fijo<T extends Phaser.GameObjects.GameObject>(o: T, capa = 1): T {
+    return this.poner(this.fijos, o, capa);
   }
-
-  private texto(x: number, y: number, t: string, tam = 12, color: string = C.texto): Phaser.GameObjects.Text {
-    return this.scene.add.text(x, y, t, { fontFamily: "monospace", fontSize: `${tam}px`, color });
-  }
-
-  private boton(
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    etiqueta: string,
-    alPulsar: () => void,
-    primario = false,
-  ): void {
-    const relleno = primario ? C.primario : C.caja;
-    const hover = primario ? C.primarioHover : C.cajaHover;
-    const r = this.fijo(
-      this.scene.add
-        .rectangle(x + w / 2, y + h / 2, w, h, relleno, 1)
-        .setStrokeStyle(1, primario ? C.primarioHover : C.borde, 1)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerover", () => r.setFillStyle(hover, 1))
-        .on("pointerout", () => r.setFillStyle(relleno, 1))
-        .on("pointerdown", alPulsar),
-    );
-    this.fijo(this.texto(x + w / 2, y + h / 2, etiqueta).setOrigin(0.5), 2);
+  private dinamico<T extends Phaser.GameObjects.GameObject>(o: T, capa = 2): T {
+    return this.poner(this.dinamicos, o, capa);
   }
 
   private construir(): void {
     const s = this.scene;
     // Velo: tapa el mundo y se come los clics (nada de caminar detrás)
-    this.fijo(s.add.rectangle(480, 270, 960, 540, 0x000000, 0.5).setInteractive(), 0);
-    this.fijo(s.add.rectangle(480, 270, W, H, C.fondo, 0.98).setStrokeStyle(2, C.borde, 1).setInteractive());
+    this.fijo(s.add.rectangle(480, 270, 960, 540, 0x07070d, 0.6).setInteractive(), 0);
+    this.fijo(pieza(s, "panel", X0, Y0, W, H).setInteractive());
 
-    this.fijo(this.texto(X0 + 20, Y0 + 16, this.o.titulo ?? "Vestidor", 16, C.titulo), 2);
-    if (this.o.subtitulo) this.fijo(this.texto(X0 + 20, Y0 + 36, this.o.subtitulo, 11, C.suave), 2);
+    this.fijo(texto(s, X0 + 20, Y0 + 14, this.o.titulo ?? "Vestidor", { tam: 2, color: UI.titulo }), 2);
+    if (this.o.subtitulo) this.fijo(texto(s, X0 + 20, Y0 + 36, this.o.subtitulo, { tam: 1, color: UI.suave }), 2);
 
-    // Vista previa: una baldosa y el avatar encima, a doble tamaño
-    this.fijo(
-      s.add
-        .rectangle(PREVIEW.x + PREVIEW.w / 2, PREVIEW.y + PREVIEW.h / 2, PREVIEW.w, PREVIEW.h, 0x0d0d14, 1)
-        .setStrokeStyle(1, C.bordeSuave, 1),
-    );
+    // Vista previa: un hueco hundido, una baldosa y el avatar encima a 2×
+    this.fijo(pieza(s, "campo", PREVIEW.x, PREVIEW.y, PREVIEW.w, PREVIEW.h));
     const suelo = this.fijo(s.add.graphics());
     const cx = PREVIEW.x + PREVIEW.w / 2;
-    const cy = PREVIEW.y + PREVIEW.h - 44;
+    const cy = PREVIEW.y + PREVIEW.h - 50;
+    const rombo = [
+      { x: cx, y: cy - 22 },
+      { x: cx + 44, y: cy },
+      { x: cx, y: cy + 22 },
+      { x: cx - 44, y: cy },
+    ];
     suelo.fillStyle(0x2c6e74, 1);
-    suelo.fillPoints(
-      [
-        { x: cx, y: cy - 22 },
-        { x: cx + 44, y: cy },
-        { x: cx, y: cy + 22 },
-        { x: cx - 44, y: cy },
-      ],
-      true,
-    );
-    suelo.lineStyle(1, 0x3f8f96, 1);
-    suelo.strokePoints(
-      [
-        { x: cx, y: cy - 22 },
-        { x: cx + 44, y: cy },
-        { x: cx, y: cy + 22 },
-        { x: cx - 44, y: cy },
-      ],
-      true,
-    );
+    suelo.fillPoints(rombo, true);
+    suelo.lineStyle(2, 0x3f8f96, 1);
+    suelo.strokePoints(rombo, true);
     createAvatarTexture(s, this.borrador, TEX_PREVIEW);
     this.preview = this.fijo(
       s.add.sprite(cx, cy, TEX_PREVIEW, frameInicial(this.dir)).setOrigin(ORIGEN.x, ORIGEN.y).setScale(2),
       2,
     );
     this.preview.play(animKey(TEX_PREVIEW, `idle-${this.dir}`));
-    this.boton(PREVIEW.x + 8, PREVIEW.y + PREVIEW.h - 30, 34, 24, "◀", () => this.girar(1));
-    this.boton(PREVIEW.x + PREVIEW.w - 42, PREVIEW.y + PREVIEW.h - 30, 34, 24, "▶", () => this.girar(-1));
+    const alto = PREVIEW.y + PREVIEW.h - 38;
+    for (const o of [
+      ...boton(s, PREVIEW.x + 8, alto, 36, 30, "◀", () => this.girar(1), { capa: LAYER.UI_PANEL + 2 }).objetos,
+      ...boton(s, PREVIEW.x + PREVIEW.w - 44, alto, 36, 30, "▶", () => this.girar(-1), { capa: LAYER.UI_PANEL + 2 }).objetos,
+    ]) {
+      this.fijos.push(o);
+    }
 
-    // Pestañas
-    const anchoP = (ANCHO_DER - 4 * 4) / 5;
-    PESTANAS.forEach((p, i) => {
-      const x = DERECHA + i * (anchoP + 4);
-      const r = this.fijo(
-        s.add
-          .rectangle(x + anchoP / 2, Y0 + 68, anchoP, 24, C.caja, 1)
-          .setStrokeStyle(1, C.bordeSuave, 1)
-          .setInteractive({ useHandCursor: true })
-          .on("pointerdown", () => this.cambiarPestana(p.id)),
-      );
-      this.botonesPestana.set(p.id, r);
-      this.fijo(this.texto(x + anchoP / 2, Y0 + 68, p.titulo, 11).setOrigin(0.5), 2);
-    });
-
-    this.boton(X0 + W - 132, Y0 + H - 40, 112, 28, "Guardar", () => this.o.onGuardar({ ...this.borrador }), true);
-    this.boton(X0 + W - 254, Y0 + H - 40, 112, 28, "Cancelar", () => this.o.onCerrar());
+    for (const o of [
+      ...boton(s, X0 + W - 136, Y0 + H - 50, 118, 34, "Guardar", () => this.o.onGuardar({ ...this.borrador }), {
+        primario: true,
+        capa: LAYER.UI_PANEL + 2,
+      }).objetos,
+      ...boton(s, X0 + W - 262, Y0 + H - 50, 118, 34, "Cancelar", () => this.o.onCerrar(), { capa: LAYER.UI_PANEL + 2 })
+        .objetos,
+    ]) {
+      this.fijos.push(o);
+    }
 
     this.cambiarPestana(this.pestana);
   }
 
+  /** Las pestañas se rehacen al cambiar: la elegida va en el estilo principal */
   private cambiarPestana(p: Pestana): void {
     this.pestana = p;
-    for (const [id, r] of this.botonesPestana) {
-      const activa = id === p;
-      r.setFillStyle(activa ? C.cajaHover : C.caja, 1).setStrokeStyle(activa ? 2 : 1, activa ? C.seleccion : C.bordeSuave, 1);
-    }
+    for (const o of this.pestanas) o.destroy();
+    this.pestanas = [];
+    const s = this.scene;
+    const hueco = 4;
+    const anchoP = Math.floor((ANCHO_DER - hueco * 4) / 5);
+    PESTANAS.forEach((t, i) => {
+      const x = DERECHA + i * (anchoP + hueco);
+      const activa = t.id === p;
+      const fondo = this.poner(this.pestanas, pieza(s, activa ? "primario" : "boton", x, Y0 + 56, anchoP, 30), 1);
+      const etiqueta = this.poner(this.pestanas, texto(s, 0, 0, t.titulo, { tam: 1 }), 2);
+      etiqueta.setPosition(Math.round(x + (anchoP - etiqueta.width) / 2), Y0 + 67);
+      if (!activa) {
+        fondo
+          .setInteractive({ useHandCursor: true })
+          .on("pointerover", () => fondo.setTexture("ui:boton-hover"))
+          .on("pointerout", () => fondo.setTexture("ui:boton"))
+          .on("pointerup", () => this.cambiarPestana(t.id));
+      }
+    });
     this.pintarOpciones();
   }
 
@@ -259,55 +216,54 @@ export class Vestidor {
     for (const o of this.dinamicos) o.destroy();
     this.dinamicos = [];
     const s = this.scene;
-    let y = Y0 + 94;
+    let y = Y0 + 98;
 
     if (this.pestana !== "piel") {
       const parte = this.pestana;
       const rc = RECORTES[parte];
       const estilos = Object.entries(ESTILOS[parte]) as [string, string][];
-      const caja = { w: 46, h: 54 };
+      const caja = { w: 50, h: 58 };
       estilos.forEach(([estilo, nombre], i) => {
         const x = DERECHA + i * (caja.w + 6);
         const elegido = this.borrador[parte] === estilo;
         const k = texMini(parte, estilo);
         crearMiniatura(s, k, { ...this.borrador, [parte]: estilo } as Look, rc.dir, rc);
-        const fondo = this.dinamico(
-          s.add
-            .rectangle(x + caja.w / 2, y + caja.h / 2, caja.w, caja.h, elegido ? C.cajaHover : C.caja, 1)
-            .setStrokeStyle(elegido ? 2 : 1, elegido ? C.seleccion : C.bordeSuave, 1)
+        const fondo = this.dinamico(pieza(s, elegido ? "campo-activo" : "campo", x, y, caja.w, caja.h), 2);
+        if (!elegido) {
+          fondo
             .setInteractive({ useHandCursor: true })
-            .on("pointerover", () => !elegido && fondo.setFillStyle(C.cajaHover, 1))
-            .on("pointerout", () => !elegido && fondo.setFillStyle(C.caja, 1))
-            .on("pointerdown", () => this.elegir(parte, estilo)),
-        );
-        this.dinamico(s.add.image(x + caja.w / 2, y + caja.h / 2, k).setOrigin(0.5), 3);
-        if (elegido) {
-          this.dinamico(this.texto(DERECHA, y + caja.h + 6, nombre, 11, C.titulo), 3);
+            .on("pointerover", () => fondo.setTexture("ui:campo-activo"))
+            .on("pointerout", () => fondo.setTexture("ui:campo"))
+            .on("pointerup", () => this.elegir(parte, estilo));
         }
+        this.dinamico(s.add.image(x + caja.w / 2, y + caja.h / 2, k).setOrigin(0.5), 3);
+        if (elegido) this.dinamico(texto(s, DERECHA, y + caja.h + 6, nombre, { tam: 2, color: UI.titulo }), 3);
       });
-      y += caja.h + 30;
+      y += caja.h + 34;
     }
 
     // Colores
     const { campo, catalogo } = COLOR_DE[this.pestana];
-    this.dinamico(this.texto(DERECHA, y, this.pestana === "piel" ? "Tono de piel" : "Color", 11, C.suave), 3);
-    y += 18;
+    this.dinamico(texto(s, DERECHA, y, this.pestana === "piel" ? "Tono de piel" : "Color", { tam: 1, color: UI.suave }), 3);
+    y += 16;
     const grande = this.pestana === "piel";
-    const lado = grande ? 30 : 20;
+    const lado = grande ? 34 : 24;
     const hueco = grande ? 8 : 4;
     const porFila = Math.floor((ANCHO_DER + hueco) / (lado + hueco));
     Object.entries(catalogo).forEach(([id, color], i) => {
       const x = DERECHA + (i % porFila) * (lado + hueco);
       const yy = y + Math.floor(i / porFila) * (lado + hueco);
       const elegido = this.borrador[campo] === id;
-      this.dinamico(
-        s.add
-          .rectangle(x + lado / 2, yy + lado / 2, lado, lado, color, 1)
-          .setStrokeStyle(elegido ? 2 : 1, elegido ? 0xffffff : 0x000000, 1)
+      // Muestra: marco hundido (iluminado si es la elegida) y el color dentro
+      const marco = this.dinamico(pieza(s, elegido ? "campo-activo" : "campo", x, yy, lado, lado), 3);
+      this.dinamico(s.add.rectangle(x + 4, yy + 4, lado - 8, lado - 8, color).setOrigin(0, 0), 4);
+      if (!elegido) {
+        marco
           .setInteractive({ useHandCursor: true })
-          .on("pointerdown", () => this.elegirColor(campo, id)),
-        3,
-      );
+          .on("pointerover", () => marco.setTexture("ui:campo-activo"))
+          .on("pointerout", () => marco.setTexture("ui:campo"))
+          .on("pointerup", () => this.elegirColor(campo, id));
+      }
     });
   }
 
