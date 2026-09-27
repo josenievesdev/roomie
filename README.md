@@ -1,5 +1,7 @@
 # Roomie 🏠
 
+![Dos jugadores en la plaza](docs/img/plaza-dos-jugadores.jpg)
+
 Mundo abierto 2D en pixel art con proyección isométrica, estilo Habbo.
 Juego web hecho con **Phaser 3 + TypeScript + Vite**, con **servidor Node + Socket.io**
 (multijugador en tiempo real).
@@ -40,7 +42,10 @@ npm run preview                          # previsualizar el build
 node tools/smoke-multiplayer.mjs         # E2E: registra cuentas reales y juega
 npm --prefix server run db:check         # ejerce los invariantes de la base
 npm --prefix server run db:migrate       # aplica db/migrations/*.sql
-node tools/genassets.mjs                 # regenera tileset, paredes y mapas
+node tools/genassets.mjs                 # regenera tileset, paredes y mapas (¡pisa los mapas!)
+node tools/genassets.mjs --solo=paredes  # sólo el arte, sin tocar los mapas
+node tools/genavatar.mjs                 # regenera las capas del avatar
+node tools/genavatar.mjs --preview=dir   # ...y vistas previas ampliadas en dir/
 ```
 
 ## Roadmap
@@ -56,6 +61,9 @@ Hecho:
 - [x] **Catálogo de mobiliario** compartido entre cliente y servidor
 - [x] **Base de datos Postgres** con cuentas, libro mayor e inventario
 - [x] **Login real** con sesiones persistentes
+- [x] **Avatar nuevo**: por capas, 8 direcciones, a la escala de la sala, con vestidor
+- [x] **Convivencia**: cada uno en su baldosa, clics en marcha sin tirones
+- [x] **Guía de estilo** (`docs/guia-de-estilo.md`): una escala, una cámara, una luz
 
 Siguiente:
 
@@ -76,16 +84,17 @@ src/
 ├── state/                   # PURO (sin Phaser) — lo ejecuta el SERVIDOR
 │   ├── avatarState.ts       #   movimiento y colisiones
 │   ├── furniture-catalog.ts #   qué mueble estorba y en cuál se sienta uno
-│   └── palette.ts
+│   └── look.ts              #   catálogo del aspecto: estilos, colores, validación
 ├── net/
 │   ├── protocol.ts          # PURO — eventos y tipos compartidos
 │   └── client.ts            # socket.io + token de sesión
 ├── render/
 │   ├── layers.ts            # bandas de profundidad (mundo / HUD / modal)
-│   └── theme.ts             # paleta y piezas de atlas por sala
-├── entities/                # avatar y mobiliario (Phaser)
-├── ui/textInput.ts          # <input> real: teclado en móvil
-└── utils/                   # iso, A*, guardado local
+│   ├── theme.ts             # paleta y piezas de atlas por sala
+│   └── avatarSheet.ts       # PURO — combina y colorea las capas del avatar
+├── entities/                # avatar (texturas por jugador) y mobiliario
+├── ui/                      # <input> real (móvil) y vestidor
+└── utils/                   # iso, A*, guardado local, rampas de color
 
 server/                      # paquete Node aparte
 └── src/
@@ -94,7 +103,8 @@ server/                      # paquete Node aparte
     └── db/                  # conexión, migraciones, cuentas, sesiones
 
 db/migrations/*.sql          # esquema, en orden
-tools/                       # generador de assets y smoke test E2E
+tools/                       # generadores de assets y smoke test E2E
+└── avatar/                  #   modelo 3D del avatar → capas de pixel art
 docs/                        # estado-actual.md + informe de cada tanda
 ```
 
@@ -115,12 +125,14 @@ docs/                        # estado-actual.md + informe de cada tanda
 |---|---|---|
 | Entrar / cambiar de sala | `join`, `room` | `welcome` (id + todos), `players` (20 Hz) |
 | Moverse | `move` (ejes -1..1), `path` (A*), `stand` | — |
-| Aspecto | `look` (ropa/pelo) | reflejado en `players` |
+| Aspecto | `look` (estilos y colores del catálogo) | reflejado en `players` |
 | Chat | `text` (≤60 car., anti-spam 400 ms) | `chat` (incluido el eco propio) + avisos de sistema |
 
 El servidor **valida** todo lo que llega: salas y celdas dentro de límites,
-caminos con saltos de 8 vecinos que empiezan junto al avatar, intermedias libres
-y última celda sólo si es sofá/puerta (mismas reglas que el A* del cliente).
+caminos con saltos de 8 vecinos que empiezan junto al avatar (o a 2-3 celdas:
+el retraso de red se salva con un puente), intermedias libres y última celda
+sólo si es asiento/puerta (mismas reglas que el A* del cliente). El aspecto se
+corrige campo a campo contra el catálogo de `src/state/look.ts`.
 
 
 ## Assets y mapas
@@ -132,6 +144,10 @@ y última celda sólo si es sofá/puerta (mismas reglas que el A* del cliente).
   (oculta) marca las celdas bloqueadas y la capa `objetos` coloca el
   mobiliario mediante las propiedades enteras `col` y `row` de cada objeto
   (tipo `sofa` o `mesa`).
-- Las paredes traseras se generan en código sobre la fila 0 y la columna 0.
+- Las paredes traseras se colocan sobre la fila 0 y la columna 0 (piezas de
+  `walls.png`, 96 px de alto).
+- El avatar: `tools/genavatar.mjs` modela cada capa en 3D y la fotografía con
+  la cámara del juego en 8 direcciones (`public/assets/avatar/*.png`). Cómo
+  añadir prendas, en `docs/guia-de-estilo.md`.
 - El servidor **lee los mismos `room1.json`/`room2.json`** (`server/src/world.ts`):
   si editas un mapa en Tiled, recuerda reiniciar el servidor (o déjalo con `--watch`).

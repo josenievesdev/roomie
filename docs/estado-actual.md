@@ -1,7 +1,7 @@
 # Roomie — estado actual y qué viene
 
-**Última actualización:** 24 de septiembre de 2026
-**Rama de trabajo:** `fix/hud-count-modal-veil` · **Base estable:** `master`
+**Última actualización:** 26 de septiembre de 2026
+**Rama de trabajo:** `feat/avatar-v2` (sale de `fix/hud-count-modal-veil`) · **Base estable:** `master`
 
 Este documento es el punto de entrada. Los `docs/fase*.md` son el detalle de
 cada tanda, con la causa raíz de cada fallo y cómo se verificó.
@@ -11,9 +11,14 @@ cada tanda, con la causa raíz de cada fallo y cómo se verificó.
 ## Dónde está el proyecto
 
 Roomie es jugable: entras con tu cuenta, te mueves por dos salas decoradas,
-hablas por chat, saludas a otros avatares con emojis y tu aspecto te sigue
-entre sesiones. Todo eso va contra un servidor autoritativo y una base de datos
-Postgres real en Supabase.
+hablas por chat, saludas a otros avatares (y el tuyo agita la mano) y eliges tu
+aspecto en un vestidor que te sigue entre sesiones. Todo eso va contra un
+servidor autoritativo y una base de datos Postgres real en Supabase.
+
+Desde la Fase 4 el avatar es de verdad: por capas (cuerpo, pelo, torso,
+piernas, calzado), en 8 direcciones y a la misma escala que la sala, y cada
+jugador ocupa su baldosa. Las reglas visuales que hacen que todo encaje están
+en `docs/guia-de-estilo.md`.
 
 Lo que **no** existe todavía: tienda, inventario visible, salas propias,
 trabajos ni economía. Las tablas están y probadas, pero sin interfaz.
@@ -51,6 +56,10 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Menú al tocar a otro avatar | mensaje recibido por el otro jugador |
 | Teclado en móvil | `<input>` reales; probado por el usuario con un amigo |
 | Dos salas con identidad visual propia | capturas en navegador |
+| Avatar por capas, 8 direcciones, caminar/sentarse/saludar | vistas previas del generador + navegador |
+| Vestidor: estilos y colores, guardado en la cuenta | navegador real + smoke test (aspecto) |
+| Cada jugador en su baldosa (también en los asientos) | smoke test (convivencia) |
+| Cambiar de destino andando sin tirones | smoke test (puente de caminos) |
 
 ## Las decisiones que no hay que deshacer
 
@@ -76,6 +85,24 @@ sala. Borrar una sala devuelve sus muebles al inventario en vez de destruirlos.
 
 **El nombre sale de la cuenta.** Ya no viaja en `join`. Si algún evento vuelve
 a llevar un campo `name` desde el cliente, se está deshaciendo esto.
+
+**El avatar se genera, no se dibuja.** Las capas de `public/assets/avatar/`
+no son colores: cada píxel guarda material, banda de luz y profundidad, y el
+navegador las combina y colorea por jugador (`src/render/avatarSheet.ts`). Si
+alguien pinta a mano un PNG de colores y lo mete ahí, deja de combinar con el
+resto de prendas. Para cambiar el arte se toca `tools/avatar/model.mjs` y se
+regenera.
+
+**El aspecto es un catálogo, validado en el servidor.** Estilos y colores
+viven en `src/state/look.ts`, compartido; el servidor corrige campo a campo lo
+que no esté ahí. Si el cliente pudiera mandar colores sueltos, cualquiera
+podría pedir prendas que nadie sabe dibujar (y la tienda no tendría nada que
+vender).
+
+**La ocupación de baldosas vive en `AvatarState`.** Cliente y servidor
+ejecutan la misma regla ("si la celda final la ocupa alguien, renuncio"), cada
+uno con lo que sabe. Si se sacara a sólo uno de los dos lados, volverían a
+discrepar y a corregirse a tirones.
 
 **Bandas de profundidad con nombre** (`src/render/layers.ts`) en vez de números
 a ojo. El bug que lo motivó: el modal estaba en `1e5` y todo el HUD en `1e6`,
@@ -109,7 +136,10 @@ proceso vivo con bucle a 20 Hz y WebSockets abiertos.
 
 **1. Tienda e inventario (siguiente).** Las tablas están y probadas; falta la
 interfaz: un catálogo donde gastar las monedas y un inventario donde ver lo
-comprado. Es lo que da sentido al saldo.
+comprado. Es lo que da sentido al saldo. **La ropa ya es un catálogo**
+(`src/state/look.ts`): venderla es darle precio a algunos estilos y que el
+servidor compruebe, al validar el aspecto, que la prenda es tuya. El vestidor
+ya existe; sólo le faltaría separar "lo que tienes" de "lo que hay en la tienda".
 
 **2. Colocar muebles en una sala.** `items.room_id/col/row/stack` ya lo
 soporta, incluido apilar (alfombra debajo, sofá encima). Falta el modo de
@@ -129,9 +159,13 @@ dónde apoyarse.
 
 ## Deuda conocida
 
-- **El avatar es el placeholder de la Fase 0**: 16×24 escalado ×2 con tres
-  direcciones. Para el detalle tipo Habbo (ocho direcciones, partes por capas,
-  accesorios) hay que rehacerlo. Es un trabajo grande de arte.
+- **Los muebles no usan el generador 3D** de los avatares: son polígonos
+  vectoriales. Siguen la luz y el contorno de la guía de estilo, pero con otra
+  técnica. Con la tienda, modelarlos como los avatares es lo coherente.
+- **Cada avatar en pantalla ocupa 1,8 MB de GPU** (hoja de 672×672). Con
+  decenas de jugadores por sala habrá que generar sólo las direcciones en uso.
+- **El teclado no respeta la ocupación**: con las flechas se puede atravesar a
+  alguien. El clic sí está protegido.
 - **No hay mobiliario de pared** (cuadros, televisores, ventanas). El catálogo
   ya tiene el campo `kind: 'floor' | 'wall'` preparado.
 - **El lienzo es 960×540 fijo con `Scale.FIT`**: en un móvil en vertical queda
@@ -159,6 +193,8 @@ dónde apoyarse.
 | `fase2-10-pasada-visual.md` | Pixel art de verdad; una identidad por sala |
 | `fase2-11-decoracion.md` | Catálogo de mobiliario compartido |
 | `fase3-login-real.md` | Cuentas, sesiones y la identidad en el servidor |
+| `fase4-avatar-y-convivencia.md` | Clics en marcha, orden de dibujo, cada uno en su baldosa; avatar por capas y vestidor |
+| `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |
 
 `reporte-proyecto.md` es anterior a todo esto y está desfasado; se conserva
 como historia.
