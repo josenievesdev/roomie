@@ -1,5 +1,5 @@
 import type { Facing } from "../state/avatarState.ts";
-import type { Palette } from "../state/palette.ts";
+import type { Look } from "../state/look.ts";
 import type { Cell } from "../utils/pathfinding.ts";
 
 // Protocolo cliente ↔ servidor. Módulo PURO (sin Phaser, sin Node): lo importa
@@ -34,8 +34,8 @@ export const CHAT_MAX = 60;
 export const CHAT_COOLDOWN_MS = 400;
 export const MAX_PATH_CELLS = 400;
 
-/** Cómo se ve un avatar (paleta recoloreable en caliente) */
-export type Look = Palette;
+/** Cómo se ve un avatar: estilos y colores del catálogo (`src/state/look.ts`) */
+export type { Look };
 
 /** Estado visible de un jugador, tal y como lo decide el servidor */
 export type PlayerView = {
@@ -44,8 +44,8 @@ export type PlayerView = {
   room: RoomId;
   col: number;
   row: number;
+  /** 0..7, ver `Facing`. Sentado, hacia donde mira el asiento. */
   facing: Facing;
-  flip: boolean;
   sitting: boolean;
   moving: boolean;
   look: Look;
@@ -128,7 +128,7 @@ export interface ClientEvents {
   path: (path: Cell[]) => void;
   /** Segundo clic en el sofá: levantarse */
   stand: () => void;
-  /** Cambió la paleta de ropa/pelo (tecla C) */
+  /** Cambió el aspecto (vestidor) */
   look: (look: Look) => void;
   /** Cruzó una puerta: cambia de sala en el servidor */
   room: (p: RoomPayload) => void;

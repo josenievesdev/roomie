@@ -1,50 +1,48 @@
-import type { Facing } from "../state/avatarState";
-import { DEFAULT_PALETTE } from "../state/palette";
+import { FACING_SUR, isFacing, type Facing } from "../state/avatarState.ts";
+import { sanitizeLook, type Look } from "../state/look.ts";
 
-// Guardado persistente del juego en localStorage.
-// Cuando exista servidor, este módulo será el que haga sync con la API.
+// Guardado persistente del juego en localStorage: dónde estabas y cómo ibas
+// vestido ANTES de entrar (la vista previa del modal). Una vez dentro, el
+// aspecto de verdad es el de la cuenta, que viene del servidor.
 export type SaveData = {
   version: number;
   room: string;
   col: number;
   row: number;
   facing: Facing;
-  shirt: number;
-  hair: number;
+  look: Look;
   nickname: string;
 };
 
 const KEY = "roomie:save";
-const VERSION = 1;
+const VERSION = 2;
+
+/** Dirección de la versión 1 ("down" / "up" / "side") a la de 8 */
+const FACING_V1: Record<string, Facing> = { down: 4, up: 0, side: 6 };
 
 export function loadSave(): SaveData | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const data = JSON.parse(raw) as Partial<SaveData> | null;
+    const data = JSON.parse(raw) as Record<string, unknown> | null;
     if (!data || typeof data !== "object") return null;
-    if (data.version !== VERSION) return null;
+    if (data.version !== VERSION && data.version !== 1) return null;
     if (typeof data.room !== "string") return null;
     if (typeof data.col !== "number" || !Number.isFinite(data.col)) return null;
     if (typeof data.row !== "number" || !Number.isFinite(data.row)) return null;
-    if (data.facing !== "down" && data.facing !== "up" && data.facing !== "side") return null;
-    if (typeof data.nickname !== "string") return null;
+    const facing = isFacing(data.facing)
+      ? data.facing
+      : (FACING_V1[String(data.facing)] ?? FACING_SUR);
     return {
       version: VERSION,
       room: data.room,
       col: data.col,
       row: data.row,
-      facing: data.facing,
-      // Paleta: con defaults para guardados antiguos que no la traían
-      shirt:
-        typeof data.shirt === "number" && Number.isFinite(data.shirt)
-          ? data.shirt
-          : DEFAULT_PALETTE.shirt,
-      hair:
-        typeof data.hair === "number" && Number.isFinite(data.hair)
-          ? data.hair
-          : DEFAULT_PALETTE.hair,
-      nickname: data.nickname.trim().slice(0, 16),
+      facing,
+      // La versión 1 guardaba `shirt` y `hair` sueltos: `sanitizeLook` los
+      // convierte en el aspecto nuevo con los colores más parecidos.
+      look: sanitizeLook(data.look ?? data),
+      nickname: typeof data.nickname === "string" ? data.nickname.trim().slice(0, 16) : "",
     };
   } catch {
     return null; // localStorage no disponible o dato corrupto

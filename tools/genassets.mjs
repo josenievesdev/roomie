@@ -1,6 +1,6 @@
 // Genera los assets base de Roomie:
 //  - public/assets/tileset.png → suelos isométricos 64×32, 3 por tema
-//  - public/assets/walls.png   → caras de pared 32×64, 2 por tema (izq. y der.)
+//  - public/assets/walls.png   → caras de pared 32×112, 2 por tema (izq. y der.)
 //  - public/assets/room1.json  → sala 12×12 en formato Tiled (editable con Tiled)
 //  - public/assets/room2.json  → sala 14×10 en formato Tiled
 //
@@ -9,7 +9,11 @@
 // biselado (la luz entra por arriba), tramado para romper el color plano,
 // junta oscura entre baldosas y zócalo en las paredes.
 //
-// Uso: node tools/genassets.mjs
+// Uso: node tools/genassets.mjs                  todo (¡pisa los mapas!)
+//      node tools/genassets.mjs --solo=paredes    sólo walls.png
+//      node tools/genassets.mjs --solo=suelos,paredes
+// Con --solo los mapas NO se tocan: así se puede retocar el arte sin perder
+// una sala editada a mano en Tiled.
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -84,7 +88,9 @@ function px(cv, x, y, c) {
 
 const TILE_W = 64;
 const TILE_H = 32;
-const WALL_H = 48; // alto de la cara de pared
+// Alto de la cara de pared: 1,5 veces el avatar (64 px). Con 48 el avatar
+// nuevo quedaba más alto que la pared y la sala parecía una caja de zapatos.
+const WALL_H = 96;
 const WALL_W = 32; // ancho de cada pieza
 const WALL_TILE_H = WALL_H + 16; // + el sesgo isométrico
 
@@ -155,12 +161,18 @@ function drawFloorTile(cv, ox, tema, variante) {
   }
 }
 
-// ---------- Pared: pieza 32×64 ----------
+// ---------- Pared: pieza 32×112 (96 de cara + 16 de sesgo) ----------
 // lado "der" = fila 0 (sube hacia la derecha), "izq" = columna 0 (hacia la izq.)
 function drawWallTile(cv, ox, tema, lado) {
-  // El muro que mira al noroeste recibe menos luz: dos tonos como en todo
-  // isométrico decente.
-  const luz = lado === "der" ? 0 : -0.1;
+  // La luz del juego viene de arriba y del lado del eje col (ver
+  // docs/guia-de-estilo.md): la pared de la columna 0, que mira hacia +col,
+  // recibe más luz que la de la fila 0. Antes estaba al revés que en los
+  // muebles.
+  const luz = lado === "izq" ? 0 : -0.1;
+  // Proporciones a partir del alto: moldura a un tercio desde el suelo,
+  // zócalo de 9 px, remate arriba.
+  const RAIL = WALL_H - Math.round(WALL_H * 0.36);
+  const ZOCALO = 9;
 
   for (let u = 0; u < WALL_W; u++) {
     const top = lado === "der" ? Math.floor(u / 2) : Math.floor((WALL_W - 1 - u) / 2);
@@ -168,14 +180,15 @@ function drawWallTile(cv, ox, tema, lado) {
       let c;
       if (v < 2) c = shade(tema.wall, 0.34); // remate superior
       else if (v < 5) c = shade(tema.wall, 0.16);
-      else if (v >= 29 && v <= 31) c = tema.wallRail; // moldura a media altura
-      else if (v >= WALL_H - 7) {
-        c = v === WALL_H - 7 ? shade(tema.wallBase, 0.22) : tema.wallBase; // zócalo
-      } else if (v < 29) c = tema.wall;
+      else if (v < 7) c = shade(tema.wall, -0.12); // sombra bajo el remate
+      else if (v >= RAIL && v <= RAIL + 2) c = v === RAIL ? shade(tema.wallRail, 0.25) : tema.wallRail; // moldura
+      else if (v >= WALL_H - ZOCALO) {
+        c = v === WALL_H - ZOCALO ? shade(tema.wallBase, 0.22) : tema.wallBase; // zócalo
+      } else if (v < RAIL) c = tema.wall;
       else c = shade(tema.wall, -0.06); // bajo la moldura, algo más oscuro
 
-      // Juntas verticales de los paneles
-      if (u % 8 === 0 && v > 4 && v < WALL_H - 7) c = shade(c, -0.1);
+      // Juntas verticales de los paneles (sólo bajo la moldura: arriba, liso)
+      if (u % 8 === 0 && v > RAIL + 2 && v < WALL_H - ZOCALO) c = shade(c, -0.1);
       // Tramado suave
       c = shade(c, dither(u, v, 0.05) + luz);
       // Cantos
@@ -189,6 +202,9 @@ function drawWallTile(cv, ox, tema, lado) {
 
 // ---------- Montaje de las hojas ----------
 const outDir = path.resolve(process.cwd(), "public", "assets");
+const soloArg = process.argv.find((a) => a.startsWith("--solo="));
+const solo = soloArg ? soloArg.slice(7).split(",") : null;
+const toca = (que) => !solo || solo.includes(que);
 fs.mkdirSync(outDir, { recursive: true });
 
 const FLOORS_POR_TEMA = 3;
@@ -198,7 +214,7 @@ THEMES.forEach((tema, t) => {
     drawFloorTile(tileset, (t * FLOORS_POR_TEMA + v) * TILE_W, tema, v);
   }
 });
-fs.writeFileSync(path.join(outDir, "tileset.png"), encodePng(tileset.w, tileset.h, tileset.buf));
+if (toca("suelos")) fs.writeFileSync(path.join(outDir, "tileset.png"), encodePng(tileset.w, tileset.h, tileset.buf));
 
 const WALLS_POR_TEMA = 2;
 const walls = canvas(WALL_W * WALLS_POR_TEMA * THEMES.length, WALL_TILE_H);
@@ -206,7 +222,7 @@ THEMES.forEach((tema, t) => {
   drawWallTile(walls, (t * WALLS_POR_TEMA + 0) * WALL_W, tema, "der");
   drawWallTile(walls, (t * WALLS_POR_TEMA + 1) * WALL_W, tema, "izq");
 });
-fs.writeFileSync(path.join(outDir, "walls.png"), encodePng(walls.w, walls.h, walls.buf));
+if (toca("paredes")) fs.writeFileSync(path.join(outDir, "walls.png"), encodePng(walls.w, walls.h, walls.buf));
 
 // ---------- Salas en formato Tiled ----------
 const TILESET_DEF = {
@@ -361,5 +377,6 @@ const rooms = [
   },
 ];
 
-for (const room of rooms) buildRoom(room);
-console.log(`tileset.png (${tileset.w}x${tileset.h}) y walls.png (${walls.w}x${walls.h}) generados en ${outDir}`);
+if (toca("salas")) for (const room of rooms) buildRoom(room);
+const hechos = [toca("suelos") && `tileset.png (${tileset.w}x${tileset.h})`, toca("paredes") && `walls.png (${walls.w}x${walls.h})`].filter(Boolean);
+console.log(`${hechos.join(" y ") || "nada"} en ${outDir}${toca("salas") ? "" : " (mapas sin tocar)"}`);

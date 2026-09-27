@@ -1,17 +1,27 @@
 import Phaser from "phaser";
 import { toScreen, toGrid } from "../utils/iso";
-import { animKey, createAvatarTexture, destroyAvatarAssets } from "../entities/avatar";
-import { createFurniture } from "../entities/furniture";
-import { FURNITURE, isFurniture, isSeat, type FurnitureKind } from "../state/furniture-catalog";
-import { findPath, type Cell } from "../utils/pathfinding";
-import { AvatarState, SIT_OFFSET, SIT_SHIFT, type Facing } from "../state/avatarState";
 import {
-  DEFAULT_PALETTE,
-  HAIR_COLORS,
-  SHIRT_COLORS,
-  paletteFrom,
-  type Palette,
-} from "../state/palette";
+  ALTO_AVATAR,
+  ORIGEN,
+  animKey,
+  createAvatarTexture,
+  destroyAvatarAssets,
+  frameInicial,
+  preloadAvatar,
+} from "../entities/avatar";
+import { createFurniture } from "../entities/furniture";
+import { FURNITURE, isFurniture, seatAt, type FurnitureKind } from "../state/furniture-catalog";
+import { findPath, type Cell } from "../utils/pathfinding";
+import {
+  AvatarState,
+  FACING_SUR,
+  avatarDepth,
+  subidaSentado,
+  type Facing,
+  type SitTarget,
+} from "../state/avatarState";
+import { DEFAULT_LOOK, mismoLook, sanitizeLook } from "../state/look";
+import { Vestidor } from "../ui/vestidor";
 import { loadSave, writeSave, clearSave, type SaveData } from "../utils/storage";
 import { LAYER, worldDepth } from "../render/layers";
 import { themeFor, type RoomTheme } from "../render/theme";
@@ -69,8 +79,17 @@ type Door = {
 
 const SAVE_INTERVAL = 5000; // ms entre guardados automáticos
 
-/** Textura propia de la vista previa del modal (independiente de la del jugador) */
-const PREVIEW_KEY = "avatar:preview";
+/** Cuánto dura el saludo del avatar cuando alguien manda 👋 */
+const SALUDO_MS = 1600;
+/** Nombre sobre la cabeza y burbuja sobre el nombre, medidos desde los pies */
+const ALTO_NOMBRE = ALTO_AVATAR + 3;
+const ALTO_BURBUJA = ALTO_AVATAR + 24;
+/**
+ * Alto de la cara de pared, IGUAL que `WALL_H` en tools/genassets.mjs: 1,5
+ * veces el avatar. La puerta, algo más alta que él.
+ */
+const ALTO_PARED = 96;
+const ALTO_PUERTA = 72;
 
 /** Los tres modos del modal de cuenta */
 type AuthModalMode = "login" | "register" | "profile";
@@ -157,6 +176,19 @@ const CORRECTION_RATE = 4;
  * respawn, camino rechazado): se adopta la posición del servidor de golpe.
  */
 const CORRECTION_TELEPORT = 3;
+/**
+ * Zona muerta con los DOS quietos. La de arriba existe porque, andando, el
+ * servidor va por detrás; parados ese desfase ya no existe, y dejarlo en 0.35
+ * era quedarse para siempre a un tercio de baldosa de donde te ven los demás
+ * (junto a alguien en tu pantalla, encima de él en la suya).
+ */
+const REST_DEADZONE = 0.1;
+/**
+ * Si el servidor y yo discrepamos en si estoy sentado durante más de un viaje
+ * de ida y vuelta, no es retraso: el servidor me sentó donde yo no (o me negó
+ * un asiento que alguien ocupó primero). Manda él.
+ */
+const SIT_MISMATCH_MS = 400;
 
 /** Avatar remoto dibujado en la escena (su textura es `avatar:<id>`) */
 type Peer = {
@@ -170,16 +202,19 @@ type Peer = {
   look: Look;
 };
 
-/** Render de un avatar remoto: MISMA fórmula que `AvatarState.screen()` */
+/**
+ * Render de un avatar remoto: MISMA fórmula que `AvatarState.screen()`.
+ * `asiento` es la altura del asiento si está sentado (null de pie).
+ */
 function peerScreen(
   col: number,
   row: number,
-  sitting: boolean,
+  asiento: number | null,
 ): { x: number; y: number; depth: number } {
   const base = toScreen(col, row);
-  const depth = toScreen(Math.round(col), Math.round(row)).y + 0.5;
-  return sitting
-    ? { x: base.x - SIT_SHIFT, y: base.y - SIT_OFFSET, depth }
+  const depth = avatarDepth(col, row);
+  return asiento !== null
+    ? { x: base.x, y: base.y - subidaSentado(asiento), depth }
     : { x: base.x, y: base.y, depth };
 }
 
@@ -202,13 +237,12 @@ export class MainScene extends Phaser.Scene {
   private pendingDoor: Door | null = null;
   private transitioning = false;
 
-  // Personalización
-  private palette: Palette = DEFAULT_PALETTE;
-  private customOpen = false;
-  private customUI: Array<Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text> = [];
-  private shirtSwatches: Phaser.GameObjects.Rectangle[] = [];
-  private hairSwatches: Phaser.GameObjects.Rectangle[] = [];
-  private readonly PANEL = { x: 736, y: 40, w: 216, h: 168 };
+  // Aspecto
+  private look: Look = DEFAULT_LOOK;
+  /** Vestidor abierto (null = cerrado) */
+  private vestidor: Vestidor | null = null;
+  /** Hasta cuándo saluda cada avatar ("me" o id remoto), en ms de `time.now` */
+  private saludos = new Map<string, number>();
 
   // Chat
   private chatOpen = false;
@@ -233,14 +267,16 @@ export class MainScene extends Phaser.Scene {
   private lastMoveSent = 0;
   /** Historia reciente de snapshots, para interpolar a los remotos */
   private snapshots: Snapshot[] = [];
+  /** Desde cuándo discrepamos el servidor y yo en si estoy sentado (0 = no) */
+  private sitMismatchSince = 0;
   private authModalOpen = false;
   private authMode: AuthModalMode = "login";
   private authUI: Phaser.GameObjects.GameObject[] = [];
   private authCampos: CampoAuth[] = [];
   private campoActivo: CampoAuth | null = null;
   private authError: Phaser.GameObjects.Text | null = null;
-  /** Paleta al abrir, para poder descartar los cambios al cancelar */
-  private paletaAlAbrir: Palette | null = null;
+  /** Se acaba de crear la cuenta: al entrar se abre el vestidor */
+  private recienRegistrado = false;
   /** <input> real del chat: sin él no hay teclado en el móvil */
   private chatInput: TextInput | null = null;
   /** Piezas del menú que sale al tocar a otro jugador (vacío = cerrado) */
@@ -259,11 +295,13 @@ export class MainScene extends Phaser.Scene {
       frameWidth: 64,
       frameHeight: 32,
     });
-    // Caras de pared: 32 de ancho por 48 de alto MÁS 16 de sesgo isométrico
+    // Caras de pared: 32 de ancho por ALTO_PARED MÁS 16 de sesgo isométrico
     this.load.spritesheet("walls", "assets/walls.png", {
       frameWidth: 32,
-      frameHeight: 64,
+      frameHeight: ALTO_PARED + 16,
     });
+    // Capas del avatar (cuerpo, peinados, prendas): se combinan en create()
+    preloadAvatar(this);
   }
 
   create(): void {
@@ -271,7 +309,9 @@ export class MainScene extends Phaser.Scene {
     this.transitioning = false;
     this.chatOpen = false;
     this.chatText = "";
-    this.customOpen = false;
+    this.vestidor = null;
+    this.saludos = new Map();
+    this.recienRegistrado = false;
     this.authModalOpen = false;
     this.authUI = [];
     this.authCampos = [];
@@ -280,7 +320,6 @@ export class MainScene extends Phaser.Scene {
     this.peerMenuItems = [];
     this.peerMenuFor = "";
     this.authError = null;
-    this.paletaAlAbrir = null;
     this.alive = true;
     this.peers = new Map(); // los game objects viejos ya los destruyó el restart
     this.bubbles = new Map();
@@ -289,17 +328,16 @@ export class MainScene extends Phaser.Scene {
     this.sentMove = { mx: 0, my: 0 };
     this.lastMoveSent = 0;
     this.snapshots = [];
+    this.sitMismatchSince = 0;
     this.furniture = [];
     this.doors = [];
     this.pendingDoor = null;
-    this.customUI = [];
-    this.shirtSwatches = [];
-    this.hairSwatches = [];
 
     const save = loadSave();
-    this.palette = paletteFrom(save);
+    // Con sesión, el aspecto es el de la cuenta; sin ella, el último guardado
+    this.look = net.identidad ? sanitizeLook(net.identidad.look) : (save?.look ?? DEFAULT_LOOK);
 
-    createAvatarTexture(this, this.palette);
+    createAvatarTexture(this, this.look);
     // Vecino más cercano en TODO el pixel art: con muestreo lineal los
     // bordes de las baldosas se emborronan al escalar el lienzo.
     this.textures.get("tileset").setFilter(Phaser.Textures.FilterMode.NEAREST);
@@ -312,16 +350,18 @@ export class MainScene extends Phaser.Scene {
         cols: this.cols,
         rows: this.rows,
         isBlocked: (c, r) => this.blocked[r][c],
+        isOccupied: (c, r) => this.peerOccupies(c, r),
       },
       this.resolveStartCell(save),
       this.resolveStartFacing(save),
     );
 
     const p = this.avatar.screen();
+    // A tamaño real (×1), como los muebles y el suelo: un píxel del avatar es
+    // un píxel de la sala. Antes iba escalado ×2 y se notaba el doble grano.
     this.player = this.add
-      .sprite(p.x, p.y, "avatar", `${this.avatar.facing}-0`)
-      .setOrigin(0.5, 1)
-      .setScale(2) // 24px -> 48px de alto: proporción Habbo frente a los tiles
+      .sprite(p.x, p.y, "avatar", frameInicial(this.avatar.facing))
+      .setOrigin(ORIGEN.x, ORIGEN.y)
       .setDepth(worldDepth(p.depth));
     this.player.play(this.anim(`idle-${this.avatar.facing}`));
 
@@ -334,7 +374,7 @@ export class MainScene extends Phaser.Scene {
     this.cameras.main.fadeIn(250, 0, 0, 0);
 
     this.add
-      .text(8, 8, `Roomie — ${this.roomId}\nClic/WASD · Enter: chat · C: personalizar`, {
+      .text(8, 8, `Roomie — ${this.roomId}\nClic/WASD · Enter: chat · C: vestidor`, {
         fontFamily: "monospace",
         fontSize: "14px",
         color: "#ffffff",
@@ -406,7 +446,6 @@ export class MainScene extends Phaser.Scene {
       .setDepth(LAYER.UI_PANEL + 1)
       .setVisible(false);
 
-    this.buildCustomPanel();
     this.buildProfileButton();
     this.buildChatButton();
 
@@ -435,9 +474,16 @@ export class MainScene extends Phaser.Scene {
           this.closePeerMenu();
           return;
         }
+        // Con el vestidor abierto, el teclado sólo lo cierra o gira la vista
+        if (this.vestidor) {
+          if (key === "Escape" || key === "c" || key === "C") this.cerrarVestidor();
+          else if (key === "ArrowLeft") this.vestidor.girar(1);
+          else if (key === "ArrowRight") this.vestidor.girar(-1);
+          return;
+        }
         if (!this.chatOpen) {
           if (key === "Enter") this.openChat();
-          else if (key === "c" || key === "C") this.toggleCustomPanel();
+          else if (key === "c" || key === "C") this.abrirVestidor();
           return;
         }
         if (key === "Enter") this.sendChat();
@@ -498,6 +544,13 @@ export class MainScene extends Phaser.Scene {
       this.authCampos = [];
       this.chatInput?.destroy();
       this.chatInput = null;
+      // Las texturas de los remotos viven en el gestor GLOBAL de texturas y
+      // sobreviven al reinicio: sin esto, cada jugador que se cruzó en una
+      // sala dejaba su hoja (1,8 MB) en memoria para siempre. Animaciones y
+      // textura se van juntas (ver `destroyAvatarAssets`).
+      for (const peer of this.peers.values()) destroyAvatarAssets(this, peer.textureKey);
+      this.vestidor?.destroy();
+      this.vestidor = null;
     });
   }
 
@@ -514,7 +567,7 @@ export class MainScene extends Phaser.Scene {
     // Entrada -> estado (el estado decide qué hacer)
     let dx = 0;
     let dy = 0;
-    if (!this.chatOpen) {
+    if (!this.chatOpen && !this.vestidor) {
       if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
       if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
       if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
@@ -551,16 +604,11 @@ export class MainScene extends Phaser.Scene {
     const moveY = p.y - old.y;
     const moving = Math.abs(moveX) > 1e-6 || Math.abs(moveY) > 1e-6;
 
-    if (this.avatar.sitting) {
-      this.player.play(this.anim("idle-sit"), true);
-    } else {
-      if (moving) this.avatar.updateFacing(moveX, moveY);
-      this.player.play(
-        this.anim(moving ? `walk-${this.avatar.facing}` : `idle-${this.avatar.facing}`),
-        true,
-      );
-    }
-    this.player.setFlipX(this.avatar.flipX);
+    if (moving && !this.avatar.sitting) this.avatar.updateFacing(moveX, moveY);
+    this.player.play(
+      this.anim(this.animacion("me", this.avatar.facing, this.avatar.sitting !== null, moving)),
+      true,
+    );
 
     this.player.setPosition(p.x, p.y);
     this.player.setDepth(worldDepth(p.depth)); // orden isométrico
@@ -572,9 +620,18 @@ export class MainScene extends Phaser.Scene {
     this.moveBubbles();
   }
 
+  /**
+   * Animación de un avatar (propio o remoto) según su estado. El saludo sólo
+   * se ve de pie y quieto: andando o sentado manda lo que esté haciendo.
+   */
+  private animacion(quien: string, dir: Facing, sentado: boolean, andando: boolean): string {
+    if (sentado) return `sit-${dir}`;
+    if (andando) return `walk-${dir}`;
+    if ((this.saludos.get(quien) ?? 0) > this.time.now) return `wave-${dir}`;
+    return `idle-${dir}`;
+  }
+
   private handleWorldClick(pointer: Phaser.Input.Pointer): void {
-    // Los clics sobre el panel de personalización no mueven al avatar
-    if (this.isOverCustomUI(pointer)) return;
     if (this.chatOpen) {
       this.closeChat(); // un clic en el mundo cierra el chat
       return;
@@ -587,9 +644,10 @@ export class MainScene extends Phaser.Scene {
     if (!this.inBounds(goal.col, goal.row)) return;
 
     const door = this.doorAt(goal.col, goal.row);
-    const furn = this.furnitureAt(goal.col, goal.row);
-    const sitTarget = isSeat(furn?.kind) ? (furn ?? null) : null;
+    const sitTarget = this.seatAtCell(goal.col, goal.row);
     if (!door && !sitTarget && this.blocked[goal.row][goal.col]) return;
+    // Ahí ya hay alguien (de pie o sentado): cada uno ocupa su baldosa
+    if (this.peerOccupies(goal.col, goal.row)) return;
 
     const start: Cell = { col: Math.round(this.avatar.col), row: Math.round(this.avatar.row) };
     if (start.col === goal.col && start.row === goal.row) {
@@ -602,12 +660,14 @@ export class MainScene extends Phaser.Scene {
       return;
     }
 
+    // Se rodea a quien esté parado en medio. El servidor no lo exige (sólo
+    // valida contra el mapa), así que un snapshot algo viejo no invalida nada.
     const path = findPath(
       start,
       goal,
       this.cols,
       this.rows,
-      (c, r) => this.blocked[r][c],
+      (c, r) => this.blocked[r][c] || this.peerOccupies(c, r),
       door !== null || sitTarget !== null, // meta válida aunque bloqueada
     );
     if (!path || path.length === 0) return;
@@ -618,8 +678,34 @@ export class MainScene extends Phaser.Scene {
     this.showClickMarker(world.x, world.y);
   }
 
-  private furnitureAt(col: number, row: number): PlacedFurniture | undefined {
-    return this.furniture.find((f) => f.col === col && f.row === row);
+  /**
+   * ¿Hay otro jugador plantado (quieto o sentado) en esa celda? Con el ÚLTIMO
+   * snapshot, no con el interpolado: éste va 100 ms por detrás a propósito, y
+   * aquí interesa lo más parecido a lo que sabe el servidor, que aplica esta
+   * misma regla. Las puertas no se ocupan: quien llega a una se está yendo.
+   */
+  private peerOccupies(col: number, row: number): boolean {
+    if (this.doorAt(col, row)) return false;
+    for (const v of this.netPlayers) {
+      if (v.id === net.id || v.room !== this.roomId || v.moving) continue;
+      if (Math.round(v.col) === col && Math.round(v.row) === row) return true;
+    }
+    return false;
+  }
+
+  /**
+   * El asiento de una celda, si lo hay. Se miran TODOS los muebles de la
+   * celda: en la plaza hay una alfombra bajo el sofá, y buscar sólo el primer
+   * mueble devolvía la alfombra, así que ese sofá no se podía usar con el
+   * ratón (el servidor sí lo aceptaba).
+   */
+  private seatAtCell(col: number, row: number): SitTarget | null {
+    for (const f of this.furniture) {
+      if (f.col !== col || f.row !== row) continue;
+      const seat = seatAt(f.kind, col, row);
+      if (seat) return seat;
+    }
+    return null;
   }
 
   private doorAt(col: number, row: number): Door | undefined {
@@ -676,14 +762,15 @@ export class MainScene extends Phaser.Scene {
       return; // sin pared trasera no hay puerta visual
     }
 
-    const h = 40;
+    const h = ALTO_PUERTA;
     const lerp = (
       p: { x: number; y: number },
       q: { x: number; y: number },
       t: number,
     ) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
-    const p0 = lerp(a, b, 0.25);
-    const p1 = lerp(a, b, 0.75);
+    // Casi toda la celda de ancho: con la altura nueva, la mitad era una rendija
+    const p0 = lerp(a, b, 0.14);
+    const p1 = lerp(a, b, 0.86);
     const quad = [
       { x: p0.x, y: p0.y - h },
       { x: p1.x, y: p1.y - h },
@@ -716,123 +803,59 @@ export class MainScene extends Phaser.Scene {
     g.fillCircle(knob.x, knob.y - h * 0.5, 2);
   }
 
-  // ---------- Personalización ----------
+  // ---------- Aspecto ----------
 
-  private buildCustomPanel(): void {
-    const { x, y, w, h } = this.PANEL;
-    const title = (tx: number, ty: number, label: string) =>
-      this.add
-        .text(tx, ty, label, {
-          fontFamily: "monospace",
-          fontSize: "12px",
-          color: "#ffffff",
-        })
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_PANEL + 1);
-
-    const ui: Array<Phaser.GameObjects.Rectangle | Phaser.GameObjects.Text> = [];
-    ui.push(
-      this.add
-        .rectangle(x + w / 2, y + h / 2, w, h, 0x12121a, 0.94)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_PANEL)
-        .setStrokeStyle(1, 0x6d6d94, 1),
-    );
-    ui.push(title(x + 12, y + 10, "Personaliza tu look"));
-    ui.push(title(x + 12, y + 40, "Ropa"));
-
-    SHIRT_COLORS.forEach((c, i) => {
-      const s = this.add
-        .rectangle(x + 22 + i * 30, y + 68, 20, 20, c.value)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_PANEL + 1)
-        .setStrokeStyle(1, 0x000000, 1)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerdown", () => this.applyPalette({ ...this.palette, shirt: c.value }));
-      this.shirtSwatches.push(s);
-      ui.push(s);
+  /**
+   * Abre el vestidor sobre el aspecto actual. Nada cambia hasta Guardar.
+   * `bienvenida` es la primera vez, recién creada la cuenta.
+   */
+  private abrirVestidor(bienvenida = false): void {
+    if (this.vestidor || this.authModalOpen) return;
+    this.closeChat();
+    this.closePeerMenu();
+    this.avatar.cancelPath();
+    this.pendingDoor = null;
+    this.vestidor = new Vestidor(this, {
+      look: this.look,
+      titulo: bienvenida ? "¡Bienvenido a Roomie!" : "Vestidor",
+      subtitulo: bienvenida ? "Elige cómo quieres que te vean" : "C o Esc para cerrar · ←/→ giran",
+      onGuardar: (look) => {
+        this.applyLook(look);
+        this.cerrarVestidor();
+      },
+      onCerrar: () => this.cerrarVestidor(),
     });
-
-    ui.push(title(x + 12, y + 92, "Pelo"));
-    HAIR_COLORS.forEach((c, i) => {
-      const s = this.add
-        .rectangle(x + 22 + i * 30, y + 120, 20, 20, c.value)
-        .setScrollFactor(0)
-        .setDepth(LAYER.UI_PANEL + 1)
-        .setStrokeStyle(1, 0x000000, 1)
-        .setInteractive({ useHandCursor: true })
-        .on("pointerdown", () => this.applyPalette({ ...this.palette, hair: c.value }));
-      this.hairSwatches.push(s);
-      ui.push(s);
-    });
-
-    ui.push(title(x + 12, y + 146, "(C para cerrar)"));
-
-    this.customUI = ui;
-    this.refreshSwatches();
-    for (const o of ui) o.setVisible(false);
   }
 
-  private toggleCustomPanel(): void {
-    this.customOpen = !this.customOpen;
-    for (const o of this.customUI) o.setVisible(this.customOpen);
-    if (this.customOpen) this.refreshSwatches();
+  private cerrarVestidor(): void {
+    this.vestidor?.destroy();
+    this.vestidor = null;
   }
 
-  /** Regenera la textura del avatar con la paleta actual (sin tocar la red) */
-  private applyPaletteLocal(): void {
-    createAvatarTexture(this, this.palette);
-    const frame = this.avatar.sitting ? "sit-0" : `${this.avatar.facing}-0`;
-    this.player.setTexture("avatar", frame);
-    this.player.play(
-      this.anim(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`),
-      true,
-    );
-    this.refreshSwatches();
-  }
-
-  /** Regenera la textura con la nueva paleta, guarda y avisa al servidor */
-  private applyPalette(next: Palette): void {
-    this.palette = next;
-    createAvatarTexture(this, next);
-
+  /** Regenera la textura del avatar propio con su aspecto (sin tocar la red) */
+  private applyLookLocal(): void {
+    createAvatarTexture(this, this.look);
     // El sprite necesita reengancharse a la textura nueva
-    const frame = this.avatar.sitting ? "sit-0" : `${this.avatar.facing}-0`;
-    this.player.setTexture("avatar", frame);
+    this.player.setTexture("avatar", frameInicial(this.avatar.facing));
     this.player.play(
-      this.anim(this.avatar.sitting ? "idle-sit" : `idle-${this.avatar.facing}`),
+      this.anim(this.animacion("me", this.avatar.facing, this.avatar.sitting !== null, false)),
       true,
     );
+  }
 
-    this.refreshSwatches();
+  /** Aspecto nuevo: textura, guardado y aviso al servidor (los demás lo ven) */
+  private applyLook(next: Look): void {
+    const cambio = !mismoLook(next, this.look);
+    this.look = next;
+    if (!cambio) return;
+    this.applyLookLocal();
     this.saveGame();
-    net.look(next); // los demás me ven con la ropa nueva
+    net.look(next);
   }
 
   /** Nombre de animación del avatar LOCAL (prefijo `avatar:`) */
   private anim(name: string): string {
     return animKey("avatar", name);
-  }
-
-  /** Resalta con borde blanco el color seleccionado en cada fila */
-  private refreshSwatches(): void {
-    SHIRT_COLORS.forEach((c, i) => {
-      const sel = c.value === this.palette.shirt;
-      this.shirtSwatches[i]?.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 1);
-    });
-    HAIR_COLORS.forEach((c, i) => {
-      const sel = c.value === this.palette.hair;
-      this.hairSwatches[i]?.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 1);
-    });
-  }
-
-  /** ¿El clic cayó sobre el panel? (coords de cámara = scrollFactor 0) */
-  private isOverCustomUI(pointer: Phaser.Input.Pointer): boolean {
-    if (!this.customOpen) return false;
-    const { x, y, w, h } = this.PANEL;
-    return (
-      pointer.x >= x && pointer.x <= x + w && pointer.y >= y && pointer.y <= y + h
-    );
   }
 
   // ---------- Guardado ----------
@@ -846,8 +869,7 @@ export class MainScene extends Phaser.Scene {
       col: Math.round(this.avatar.col),
       row: Math.round(this.avatar.row),
       facing: this.avatar.facing,
-      shirt: this.palette.shirt,
-      hair: this.palette.hair,
+      look: this.look,
       nickname: save?.nickname ?? "",
       ...overrides,
     });
@@ -877,7 +899,7 @@ export class MainScene extends Phaser.Scene {
 
   private resolveStartFacing(save: SaveData | null): Facing {
     if (save) return save.facing;
-    return "down";
+    return FACING_SUR;
   }
 
   // ---------- Chat ----------
@@ -941,10 +963,10 @@ export class MainScene extends Phaser.Scene {
 
   /** Punto donde flota la burbuja de un avatar ("me" o un id de la sala) */
   private bubbleAnchor(ownerId: string): { x: number; y: number } | null {
-    if (ownerId === "me") return { x: this.player.x, y: this.player.y - 54 };
+    if (ownerId === "me") return { x: this.player.x, y: this.player.y - ALTO_NOMBRE };
     const peer = this.peers.get(ownerId);
     if (!peer) return null;
-    return { x: peer.sprite.x, y: peer.sprite.y - 72 }; // hueco para su nombre
+    return { x: peer.sprite.x, y: peer.sprite.y - ALTO_BURBUJA }; // hueco para su nombre
   }
 
   /** Las burbujas siguen a su avatar (o desaparecen si el avatar ya no está) */
@@ -1083,13 +1105,14 @@ export class MainScene extends Phaser.Scene {
     if (!msg.text) return;
 
     const mio = !msg.from || msg.from === net.id;
+    const quien = mio ? "me" : (msg.from as string);
     if (!mio) {
       const view = this.netPlayers.find((p) => p.id === msg.from);
       if (!view || view.room !== this.roomId) return; // no está en mi sala
-      this.showBubble(msg.from as string, msg.text);
-    } else {
-      this.showBubble("me", msg.text);
     }
+    this.showBubble(quien, msg.text);
+    // El gesto de saludar también se ve en el cuerpo, no sólo en la burbuja
+    if (msg.text === "👋") this.saludos.set(quien, this.time.now + SALUDO_MS);
     // Burbuja sobre la cabeza Y línea en el panel: la burbuja se va en 4 s,
     // el panel conserva la conversación.
     this.pushChatLine(`${msg.name}: ${msg.text}`, mio ? CHAT_COLORS.mine : CHAT_COLORS.other);
@@ -1178,14 +1201,18 @@ export class MainScene extends Phaser.Scene {
    * guardado local. A partir de aquí ya se puede entrar al mundo.
    */
   private onAuthOk(p: AuthOkPayload): void {
-    this.palette = paletteFrom(p.look);
-    this.paletaAlAbrir = null; // confirmados: no hay nada que descartar
-    this.applyPaletteLocal();
+    this.look = sanitizeLook(p.look);
+    this.applyLookLocal();
     this.closeAuthModal();
     this.saveGame();
     this.pushChatLine(`Hola, ${p.nickname}. Tienes ${p.saldo} monedas.`, CHAT_COLORS.mine);
     this.sendWhere();
     this.updateStatusHud();
+    // Cuenta recién creada: lo primero, elegir cómo te van a ver
+    if (this.recienRegistrado) {
+      this.recienRegistrado = false;
+      this.abrirVestidor(true);
+    }
   }
 
   private onAuthError(err: AuthErrorPayload): void {
@@ -1282,28 +1309,26 @@ export class MainScene extends Phaser.Scene {
     this.chatOpen = false;
     this.closeChat();
     this.closePeerMenu();
-    if (this.customOpen) this.toggleCustomPanel();
-    this.paletaAlAbrir = { ...this.palette };
+    this.cerrarVestidor();
     // El teclado del juego se apaga entero: si no, escribir una "c" abre el
-    // panel de personalización y Enter abre el chat detrás del modal.
+    // vestidor y Enter abre el chat detrás del modal.
     this.setGameKeyboard(false);
 
     const registro = modo === "register";
     const perfil = modo === "profile";
-    const conAspecto = registro || perfil;
 
     // La altura se CALCULA a partir de lo que va dentro, no se elige a ojo.
-    // Puesta a mano, el botón acababa montado encima de los selectores de
-    // color en el formulario de registro, que es el más alto.
+    // Puesta a mano, el botón acababa montado encima de lo de arriba.
+    //
+    // El aspecto ya no se elige aquí: tiene su vestidor, que se abre solo al
+    // crear la cuenta y desde el botón del perfil.
     const CAMPO = 48; // etiqueta + caja
-    const PREVIEW = 62;
-    const FILA = 44; // etiqueta + fila de colores
+    const INFO = 40; // datos de la cuenta en el perfil
     const BOTONES = 76; // dos botones y su separación
     const nCampos = perfil ? 0 : registro ? 3 : 2;
-    const aspecto = conAspecto ? PREVIEW + FILA * 2 : 0;
 
     const W = 380;
-    const H = 52 + nCampos * CAMPO + 20 + aspecto + BOTONES + 18;
+    const H = 52 + nCampos * CAMPO + 20 + (perfil ? INFO : 0) + BOTONES + 18;
     const X = 480 - W / 2;
     const Y = 270 - H / 2;
     const colX = X + 26;
@@ -1418,72 +1443,35 @@ export class MainScene extends Phaser.Scene {
     );
     cursorY += 22;
 
-    // ---------- Aspecto ----------
-    if (conAspecto) {
-      createAvatarTexture(this, this.palette, PREVIEW_KEY);
-      const preview = add(
+    // ---------- Datos de la cuenta (perfil) ----------
+    if (perfil) {
+      const yo = net.identidad;
+      add(
         this.add
-          .sprite(480, cursorY + 30, PREVIEW_KEY, "down-0")
-          .setOrigin(0.5)
-          .setScale(2)
+          .text(480, cursorY + 4, yo ? `${yo.nickname}  ·  @${yo.username}\n${yo.saldo} monedas` : "", {
+            fontFamily: "monospace",
+            fontSize: "12px",
+            color: "#cccccc",
+            align: "center",
+            lineSpacing: 6,
+          })
+          .setOrigin(0.5, 0)
           .setScrollFactor(0)
           .setDepth(LAYER.UI_MODAL + 2),
       );
-      preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
-      const repintar = (): void => {
-        preview.anims.stop();
-        createAvatarTexture(this, this.palette, PREVIEW_KEY);
-        preview.setTexture(PREVIEW_KEY, "down-0");
-        preview.play(animKey(PREVIEW_KEY, "idle-down"), true);
-      };
-      cursorY += PREVIEW;
-
-      const fila = (
-        colores: typeof SHIRT_COLORS,
-        etiqueta: string,
-        leer: () => number,
-        poner: (v: number) => void,
-      ): Phaser.GameObjects.Rectangle[] => {
-        add(
-          this.add
-            .text(colX, cursorY, etiqueta, {
-              fontFamily: "monospace",
-              fontSize: "11px",
-              color: "#cccccc",
-            })
-            .setScrollFactor(0)
-            .setDepth(LAYER.UI_MODAL + 2),
-        );
-        const muestras: Phaser.GameObjects.Rectangle[] = [];
-        colores.forEach((c, i) => {
-          const m = add(
-            this.add
-              .rectangle(colX + 10 + i * 32, cursorY + 26, 20, 20, c.value)
-              .setScrollFactor(0)
-              .setDepth(LAYER.UI_MODAL + 2)
-              .setStrokeStyle(c.value === leer() ? 2 : 1, c.value === leer() ? 0xffffff : 0x000000, 2)
-              .setInteractive({ useHandCursor: true })
-              .on("pointerdown", () => {
-                poner(c.value);
-                muestras.forEach((s, j) => {
-                  const sel = colores[j].value === leer();
-                  s.setStrokeStyle(sel ? 2 : 1, sel ? 0xffffff : 0x000000, 2);
-                });
-                repintar();
-              }),
-          );
-          muestras.push(m);
-        });
-        cursorY += FILA;
-        return muestras;
-      };
-
-      fila(SHIRT_COLORS, "Ropa:", () => this.palette.shirt, (v) => {
-        this.palette = { ...this.palette, shirt: v };
-      });
-      fila(HAIR_COLORS, "Pelo:", () => this.palette.hair, (v) => {
-        this.palette = { ...this.palette, hair: v };
-      });
+      cursorY += INFO;
+      // Sin campos de texto no hay Esc que valga: el perfil se cierra aquí
+      const cerrar = add(
+        this.add
+          .text(X + W - 16, Y + 14, "✕", { fontFamily: "monospace", fontSize: "14px", color: "#9a9ad0" })
+          .setOrigin(0.5)
+          .setScrollFactor(0)
+          .setDepth(LAYER.UI_MODAL + 3)
+          .setInteractive({ useHandCursor: true })
+          .on("pointerover", () => cerrar.setColor("#ffffff"))
+          .on("pointerout", () => cerrar.setColor("#9a9ad0"))
+          .on("pointerdown", () => this.closeAuthModal()),
+      );
     }
 
     // ---------- Botones ----------
@@ -1522,8 +1510,12 @@ export class MainScene extends Phaser.Scene {
       W - 52,
       0x6c5ce7,
       0x8c7ce7,
-      perfil ? "Guardar aspecto" : registro ? "Crear cuenta y entrar" : "Entrar",
-      () => this.submitAuth(),
+      perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : "Entrar",
+      () => {
+        if (!perfil) return this.submitAuth();
+        this.closeAuthModal();
+        this.abrirVestidor();
+      },
     );
 
     if (perfil) {
@@ -1579,14 +1571,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   private submitAuth(): void {
-    if (this.authMode === "profile") {
-      // Sólo aspecto: se manda al servidor, que lo guarda en la cuenta
-      net.look(this.palette);
-      this.applyPalette(this.palette);
-      this.paletaAlAbrir = null;
-      this.closeAuthModal();
-      return;
-    }
+    if (this.authMode === "profile") return; // el perfil no envía nada
 
     const username = this.valorCampo("username").trim();
     const password = this.valorCampo("password");
@@ -1607,18 +1592,20 @@ export class MainScene extends Phaser.Scene {
     }
 
     this.mensajeAuth("Conectando...", "#9a9ad0");
+    // Al registrarse se parte del aspecto por defecto (o del último guardado);
+    // el vestidor se abre nada más entrar para elegir el suyo.
+    this.recienRegistrado = registro;
     net.auth({
       mode: registro ? "register" : "login",
       username,
       password,
       nickname: registro ? nickname : undefined,
-      look: registro ? this.palette : undefined,
+      look: registro ? this.look : undefined,
     });
   }
 
   private cerrarSesion(): void {
     net.logout();
-    this.paletaAlAbrir = null;
     this.closeAuthModal();
     clearSave();
     this.scene.restart();
@@ -1626,12 +1613,6 @@ export class MainScene extends Phaser.Scene {
 
   private closeAuthModal(): void {
     this.authModalOpen = false;
-
-    // Cerrar sin guardar descarta los colores que se estaban probando
-    if (this.paletaAlAbrir) {
-      this.palette = this.paletaAlAbrir;
-      this.paletaAlAbrir = null;
-    }
     this.authError = null;
     this.campoActivo = null;
 
@@ -1643,10 +1624,6 @@ export class MainScene extends Phaser.Scene {
       if (o.active) o.destroy();
     }
     this.authUI = [];
-
-    // La preview tiene textura y animaciones propias. Va DESPUÉS de destruir
-    // los sprites que la usaban, nunca antes.
-    destroyAvatarAssets(this, PREVIEW_KEY);
 
     this.setGameKeyboard(true);
   }
@@ -1671,15 +1648,14 @@ export class MainScene extends Phaser.Scene {
     if (existing) return existing;
 
     const textureKey = `avatar:${v.id}`;
-    createAvatarTexture(this, v.look, textureKey);
-    const sprite = this.add
-      .sprite(0, 0, textureKey, `${v.facing}-0`)
-      .setOrigin(0.5, 1)
-      .setScale(2);
-    // Zona de toque algo mayor que el muñeco (16x24): con el dedo, 32x48 px
-    // en pantalla se falla demasiado.
+    const look = sanitizeLook(v.look);
+    createAvatarTexture(this, look, textureKey);
+    const sprite = this.add.sprite(0, 0, textureKey, frameInicial(v.facing)).setOrigin(ORIGEN.x, ORIGEN.y);
+    // Zona de toque: el cuerpo entero y un poco más (coordenadas del
+    // fotograma de 48×84; el muñeco ocupa el centro, de ~12 a ~36 de ancho).
+    // Con el dedo, ajustarse al dibujo se falla demasiado.
     sprite
-      .setInteractive(new Phaser.Geom.Rectangle(-4, -2, 24, 28), Phaser.Geom.Rectangle.Contains)
+      .setInteractive(new Phaser.Geom.Rectangle(8, 6, 32, 76), Phaser.Geom.Rectangle.Contains)
       .on("pointerdown", () => this.openPeerMenu(v.id));
     if (sprite.input) sprite.input.cursor = "pointer";
     const label = this.add
@@ -1699,7 +1675,7 @@ export class MainScene extends Phaser.Scene {
       col: v.col,
       row: v.row,
       textureKey,
-      look: { ...v.look },
+      look,
     };
     this.peers.set(v.id, peer);
     return peer;
@@ -1714,6 +1690,7 @@ export class MainScene extends Phaser.Scene {
     peer.label.destroy();
     this.bubbles.get(id)?.destroy();
     this.bubbles.delete(id);
+    this.saludos.delete(id);
     destroyAvatarAssets(this, peer.textureKey);
     this.peers.delete(id);
   }
@@ -1773,30 +1750,27 @@ export class MainScene extends Phaser.Scene {
       const peer = this.ensurePeer(v);
       peer.view = v;
 
-      // Cambió la ropa/pelo del remoto → regenerar SU textura (no la mía)
-      if (peer.look.shirt !== v.look.shirt || peer.look.hair !== v.look.hair) {
-        peer.look = { ...v.look };
-        createAvatarTexture(this, peer.look, peer.textureKey);
-        peer.sprite.setTexture(peer.textureKey, `${peer.view.facing}-0`);
+      // Cambió el aspecto del remoto → regenerar SU textura (no la mía)
+      const look = sanitizeLook(v.look);
+      if (!mismoLook(peer.look, look)) {
+        peer.look = look;
+        createAvatarTexture(this, look, peer.textureKey);
+        peer.sprite.setTexture(peer.textureKey, frameInicial(v.facing));
       }
 
       peer.col = v.col;
       peer.row = v.row;
 
-      const p = peerScreen(peer.col, peer.row, v.sitting);
-      peer.sprite.setPosition(p.x, p.y).setDepth(worldDepth(p.depth)).setFlipX(v.flip);
+      // Sentado, a la altura de SU asiento (el taburete es más alto que el sofá)
+      const asiento = v.sitting ? (this.seatAtCell(Math.round(v.col), Math.round(v.row))?.alto ?? null) : null;
+      const p = peerScreen(peer.col, peer.row, asiento);
+      peer.sprite.setPosition(p.x, p.y).setDepth(worldDepth(p.depth));
       // La animación la decide el SERVIDOR (`moving`/`facing`), que ya lo envía
       // en cada snapshot. Antes se deducía del desplazamiento en píxeles entre
       // frames: con un suavizado el delta nunca llega a cero exacto, así que el
       // remoto parpadeaba entre caminar y estar quieto.
-      peer.sprite.play(
-        animKey(
-          peer.textureKey,
-          v.sitting ? "idle-sit" : v.moving ? `walk-${v.facing}` : `idle-${v.facing}`,
-        ),
-        true,
-      );
-      peer.label.setPosition(p.x, p.y - 52).setDepth(worldDepth(p.depth) + 0.1);
+      peer.sprite.play(animKey(peer.textureKey, this.animacion(v.id, v.facing, v.sitting, v.moving)), true);
+      peer.label.setPosition(p.x, p.y - ALTO_NOMBRE).setDepth(LAYER.WORLD_LABEL);
     }
 
     for (const id of [...this.peers.keys()]) {
@@ -1821,11 +1795,19 @@ export class MainScene extends Phaser.Scene {
     const self = net.self();
     if (!self || self.room !== this.roomId) return;
 
+    // Quieto yo (sin camino ni teclas) y quieto el servidor
+    const atRest =
+      !self.moving &&
+      this.avatar.path.length === 0 &&
+      this.sentMove.mx === 0 &&
+      this.sentMove.my === 0;
+    this.reconcileSitting(self, atRest);
+
     const dCol = self.col - this.avatar.col;
     const dRow = self.row - this.avatar.row;
     const drift = Math.hypot(dCol, dRow);
 
-    if (drift <= CORRECTION_DEADZONE) return;
+    if (drift <= (atRest ? REST_DEADZONE : CORRECTION_DEADZONE)) return;
 
     // Divergencia real, no deriva: adoptar la posición autoritativa.
     if (drift > CORRECTION_TELEPORT) {
@@ -1842,11 +1824,49 @@ export class MainScene extends Phaser.Scene {
     const row = this.avatar.row + dRow * k;
     // El destino del servidor siempre es válido, pero el punto intermedio del
     // arrastre podría rozar una esquina bloqueada: el arrastre no salta muros.
+    // Salir de la celda en la que ya se está sí vale aunque esté bloqueada
+    // (el sofá): si no, quien se levanta de un asiento que el servidor le negó
+    // se quedaría clavado en él para siempre.
     const c = Math.round(col);
     const r = Math.round(row);
-    if (this.inBounds(c, r) && !this.blocked[r][c]) {
+    const same = c === Math.round(this.avatar.col) && r === Math.round(this.avatar.row);
+    if (this.inBounds(c, r) && (same || !this.blocked[r][c])) {
       this.avatar.col = col;
       this.avatar.row = row;
+    }
+  }
+
+  /**
+   * Sentado o de pie: si el servidor y yo no coincidimos durante más de un
+   * viaje de ida y vuelta, gana el servidor. Pasa cuando dos llegan al mismo
+   * asiento casi a la vez: cada uno decide con lo que sabe y uno de los dos
+   * se equivoca. Sin esto, uno se vería sentado encima del otro en su
+   * pantalla mientras los demás lo ven de pie al lado.
+   */
+  private reconcileSitting(self: PlayerView, atRest: boolean): void {
+    const sittingHere = this.avatar.sitting !== null;
+    // Sólo cuenta la discrepancia cuando ya no puede ser retraso: yo quieto
+    // si el servidor me sienta, y el servidor quieto si soy yo quien se sentó.
+    const mismatch = self.sitting ? !sittingHere && atRest : sittingHere && !self.moving;
+    if (!mismatch) {
+      this.sitMismatchSince = 0;
+      return;
+    }
+    const now = performance.now();
+    if (this.sitMismatchSince === 0) this.sitMismatchSince = now;
+    if (now - this.sitMismatchSince < SIT_MISMATCH_MS) return;
+
+    this.sitMismatchSince = 0;
+    this.avatar.cancelPath();
+    this.pendingDoor = null;
+    if (self.sitting) {
+      const col = Math.round(self.col);
+      const row = Math.round(self.row);
+      // El asiento dice altura y dirección; si el servidor me sentó donde yo
+      // no veo asiento (no debería pasar), al menos se respeta su dirección.
+      this.avatar.sitAt(this.seatAtCell(col, row) ?? { col, row, alto: 14, dir: self.facing });
+    } else {
+      this.avatar.stand();
     }
   }
 
@@ -2050,7 +2070,7 @@ export class MainScene extends Phaser.Scene {
    * píxel, y aquí sólo se coloca. Cada sala usa los frames de su tema.
    */
   private buildWalls(): void {
-    const h = 48; // altura de la cara de pared, igual que en genassets.mjs
+    const h = ALTO_PARED;
     for (let col = 0; col < this.cols; col++) {
       const { x, y } = toScreen(col, 0);
       this.add
@@ -2114,7 +2134,9 @@ export class MainScene extends Phaser.Scene {
     const xs = corners.map((c) => c.x);
     const ys = corners.map((c) => c.y);
     const minX = Math.min(...xs) - 32;
-    const minY = Math.min(...ys) - 16;
+    // Por arriba, también las paredes: si no, la cámara no llega a enseñar
+    // su remate cuando la sala es más alta que la ventana.
+    const minY = Math.min(...ys) - 16 - ALTO_PARED;
     const maxX = Math.max(...xs) + 32;
     const maxY = Math.max(...ys) + 16;
     // Al menos el tamaño de la vista, centrado en la sala: si los límites

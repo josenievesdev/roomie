@@ -2,10 +2,10 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server, type Socket } from "socket.io";
-import { AvatarState, type Facing } from "../../src/state/avatarState.ts";
-import { DEFAULT_PALETTE, type Palette } from "../../src/state/palette.ts";
+import { AvatarState, FACING_SUR, isFacing, type Facing } from "../../src/state/avatarState.ts";
+import { sanitizeLook } from "../../src/state/look.ts";
 import { toScreen } from "../../src/utils/iso.ts";
-import type { Cell } from "../../src/utils/pathfinding.ts";
+import { findPath, type Cell } from "../../src/utils/pathfinding.ts";
 import {
   CHAT_COOLDOWN_MS,
   CHAT_MAX,
@@ -73,7 +73,7 @@ const clampAxis = (v: unknown): number =>
   typeof v === "number" && Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0;
 
 function normalizeFacing(v: unknown): Facing {
-  return v === "up" || v === "side" ? v : "down";
+  return isFacing(v) ? v : FACING_SUR;
 }
 
 function sanitizeName(v: unknown): string {
@@ -92,16 +92,6 @@ function sanitizeChat(v: unknown): string {
     .slice(0, CHAT_MAX);
 }
 
-function sanitizeLook(v: unknown): Look {
-  const o = (v ?? {}) as Partial<Palette>;
-  const ok = (n: unknown, fallback: number): number =>
-    typeof n === "number" && Number.isFinite(n) ? n : fallback;
-  return {
-    shirt: ok(o.shirt, DEFAULT_PALETTE.shirt),
-    hair: ok(o.hair, DEFAULT_PALETTE.hair),
-  };
-}
-
 /** Nombre de usuario: letras, números y guiones. Nada más. */
 function sanitizeUser(v: unknown): string {
   return String(v ?? "")
@@ -110,8 +100,18 @@ function sanitizeUser(v: unknown): string {
     .slice(0, USER_MAX);
 }
 
-/** Celda de entrada: válida y libre, o la libre más cercana al centro */function spawnCell(world: RoomWorld, col: unknown, row: unknown): Cell {
-  if (
+/**
+ * Celda de entrada: la pedida si es válida, o la libre más cercana al centro.
+ * Y en ambos casos, sin nadie encima: dos jugadores que cruzan la misma
+ * puerta piden la misma celda y antes aparecían uno dentro del otro.
+ */
+function spawnCell(
+  world: RoomWorld,
+  col: unknown,
+  row: unknown,
+  taken: (col: number, row: number) => boolean,
+): Cell {
+  const pedida =
     typeof col === "number" &&
     typeof row === "number" &&
     Number.isInteger(col) &&
@@ -121,10 +121,76 @@ function sanitizeUser(v: unknown): string {
     col < world.cols &&
     row < world.rows &&
     !world.isBlocked(col, row)
-  ) {
-    return { col, row };
+      ? { col, row }
+      : world.freeCell();
+  return world.nearestFree(pedida, taken);
+}
+
+/**
+ * ¿Hay alguien plantado en esa celda de la sala? Quieto o sentado; quien va
+ * andando no ocupa sitio (está de paso). Las puertas no se ocupan nunca: quien
+ * llega a una está a punto de irse de la sala.
+ */
+function occupied(room: RoomId, col: number, row: number, except: string): boolean {
+  const world = worlds.get(room);
+  if (world?.doorCells.has(cellKey(col, row))) return false;
+  for (const p of players.values()) {
+    if (p.id === except || p.room !== room || p.moving) continue;
+    if (Math.round(p.state.col) === col && Math.round(p.state.row) === row) return true;
   }
-  return world.freeCell();
+  return false;
+}
+
+/**
+ * El avatar autoritativo de un jugador en una sala. Cambiar de sala crea uno
+ * nuevo, así que la sala puede quedar fija aquí dentro.
+ */
+function newState(id: string, room: RoomId, start: Cell, facing: Facing): AvatarState {
+  const world = worlds.get(room)!;
+  return new AvatarState(
+    {
+      cols: world.cols,
+      rows: world.rows,
+      isBlocked: world.isBlocked,
+      isOccupied: (col, row) => occupied(room, col, row, id),
+    },
+    start,
+    facing,
+  );
+}
+
+/**
+ * Cuántas celdas puede ir el servidor por detrás del camino que manda el
+ * cliente. El cliente calcula el camino desde donde SE VE (va por delante: su
+ * entrada tarda en llegar aquí), así que al cambiar de rumbo en plena marcha
+ * el camino empieza a dos celdas de donde el servidor lo tiene. Antes eso se
+ * rechazaba sin avisar: el cliente seguía andando, el servidor no, y la
+ * corrección acababa arrastrándolo hacia atrás. 3 celdas cubren ~600 ms de
+ * retraso a 3 celdas/s; más allá ya no es retraso, es otra cosa.
+ */
+const MAX_BRIDGE = 3;
+
+/**
+ * Si el camino empieza a más de un paso del servidor, se le antepone un
+ * tramo corto (A* sobre la misma sala) desde la posición autoritativa hasta
+ * su primera celda. No da ventaja a nadie: el puente se recorre andando, a la
+ * velocidad de siempre. Devuelve el camino tal cual si no hace falta puente,
+ * o `null` si el hueco es demasiado grande.
+ */
+function bridged(world: RoomWorld, cells: unknown, from: Cell): unknown {
+  if (!Array.isArray(cells) || cells.length === 0) return cells;
+  const first = cells[0] as Partial<Cell> | null;
+  if (!first || !Number.isInteger(first.col) || !Number.isInteger(first.row)) return cells;
+  const head = first as Cell;
+  const origin = { col: Math.round(from.col), row: Math.round(from.row) };
+  const gap = Math.max(Math.abs(head.col - origin.col), Math.abs(head.row - origin.row));
+  if (gap <= 1) return cells;
+  if (gap > MAX_BRIDGE) return null;
+  const key = cellKey(head.col, head.row);
+  const special = cells.length === 1 && (world.sitCells.has(key) || world.doorCells.has(key));
+  const puente = findPath(origin, head, world.cols, world.rows, world.isBlocked, special);
+  if (!puente || puente.length > MAX_BRIDGE) return null;
+  return [...puente, ...cells.slice(1)];
 }
 
 /**
@@ -201,7 +267,6 @@ function view(p: Player): PlayerView {
     col: p.state.col,
     row: p.state.row,
     facing: p.state.facing,
-    flip: p.state.flipX,
     sitting: p.state.sitting !== null,
     moving: p.moving && p.state.sitting === null,
     look: p.look,
@@ -346,7 +411,9 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const start = spawnCell(world, payload?.col, payload?.row);
+    const start = spawnCell(world, payload?.col, payload?.row, (c, r) =>
+      occupied(room, c, r, socket.id),
+    );
 
     const player: Player = {
       id: socket.id,
@@ -355,11 +422,7 @@ io.on("connection", (socket) => {
       room,
       look: sanitizeLook(sesion.avatar.look),
       world,
-      state: new AvatarState(
-        { cols: world.cols, rows: world.rows, isBlocked: world.isBlocked },
-        start,
-        normalizeFacing(payload?.facing),
-      ),
+      state: newState(socket.id, room, start, normalizeFacing(payload?.facing)),
       input: { mx: 0, my: 0 },
       moving: false,
       lastMoveAt: 0,
@@ -380,12 +443,15 @@ io.on("connection", (socket) => {
     me.lastMoveAt = Date.now();
   });
 
-  socket.on("path", (cells: Cell[]) => {
+  socket.on("path", (raw: Cell[]) => {
     if (!me) return;
-    if (!validPath(me.world, cells, { col: me.state.col, row: me.state.row })) return;
+    const from = { col: me.state.col, row: me.state.row };
+    const cells = bridged(me.world, raw, from);
+    if (!validPath(me.world, cells, from)) return;
     const last = cells[cells.length - 1];
-    // ¿El destino es un sofá? → el servidor manda sentarse (no el cliente)
-    const sit = me.world.sitCells.has(cellKey(last.col, last.row)) ? last : null;
+    // ¿El destino es un asiento? → el servidor manda sentarse (no el cliente),
+    // y el asiento dice hacia dónde se mira
+    const sit = me.world.seats.get(cellKey(last.col, last.row)) ?? null;
     me.state.startPath(cells, sit);
   });
 
@@ -428,11 +494,8 @@ io.on("connection", (socket) => {
 
     enterRoom(socket, player, p.room);
     player.world = world;
-    player.state = new AvatarState(
-      { cols: world.cols, rows: world.rows, isBlocked: world.isBlocked },
-      spawnCell(world, p?.col, p?.row),
-      normalizeFacing(p?.facing),
-    );
+    const start = spawnCell(world, p?.col, p?.row, (c, r) => occupied(p.room, c, r, player.id));
+    player.state = newState(player.id, p.room, start, normalizeFacing(p?.facing));
     player.input = { mx: 0, my: 0 };
   });
 

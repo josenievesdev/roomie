@@ -1,233 +1,169 @@
 import Phaser from "phaser";
-import { DEFAULT_PALETTE, type Palette } from "../state/palette.ts";
+import {
+  ALTO_HOJA,
+  ANCHO_HOJA,
+  ANIMS,
+  HOJA,
+  capasDe,
+  componer,
+  ficheroCapa,
+  marco,
+  type Anim,
+  type Capa,
+} from "../render/avatarSheet";
+import type { Facing } from "../state/avatarState";
+import { DEFAULT_LOOK, ESTILOS, PARTES, type Look } from "../state/look";
 
-// Avatar placeholder generado por código: spritesheet 4 frames × 3 direcciones
-// + pose sentada. Los colores de ropa y pelo vienen de la paleta, así que se
-// puede regenerar en caliente (botón C en el juego).
-// La dirección "side" está dibujada mirando a la izquierda; usar flipX para
-// la derecha.
-export const FRAME_W = 16;
-export const FRAME_H = 24;
+// Avatar: capas generadas por `tools/genavatar.mjs` (cuerpo, peinados,
+// prendas), combinadas y coloreadas en el navegador según el aspecto de cada
+// jugador. Una textura por avatar: "avatar" para el propio y `avatar:<id>`
+// para cada remoto. Las animaciones se registran con prefijo `${key}:`.
 
-const DIRS = ["down", "up", "side"] as const;
-type Dir = (typeof DIRS)[number];
+/** Todas las capas que existen: el cuerpo y cada estilo de cada parte */
+export const TODAS_LAS_CAPAS: readonly string[] = [
+  "cuerpo",
+  ...PARTES.flatMap((p) => Object.keys(ESTILOS[p]).map((e) => `${p}/${e}`)),
+];
 
-type Colors = {
-  skin: number;
-  hair: number;
-  shirt: number;
-  shirtDark: number;
-  pants: number;
-  pantsDark: number;
-  shoes: number;
-  eye: number;
-};
+/** Origen del sprite: los pies (el punto del suelo sobre el que está) */
+export const ORIGEN = { x: HOJA.anclaX / HOJA.frameW, y: HOJA.anclaY / HOJA.frameH };
 
-function darken(hex: number, f = 0.75): number {
-  const r = Math.floor(((hex >> 16) & 0xff) * f);
-  const g = Math.floor(((hex >> 8) & 0xff) * f);
-  const b = Math.floor((hex & 0xff) * f);
-  return (r << 16) | (g << 8) | b;
-}
+/** Altura del avatar de pie en píxeles (para colocar nombres y burbujas) */
+export const ALTO_AVATAR = 64;
 
-function colorsFrom(palette: Palette): Colors {
-  return {
-    skin: 0xf2c9a5,
-    hair: palette.hair,
-    shirt: palette.shirt,
-    shirtDark: darken(palette.shirt),
-    pants: 0x2e3a59,
-    pantsDark: 0x242c44,
-    shoes: 0x14141c,
-    eye: 0x1a1a24,
-  };
-}
+/**
+ * Fotogramas por segundo al caminar. A 3 celdas/s (≈136 px/s) y con zancadas
+ * de ±30° cada ciclo avanza ~40 px: 8 fotogramas a 26 fps dejan el pie de
+ * apoyo casi quieto sobre el suelo. Más lento, los pies patinan.
+ */
+const FPS_CAMINAR = 26;
+/** Ojos abiertos y parpadeo (ms) */
+const ABIERTOS_MS = 3300;
+const PARPADEO_MS = 130;
 
-function rect(
-  g: Phaser.GameObjects.Graphics,
-  ox: number,
-  oy: number,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  color: number,
-): void {
-  g.fillStyle(color, 1);
-  g.fillRect(ox + x, oy + y, w, h);
-}
+const texCapa = (nombre: string): string => `capa:${nombre}`;
+const nombreFrame = (anim: Anim, dir: number, i: number): string => `${anim}-${dir}-${i}`;
 
-/** Pierna de 3px: pantalón + zapato. Si lifted, la pierna queda 1px más corta. */
-function leg(
-  g: Phaser.GameObjects.Graphics,
-  C: Colors,
-  ox: number,
-  oy: number,
-  x: number,
-  lifted: boolean,
-  color: number,
-): void {
-  const top = 18;
-  if (lifted) {
-    rect(g, ox, oy, x, top, 3, 3, color); // pantalón
-    rect(g, ox, oy, x, top + 3, 3, 2, C.shoes); // zapato subido (hueco 1px abajo)
-  } else {
-    rect(g, ox, oy, x, top, 3, 4, color);
-    rect(g, ox, oy, x, top + 4, 3, 2, C.shoes);
-  }
-}
+/** Fotograma de reposo en una dirección (para `add.sprite` y `setTexture`) */
+export const frameInicial = (dir: Facing): string => nombreFrame("idle", dir, 0);
 
-function drawFrame(
-  g: Phaser.GameObjects.Graphics,
-  C: Colors,
-  dir: Dir,
-  frame: number,
-  ox: number,
-  oy: number,
-): void {
-  // Piernas: zancada alterna en frames 1 (derecha) y 3 (izquierda)
-  const liftR = frame === 1;
-  const liftL = frame === 3;
-
-  if (dir === "side") {
-    // Perfil: patas separadas horizontalmente (tijera)
-    if (frame === 0 || frame === 2) {
-      leg(g, C, ox, oy, 6, false, C.pants);
-    } else {
-      leg(g, C, ox, oy, 3, false, C.pantsDark); // pierna trasera
-      leg(g, C, ox, oy, 9, false, C.pants); // pierna delantera
+/** Encola la descarga de las capas (una vez: sobreviven al reinicio de escena) */
+export function preloadAvatar(scene: Phaser.Scene): void {
+  for (const nombre of TODAS_LAS_CAPAS) {
+    if (!scene.textures.exists(texCapa(nombre))) {
+      scene.load.image(texCapa(nombre), `assets/avatar/${ficheroCapa(nombre)}`);
     }
-  } else {
-    leg(g, C, ox, oy, 5, liftL, C.pants);
-    leg(g, C, ox, oy, 9, liftR, C.pants);
   }
-
-  // Torso
-  if (dir === "side") {
-    rect(g, ox, oy, 4, 10, 7, 8, C.shirt);
-    rect(g, ox, oy, 5, 10, 2, 6, C.shirtDark); // brazo
-    rect(g, ox, oy, 5, 16, 2, 2, C.skin); // mano
-  } else {
-    rect(g, ox, oy, 3, 10, 10, 8, C.shirt);
-    rect(g, ox, oy, 3, 10, 2, 6, C.shirtDark); // brazo izq.
-    rect(g, ox, oy, 11, 10, 2, 6, C.shirtDark); // brazo der.
-    rect(g, ox, oy, 3, 16, 2, 2, C.skin);
-    rect(g, ox, oy, 11, 16, 2, 2, C.skin);
-  }
-
-  // Cabeza
-  if (dir === "down") {
-    rect(g, ox, oy, 4, 1, 8, 4, C.hair);
-    rect(g, ox, oy, 4, 5, 8, 5, C.skin);
-    rect(g, ox, oy, 6, 6, 1, 2, C.eye);
-    rect(g, ox, oy, 9, 6, 1, 2, C.eye);
-  } else if (dir === "up") {
-    rect(g, ox, oy, 4, 1, 8, 9, C.hair); // pelo visto desde atrás
-  } else {
-    rect(g, ox, oy, 4, 1, 8, 3, C.hair);
-    rect(g, ox, oy, 4, 4, 5, 6, C.skin);
-    rect(g, ox, oy, 9, 4, 3, 6, C.hair);
-    rect(g, ox, oy, 5, 6, 1, 2, C.eye);
-  }
-}
-
-/** Pose sentada (de perfil, mirando a la izquierda): para el sofá */
-function drawSit(g: Phaser.GameObjects.Graphics, C: Colors, ox: number, oy: number): void {
-  // Piernas: muslo horizontal, espinilla colgando y pie
-  rect(g, ox, oy, 4, 17, 7, 4, C.pants); // muslo + cadera
-  rect(g, ox, oy, 4, 20, 3, 4, C.pants); // espinilla
-  rect(g, ox, oy, 1, 21, 3, 3, C.shoes); // pie
-  // Torso
-  rect(g, ox, oy, 6, 10, 6, 7, C.shirt);
-  rect(g, ox, oy, 7, 10, 2, 5, C.shirtDark); // brazo
-  rect(g, ox, oy, 7, 15, 2, 2, C.skin); // mano
-  // Cabeza de perfil
-  rect(g, ox, oy, 5, 1, 8, 3, C.hair);
-  rect(g, ox, oy, 5, 4, 5, 6, C.skin);
-  rect(g, ox, oy, 10, 4, 3, 6, C.hair);
-  rect(g, ox, oy, 6, 6, 1, 2, C.eye);
 }
 
 /**
- * (Re)genera la textura del avatar con la paleta dada y sus animaciones.
- * Si la textura ya existía se destruye (así se aplican los cambios de color
- * en caliente); los sprites que la usen deben volver a llamarse setTexture.
- *
- * `key` permite tener UNA textura por avatar: "avatar" para el local y
- * `avatar:<id>` para cada jugador remoto (cada uno con su propia paleta).
- * Las animaciones se registran con prefijo `${key}:` para no pisarse.
+ * Píxeles de una capa, leídos UNA vez y guardados. Las capas no son colores:
+ * cada píxel lleva material, banda de luz y profundidad (ver avatarSheet.ts).
+ * Los PNG no llevan perfil de color, así que el navegador no los retoca al
+ * dibujarlos y los valores llegan intactos.
  */
-export function createAvatarTexture(
-  scene: Phaser.Scene,
-  palette: Palette = DEFAULT_PALETTE,
-  key = "avatar",
-): void {
+const pixeles = new Map<string, Capa>();
+
+function capa(scene: Phaser.Scene, nombre: string): Capa {
+  const hecha = pixeles.get(nombre);
+  if (hecha) return hecha;
+  const img = scene.textures.get(texCapa(nombre)).getSourceImage() as HTMLImageElement;
+  const lienzo = document.createElement("canvas");
+  lienzo.width = img.width;
+  lienzo.height = img.height;
+  const ctx = lienzo.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("sin contexto 2D");
+  ctx.drawImage(img, 0, 0);
+  const c: Capa = { width: img.width, height: img.height, data: ctx.getImageData(0, 0, img.width, img.height).data };
+  pixeles.set(nombre, c);
+  return c;
+}
+
+/** Vuelca RGBA en una textura de lienzo nueva (sustituye a la que hubiera) */
+function texturaDesde(scene: Phaser.Scene, key: string, rgba: Uint8ClampedArray, w: number, h: number) {
+  if (scene.textures.exists(key)) scene.textures.remove(key);
+  const tex = scene.textures.createCanvas(key, w, h);
+  if (!tex) throw new Error(`no se pudo crear la textura ${key}`);
+  const ctx = tex.getContext();
+  const img = ctx.createImageData(w, h);
+  img.data.set(rgba);
+  ctx.putImageData(img, 0, 0);
+  tex.refresh();
+  // Vecino más cercano: con muestreo lineal el pixel art se emborrona
+  tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
+  return tex;
+}
+
+/**
+ * (Re)genera la textura de un avatar con su aspecto y sus animaciones.
+ * Si ya existía se sustituye (así se aplican los cambios del vestidor en
+ * caliente); los sprites que la usen deben volver a llamar a `setTexture`.
+ */
+export function createAvatarTexture(scene: Phaser.Scene, look: Look = DEFAULT_LOOK, key = "avatar"): void {
   // Las animaciones guardan referencias DIRECTAS a los Frame de la textura.
   // Si solo se destruye la textura, esas referencias quedan con texture/source
   // a null y el primer play() tras reiniciar la escena rompe el render
   // (pantalla negra al cruzar una puerta). Se destruyen y recrean SIEMPRE
   // junto con la textura, para que apunten a los frames vigentes.
-  for (const animKey of avatarAnimKeys(key)) {
-    if (scene.anims.exists(animKey)) scene.anims.remove(animKey);
+  for (const k of avatarAnimKeys(key)) {
+    if (scene.anims.exists(k)) scene.anims.remove(k);
   }
 
-  if (scene.textures.exists(key)) scene.textures.remove(key);
-  const C = colorsFrom(palette);
+  const rgba = componer(
+    capasDe(look).map((n) => capa(scene, n)),
+    look,
+  );
+  const tex = texturaDesde(scene, key, rgba, ANCHO_HOJA, ALTO_HOJA);
 
-  const g = scene.make.graphics({}, false);
-  DIRS.forEach((dir, row) => {
-    for (let frame = 0; frame < 4; frame++) {
-      drawFrame(g, C, dir, frame, frame * FRAME_W, row * FRAME_H);
+  for (let dir = 0; dir < HOJA.dirs; dir++) {
+    for (const anim of ANIMS) {
+      for (let i = 0; i < HOJA.anims[anim].n; i++) {
+        const m = marco(anim, i, dir);
+        tex.add(nombreFrame(anim, dir, i), 0, m.x, m.y, HOJA.frameW, HOJA.frameH);
+      }
     }
-  });
-  drawSit(g, C, 0, DIRS.length * FRAME_H); // fila extra: sentado
-  g.generateTexture(key, FRAME_W * 4, FRAME_H * (DIRS.length + 1));
-  g.destroy();
 
-  const tex = scene.textures.get(key);
-  // Vecino más cercano: sin esto, al escalar el sprite ×2 los colores se
-  // mezclan (muestreo lineal) y el muñeco se ve borroso.
-  tex.setFilter(Phaser.Textures.FilterMode.NEAREST);
-  DIRS.forEach((dir, row) => {
-    for (let frame = 0; frame < 4; frame++) {
-      tex.add(`${dir}-${frame}`, 0, frame * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H);
-    }
-  });
-  tex.add("sit-0", 0, 0, DIRS.length * FRAME_H, FRAME_W, FRAME_H);
-
-  for (const dir of DIRS) {
+    const f = (anim: Anim, i: number, duration = 0) => ({ key, frame: nombreFrame(anim, dir, i), duration });
+    // Quieto y sentado: ojos abiertos un buen rato y un parpadeo corto
     scene.anims.create({
       key: animKey(key, `idle-${dir}`),
-      frames: [{ key, frame: `${dir}-0` }],
-      frameRate: 1,
+      frames: [f("idle", 0, ABIERTOS_MS), f("idle", 1, PARPADEO_MS)],
+      frameRate: 1000,
+      repeat: -1,
     });
-    // 4 frames por ciclo y 3 celdas/s -> 12 fps sincroniza las patas con el
-    // movimiento (a 8 deslizaban y se veía raro al caminar)
+    scene.anims.create({
+      key: animKey(key, `sit-${dir}`),
+      frames: [f("sit", 0, ABIERTOS_MS), f("sit", 1, PARPADEO_MS)],
+      frameRate: 1000,
+      repeat: -1,
+    });
     scene.anims.create({
       key: animKey(key, `walk-${dir}`),
-      frames: [0, 1, 2, 3].map((f) => ({ key, frame: `${dir}-${f}` })),
-      frameRate: 12,
+      frames: Array.from({ length: HOJA.anims.walk.n }, (_, i) => f("walk", i)),
+      frameRate: FPS_CAMINAR,
+      repeat: -1,
+    });
+    scene.anims.create({
+      key: animKey(key, `wave-${dir}`),
+      frames: [f("wave", 0), f("wave", 1)],
+      frameRate: 5,
       repeat: -1,
     });
   }
-
-  scene.anims.create({
-    key: animKey(key, "idle-sit"),
-    frames: [{ key, frame: "sit-0" }],
-    frameRate: 1,
-  });
 }
 
-/** Nombre de animación para una textura de avatar dada (`avatar:idle-down`) */
+/** Nombre de animación para una textura de avatar dada (`avatar:walk-3`) */
 export function animKey(textureKey: string, name: string): string {
   return `${textureKey}:${name}`;
 }
 
 /** Todas las animaciones que genera `createAvatarTexture` para una textura */
 export function avatarAnimKeys(textureKey: string): string[] {
-  const keys = DIRS.flatMap((d) => [`idle-${d}`, `walk-${d}`]);
-  keys.push("idle-sit");
-  return keys.map((k) => animKey(textureKey, k));
+  const keys: string[] = [];
+  for (let d = 0; d < HOJA.dirs; d++) {
+    for (const a of ["idle", "sit", "walk", "wave"]) keys.push(animKey(textureKey, `${a}-${d}`));
+  }
+  return keys;
 }
 
 /** Borra la textura y las animaciones de un avatar (p. ej. al desconectarse) */
@@ -236,4 +172,25 @@ export function destroyAvatarAssets(scene: Phaser.Scene, textureKey: string): vo
     if (scene.anims.exists(k)) scene.anims.remove(k);
   }
   if (scene.textures.exists(textureKey)) scene.textures.remove(textureKey);
+}
+
+/**
+ * Miniatura: un trozo de un fotograma quieto, para los botones del vestidor.
+ * Sólo se combina ese trozo, así que cuesta poco rehacerla a cada cambio.
+ */
+export function crearMiniatura(
+  scene: Phaser.Scene,
+  key: string,
+  look: Look,
+  dir: Facing,
+  recorte: { x: number; y: number; w: number; h: number },
+): void {
+  const m = marco("idle", 0, dir);
+  const region = { x: m.x + recorte.x, y: m.y + recorte.y, w: recorte.w, h: recorte.h };
+  const rgba = componer(
+    capasDe(look).map((n) => capa(scene, n)),
+    look,
+    region,
+  );
+  texturaDesde(scene, key, rgba, recorte.w, recorte.h);
 }

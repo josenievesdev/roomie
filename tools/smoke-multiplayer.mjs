@@ -77,6 +77,21 @@ const registrar = async (c, nombre) =>
   });
 const view = (c, id = c.id) => c.players.find((p) => p.id === id);
 const said = (c, text) => c.chats.some((m) => m.text.includes(text));
+/** Celda que contiene los pies de un jugador */
+const celda = (v) => ({ col: Math.round(v.col), row: Math.round(v.row) });
+const en = (v, c) => !!v && Math.round(v.col) === c.col && Math.round(v.row) === c.row;
+/** Distancia en pasos de 8 vecinos */
+const pasos = (a, b) => Math.max(Math.abs(a.col - b.col), Math.abs(a.row - b.row));
+/** Recoloca a un jugador en una celda de room1 (el `room` a la misma sala lo permite) */
+const colocar = async (c, cell) => {
+  c.sock.emit("room", { room: "room1", col: cell.col, row: cell.row, facing: "down" });
+  return until(() => en(view(c), cell), 3000);
+};
+/** Espera a que arranque (si arranca) y luego a que se pare */
+const hastaQueSePare = async (c, ms = 8000) => {
+  await sleep(200);
+  return until(() => view(c) && !view(c).moving, ms);
+};
 
 // El nombre ya NO viaja en `join`: sale de la cuenta autenticada.
 const join = async (c, room, cell) =>
@@ -102,15 +117,30 @@ await registrar(B, "Beto");
 check(A.identidad !== null && B.identidad !== null, "las dos cuentas se registran y entran");
 check(A.identidad.saldo === 500, "la cuenta nueva arranca con 500 monedas", String(A.identidad?.saldo));
 check(A.identidad.nickname !== B.identidad.nickname, "cada una con su nombre");
+// Se registran con el aspecto ANTIGUO (dos colores sueltos): el servidor
+// tiene que devolverlo ya convertido al catálogo nuevo, con el color de
+// catálogo más parecido.
+check(
+  typeof A.identidad.look?.piel === "string" && A.identidad.look.torsoColor === "morado",
+  `el aspecto antiguo {shirt, hair} llega convertido (${JSON.stringify(A.identidad.look)})`,
+);
 await until(() => A.sock.connected && B.sock.connected, 3000);
 await join(A, "room1", spawn);
-await join(B, "room1", room1.freeCell());
+await join(B, "room1", spawn); // la MISMA celda, como dos que cruzan la misma puerta
 check(A.id && B.id && A.id !== B.id, "dos clientes con id distintos (welcome)");
 check(
   await until(() => view(A, B.id) && view(B, A.id)),
   "se ven mutuamente en el snapshot a 20 Hz",
 );
+check(
+  en(view(A, A.id), spawn) && !en(view(A, B.id), spawn) && pasos(celda(view(A, B.id)), spawn) === 1,
+  "B pidió la celda de A y aparece a su lado, no dentro de él",
+);
 check(said(B, "entró a la sala"), "B recibió el aviso de sistema de A");
+check(
+  [view(A), view(B)].every((v) => Number.isInteger(v.facing) && v.facing >= 0 && v.facing <= 7 && !("flip" in v)),
+  "la dirección viaja como número 0..7 y sin espejo",
+);
 
 // ---------- 2. Movimiento autoritativo (teclado) ----------
 // Dirección (-1,0): hacia la izquierda de pantalla hay 4 celdas libres;
@@ -144,8 +174,116 @@ if (path) {
     await until(() => view(A)?.sitting, 8000),
     `el servidor llega al asiento (${sofa.col},${sofa.row}) y se sienta`,
   );
+  const asiento = room1.seats.get(`${sofa.col},${sofa.row}`);
+  check(
+    view(A).facing === asiento.dir,
+    `sentado mira hacia donde mira el asiento (${view(A).facing} = ${asiento.dir})`,
+  );
   A.sock.emit("stand");
   check(await until(() => !view(A)?.sitting, 3000), "`stand` lo levanta");
+}
+
+// ---------- 3b. Camino que llega con retraso ----------
+// El cliente calcula el camino desde donde SE VE, y va por delante del
+// servidor. Al cambiar de rumbo andando, el camino empieza a DOS celdas de
+// donde el servidor lo tiene. Antes se tiraba sin avisar y el cliente acababa
+// arrastrado hacia atrás.
+const libre = (c, r, fuera = []) =>
+  c >= 0 && r >= 0 && c < room1.cols && r < room1.rows && !room1.isBlocked(c, r) &&
+  !fuera.some((f) => f.col === c && f.row === r);
+let recta = null;
+for (let row = 1; row < room1.rows - 1 && !recta; row++) {
+  for (let col = 1; col < room1.cols - 4; col++) {
+    const ocupadas = [celda(view(A, B.id))];
+    if ([0, 1, 2, 3].every((i) => libre(col + i, row, ocupadas))) {
+      recta = { col, row };
+      break;
+    }
+  }
+}
+check(!!recta, "hay un tramo recto de 4 celdas libres en room1");
+if (recta) {
+  await colocar(A, recta);
+  const meta = { col: recta.col + 3, row: recta.row };
+  A.sock.emit("path", [{ col: recta.col + 2, row: recta.row }, meta]);
+  check(
+    (await hastaQueSePare(A, 4000)) && en(view(A), meta),
+    `camino que empieza a 2 celdas del servidor: se acepta con un puente y llega a (${meta.col},${meta.row})`,
+  );
+}
+
+// ---------- 3c. Cada uno en su baldosa ----------
+// B se queda quieto; A camina justo hasta su celda. Tiene que pararse al
+// lado, no encima.
+{
+  const deB = celda(view(A, B.id));
+  const desde = celda(view(A));
+  const hacia = findPath(desde, deB, room1.cols, room1.rows, room1.isBlocked);
+  check(!!hacia && hacia.length >= 1, `A* de A hasta la celda de B (${deB.col},${deB.row})`);
+  if (hacia) {
+    A.sock.emit("path", hacia);
+    await hastaQueSePare(A);
+    const a = view(A);
+    check(
+      !en(a, deB) && pasos(celda(a), deB) === 1,
+      `A se para al lado de B (${a.col.toFixed(2)},${a.row.toFixed(2)}) en vez de pisarlo`,
+    );
+  }
+}
+
+// Asiento ocupado: B se sienta en el sofá y A intenta el mismo
+{
+  const irAlSofa = (c) => {
+    const p = findPath(celda(view(c)), sofa, room1.cols, room1.rows, room1.isBlocked, true);
+    if (p) c.sock.emit("path", p);
+    return !!p;
+  };
+  check(irAlSofa(B), "B tiene camino al sofá");
+  check(await until(() => view(A, B.id)?.sitting, 8000), "B se sienta");
+  check(irAlSofa(A), "A tiene camino al mismo sofá");
+  await hastaQueSePare(A);
+  const a = view(A);
+  check(
+    !a.sitting && !en(a, sofa),
+    `con el sofá ocupado, A se queda de pie al lado (${a.col.toFixed(2)},${a.row.toFixed(2)})`,
+  );
+  B.sock.emit("stand");
+  await until(() => !view(B)?.sitting, 3000);
+  // Fuera del sofá (una celda bloqueada) para que B vuelva a ocupar sitio de verdad
+  const suelto = room1.freeCell();
+  await colocar(B, suelto);
+}
+
+// ---------- 3d. Aspecto ----------
+// Un aspecto válido llega a los demás tal cual; uno con un estilo inventado
+// se corrige CAMPO A CAMPO (lo inventado vuelve al valor por defecto, lo
+// válido se respeta). Si el servidor se creyera cualquier cosa, un cliente
+// podría pedir prendas que nadie sabe dibujar.
+{
+  const nuevo = {
+    piel: "p5",
+    pelo: "coleta",
+    peloColor: "rosa",
+    torso: "sudadera",
+    torsoColor: "verde",
+    piernas: "falda",
+    piernasColor: "marino",
+    pies: "botas",
+    piesColor: "negro",
+  };
+  A.sock.emit("look", nuevo);
+  check(
+    await until(() => JSON.stringify(view(B, A.id)?.look) === JSON.stringify(nuevo)),
+    "un aspecto válido llega a los demás tal cual",
+  );
+  A.sock.emit("look", { ...nuevo, torso: "armadura", pelo: 42 });
+  check(
+    await until(() => {
+      const l = view(B, A.id)?.look;
+      return l?.torso === "camiseta" && l?.pelo === "corto" && l?.torsoColor === "verde" && l?.pies === "botas";
+    }),
+    "un estilo inventado vuelve al de por defecto y el resto se respeta",
+  );
 }
 
 // ---------- 4. Chat + anti-spam ----------
@@ -160,14 +298,30 @@ await sleep(300);
 check(!said(A, "spam"), "segundo mensaje <400 ms descartado (anti-spam)");
 
 // ---------- 5. Camino trampa rechazado ----------
+// Un hueco de 2-3 celdas es retraso y se salva con un puente (3b); uno de 5
+// ya es teletransportarse. El tramo se BUSCA lejos de A en vez de fijarlo:
+// si A acabara cerca de (1,1), un camino fijo dejaría de ser trampa.
 const posBefore = { ...view(A) };
-A.sock.emit("path", [{ col: 1, row: 1 }, { col: 2, row: 1 }, { col: 3, row: 1 }]);
-await sleep(300);
-const posAfter = view(A);
-check(
-  Math.hypot(posAfter.col - posBefore.col, posAfter.row - posBefore.row) < 0.05,
-  "camino que empieza lejos del avatar: rechazado",
-);
+let lejos = null;
+for (let row = 0; row < room1.rows && !lejos; row++) {
+  for (let col = 0; col < room1.cols - 2; col++) {
+    if (pasos({ col, row }, celda(posBefore)) < 5) continue;
+    if ([0, 1, 2].every((i) => libre(col + i, row))) {
+      lejos = { col, row };
+      break;
+    }
+  }
+}
+check(!!lejos, "hay un tramo libre a 5+ celdas de A");
+if (lejos) {
+  A.sock.emit("path", [0, 1, 2].map((i) => ({ col: lejos.col + i, row: lejos.row })));
+  await sleep(300);
+  const posAfter = view(A);
+  check(
+    Math.hypot(posAfter.col - posBefore.col, posAfter.row - posBefore.row) < 0.05,
+    `camino que empieza a ${pasos(lejos, celda(posBefore))} celdas del avatar: rechazado`,
+  );
+}
 
 // ---------- 5b. Colisión con mobiliario ----------
 // Se BUSCA una celda libre que tenga un mueble justo al lado en +x de

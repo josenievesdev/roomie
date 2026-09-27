@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { FURNITURE, isFurniture } from "../../src/state/furniture-catalog.ts";
+import { FURNITURE, isFurniture, seatAt } from "../../src/state/furniture-catalog.ts";
+import type { SitTarget } from "../../src/state/avatarState.ts";
 import type { RoomId } from "../../src/net/protocol.ts";
 import type { Cell } from "../../src/utils/pathfinding.ts";
 
@@ -32,11 +33,19 @@ export type RoomWorld = {
   blocked: boolean[][];
   /** Celdas de sofá: se puede terminar un camino ahí (y sentarse) */
   sitCells: Set<string>;
+  /** El asiento de cada celda de `sitCells`: altura y hacia dónde se mira */
+  seats: Map<string, SitTarget>;
   /** Celdas de puerta: meta válida aunque estén bloqueadas */
   doorCells: Set<string>;
   isBlocked(col: number, row: number): boolean;
   /** Celda libre más cercana al centro (respaldo de spawn) */
   freeCell(): Cell;
+  /**
+   * Celda libre más cercana a `from` que no esté `taken` (ocupada por otro
+   * avatar). La propia `from` vale si cumple. Búsqueda en anchura: la
+   * primera que aparece es la más cercana en pasos.
+   */
+  nearestFree(from: Cell, taken: (col: number, row: number) => boolean): Cell;
 };
 
 export function cellKey(col: number, row: number): string {
@@ -70,6 +79,7 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
   }
 
   const sitCells = new Set<string>();
+  const seats = new Map<string, SitTarget>();
   const doorCells = new Set<string>();
 
   // La capa "objetos" coloca mobiliario y puertas (mismas reglas que el cliente)
@@ -91,7 +101,11 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
     // qué celdas están libres.
     if (!isFurniture(kind)) continue;
     const def = FURNITURE[kind];
-    if (def.sit) sitCells.add(cellKey(col, row));
+    const seat = seatAt(kind, col, row);
+    if (seat) {
+      sitCells.add(cellKey(col, row));
+      seats.set(cellKey(col, row), seat);
+    }
     if (def.blocks) blocked[row][col] = true;
   }
 
@@ -110,7 +124,27 @@ export function loadWorld(assetsDir: string, roomId: RoomId): RoomWorld {
     return { col: cx, row: cy };
   };
 
-  return { cols, rows, blocked, sitCells, doorCells, isBlocked, freeCell };
+  const nearestFree = (from: Cell, taken: (col: number, row: number) => boolean): Cell => {
+    const seen = new Set<string>([cellKey(from.col, from.row)]);
+    const queue: Cell[] = [from];
+    for (let i = 0; i < queue.length; i++) {
+      const c = queue[i];
+      if (!blocked[c.row][c.col] && !taken(c.col, c.row)) return c;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const n = { col: c.col + dc, row: c.row + dr };
+          if (n.col < 0 || n.row < 0 || n.col >= cols || n.row >= rows) continue;
+          const key = cellKey(n.col, n.row);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          queue.push(n);
+        }
+      }
+    }
+    return from; // sala llena: mejor solaparse que no entrar
+  };
+
+  return { cols, rows, blocked, sitCells, seats, doorCells, isBlocked, freeCell, nearestFree };
 }
 
 /** Carga todas las salas del juego */

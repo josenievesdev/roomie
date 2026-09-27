@@ -24,11 +24,18 @@ export const LAYER = {
   WORLD_MAX: 10_000,
 
   /**
+   * Nombres sobre los avatares. Encima de todo el mundo: antes compartían la
+   * profundidad de su avatar y el mueble que tuviera delante se los comía
+   * (media etiqueta asomando por detrás de una planta). Debajo de burbujas.
+   */
+  WORLD_LABEL: 10_000,
+
+  /**
    * Encima de TODO el mundo, pero todavía dentro de él: burbujas de chat y
    * marcador de destino. Van ancladas a una posición del mundo y deben tapar
    * paredes y muebles, pero nunca a la interfaz.
    */
-  WORLD_TOP: 10_000,
+  WORLD_TOP: 10_001,
 
   /** HUD permanente: título de sala, estado de conexión, avisos, botón Perfil */
   UI_HUD: 100_000,

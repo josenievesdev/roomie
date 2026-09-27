@@ -35,7 +35,7 @@ export function verifyPassword(clave: string, guardado: string): boolean {
 // ------------------------------------------------------------------- Cuentas
 
 export type Account = { id: string; username: string };
-export type Avatar = { id: string; nickname: string; look: Record<string, number> };
+export type Avatar = { id: string; nickname: string; look: Record<string, string | number> };
 
 /** Saldo con el que empieza una cuenta nueva */
 export const SALDO_INICIAL = 500;
@@ -44,7 +44,7 @@ export async function crearCuenta(
   username: string,
   clave: string,
   nickname: string,
-  look: Record<string, number>,
+  look: Record<string, string | number>,
 ): Promise<{ account: Account; avatar: Avatar; saldo: number }> {
   return sql.begin(async (tx) => {
     const [cuenta] = await tx<{ id: string; username: string }[]>`
@@ -52,7 +52,7 @@ export async function crearCuenta(
       values (${username}, ${hashPassword(clave)})
       returning id, username
     `;
-    const [avatar] = await tx<{ id: string; nickname: string; look: Record<string, number> }[]>`
+    const [avatar] = await tx<{ id: string; nickname: string; look: Record<string, string | number> }[]>`
       insert into avatars (account_id, nickname, look)
       values (${cuenta.id}, ${nickname}, ${tx.json(look)})
       returning id, nickname, look
@@ -81,7 +81,7 @@ export async function autenticar(
   if (!fila || !vale) return null;
 
   await sql`update accounts set last_login_at = now() where id = ${fila.id}`;
-  const [avatar] = await sql<{ id: string; nickname: string; look: Record<string, number> }[]>`
+  const [avatar] = await sql<{ id: string; nickname: string; look: Record<string, string | number> }[]>`
     select id, nickname, look from avatars where account_id = ${fila.id} order by created_at limit 1
   `;
   return {
@@ -102,7 +102,7 @@ export async function nicknameLibre(nickname: string): Promise<boolean> {
 }
 
 /** Guarda el aspecto en la cuenta, para que sobreviva al cierre de sesión */
-export async function guardarLook(accountId: string, look: Record<string, number>): Promise<void> {
+export async function guardarLook(accountId: string, look: Record<string, string | number>): Promise<void> {
   await sql`
     update avatars set look = ${sql.json(look)}
      where account_id = ${accountId}
