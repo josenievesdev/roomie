@@ -172,29 +172,21 @@ proceso vivo con bucle a 20 Hz y WebSockets abiertos.
 
 ## Qué viene, por orden
 
-**1. Tienda e inventario (siguiente).** Las tablas están y probadas; falta la
-interfaz: un catálogo donde gastar las monedas y un inventario donde ver lo
-comprado. Es lo que da sentido al saldo. **La ropa ya es un catálogo**
-(`src/state/look.ts`): venderla es darle precio a algunos estilos y que el
-servidor compruebe, al validar el aspecto, que la prenda es tuya. El vestidor
-ya existe; sólo le faltaría separar "lo que tienes" de "lo que hay en la tienda".
+El plan completo está en **`docs/plan-piramide.md`**: primero los cimientos
+(que no se ven, pero sin ellos se cae lo de arriba), luego los sistemas, el
+contenido y la cima, subiendo por hitos jugables:
 
-**2. Colocar muebles en una sala.** Los muebles ya son modelos coloreados por
-tema y la tienda los conoce todos (incluidos los de pared). `items.room_id/col/row/stack` ya lo
-soporta, incluido apilar (alfombra debajo, sofá encima). Falta el modo de
-edición en el cliente y que el servidor valide la celda.
-
-**3. Salas como datos.** Hoy `ROOMS = ["room1","room2"]` está escrito en el
-código. Para tener plazas, centros comerciales y discotecas, crear una sala
-tiene que ser una fila en `rooms`, no un cambio de código. La tabla ya existe.
-
-**4. Salas propias.** Que cada cuenta tenga la suya y pueda decorarla. Es lo
-que enganchó a la gente en Habbo: no trabajar, sino tener algo tuyo que
-enseñar.
-
-**5. Y entonces sí, trabajos y economía.** Con cuentas, saldo, objetos y salas
-propias, "atender la barra y cobrar" es una capa fina encima. Antes no tiene
-dónde apoyarse.
+1. **Mi primer piso.** Llegar a la terminal, ganarse las llaves con tres tareas
+   cortas y tener un piso recién mudado (cama y clóset) que se decora con la
+   tienda. Trae los cimientos grandes: lugares como datos con las puertas en el
+   servidor, el estado del jugador en el servidor, objetos de todo tipo con
+   dos monedas, objetos de varias celdas e interfaz que se adapta.
+2. **Salir a La Manzana.** Seis zonas alrededor de la Plaza de la Llave,
+   amigos, compartir ubicación y una red que aguante 50 personas por zona.
+3. **Vivir.** Trabajo en el café, hambre y comida, vehículos propios.
+4. **Presumir.** Caras, rasgos y moda por estilos (con el avatar definitivo
+   ANTES de fabricar prendas), comercio seguro, créditos y Club.
+5. **La cima.** Eventos, tendencias, mercado, mascotas, más barrios.
 
 ## Deuda conocida
 
@@ -238,7 +230,8 @@ dónde apoyarse.
 | `fase4-avatar-y-convivencia.md` | Clics en marcha, orden de dibujo, cada uno en su baldosa; avatar por capas y vestidor |
 | `fase5-muebles-y-ui.md` | Alfombra que cortaba el sofá; muebles en 3D, paredes decoradas y luz; interfaz pixel art |
 | `fase6-interfaz-fina-teclado-zoom.md` | Interfaz fina y propia; teclado en puertas y asientos; zoom con la interfaz a tamaño fijo |
-| `vision-mundo.md` | Ideas y plan: barrio, direcciones, transporte, economía, cena, moda y caras |
+| `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
+| `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |
 
 `reporte-proyecto.md` es anterior a todo esto y está desfasado; se conserva

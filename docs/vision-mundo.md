@@ -1,6 +1,10 @@
 # Visión del mundo: barrio, moda y vida diaria
 
-**Fecha:** 27 de septiembre de 2026 · Documento de ideas y plan, no de código.
+**Fecha:** 27 de septiembre de 2026 · Documento de ideas, no de código.
+
+> **José ya respondió** a las preguntas del final. Sus decisiones y el plan
+> por pisos (qué va primero para no tener que volver atrás) están en
+> `docs/plan-piramide.md`. Donde los dos no coincidan, manda el plan.
 
 José tiene una visión grande: un barrio o colonia donde cada personaje tiene
 su casa, sale a la calle, queda con sus amigos diciendo "estoy en tal sitio",
@@ -40,18 +44,19 @@ Cada **lugar** es una sala, como hoy. La diferencia es de tamaño y de tipo:
 | Tipo | Ejemplo | Tamaño |
 |---|---|---|
 | Interior | tu piso, el café, la tienda | como las salas de ahora |
-| Calle | Calle Luna | un mapa exterior grande (p. ej. 40×40) |
-| Barrio | Barrio Norte | un conjunto de calles con su estilo |
+| Zona exterior | la Plaza de la Llave | un mapa exterior grande (hasta 64×64) |
+| Barrio | La Manzana | un conjunto de zonas con su estilo |
 
 Las puertas de los edificios de una calle son puertas como las de ahora, que
 llevan a su interior. Eso ya funciona (y ahora también con el teclado).
 
-**Direcciones para quedar.** Una dirección es algo que se puede decir y
-compartir: *"Calle Luna 12, Barrio Norte"*. Por dentro es (barrio, calle,
-número) → una sala y una puerta. Para quedar con un amigo:
+**Coordenadas y referencias para quedar** (decisión de José: nada de
+direcciones postales). Cada punto del mundo tiene coordenadas, y cada zona sus
+hitos con nombre: *"estoy en la Plaza de la Llave, junto a la fuente (X 132,
+Y 48)"*. Para quedar con un amigo:
 
-- **Compartir ubicación:** un botón que manda por el chat privado "estoy en
-  Calle Luna 12". Al tocarlo, el amigo ve el sitio en el **mapa** del barrio.
+- **Compartir ubicación:** un botón que manda por el chat privado dónde estás.
+  Al tocarlo, el amigo ve el sitio en el **mapa** del barrio.
 - **Ir hasta allí:** andando (gratis), en metro (barato) o en taxi (caro y
   directo). Así el mundo existe: la distancia importa un poco, y el
   transporte tiene sentido.
@@ -64,15 +69,15 @@ solicitudes) y **salas como datos** en la base, no escritas en el código.
 
 ## 2. Transporte
 
-- **Andar:** gratis, lo de siempre.
-- **Metro o bus:** las estaciones son puertas especiales que abren un mapa de
-  líneas para elegir parada. El billete cuesta poco: una salida pequeña y
-  constante de dinero.
-- **Taxi:** a una dirección exacta, caro. Es la forma rápida de ir a donde está
-  tu amigo, y una buena forma de que el dinero salga de la economía.
-- **Más adelante, vehículos propios** (bici, patinete, moto): objetos que se
-  compran, que te hacen ir más rápido por la calle y que también son estatus
-  y estilo.
+Decisión de José: **andar siempre vale**, y el transporte es "vida pro".
+
+- **Vehículos propios, lo principal:** monopatín, cicla, patinete, moto y
+  carro. Se consiguen jugando, te hacen ir más rápido por la calle y son
+  estatus y estilo. La escalera de vehículos está en `plan-piramide.md`.
+- **Metro o bus, como comodidad:** las estaciones son puertas especiales que
+  abren un mapa de líneas. El billete cuesta poco.
+- **Taxi:** directo a donde está tu amigo, caro. Una buena forma de que el
+  dinero salga de la economía.
 
 ## 3. Economía
 
@@ -90,9 +95,9 @@ Una economía sana tiene **fuentes** (de donde sale el dinero) y **sumideros**
   atender pedidos de otros jugadores (o de clientes del juego si hay poca
   gente), cobrar por turno, con un tope diario para que nadie "granjee".
 - **Todo pasa por el servidor y por `mover_saldo()`**, como ya está hecho.
-- **Comercio entre jugadores:** mejor más adelante. Con el modelo de "cada
-  objeto es una fila" se puede hacer seguro (sin duplicar), pero atrae
-  estafas y pide pensar bien la confirmación por los dos lados.
+- **Comercio entre jugadores:** sí, por fases (regalos y préstamos con
+  devolución automática, luego intercambio seguro, luego un mercado), con
+  sus protecciones. El detalle, en `plan-piramide.md`.
 
 ## 4. Mercar y la cena
 
@@ -104,9 +109,10 @@ Sin juego de cocina, como dijiste, pero con la idea entera:
    ingredientes se convierten en un **plato** (receta = combinar objetos).
 3. Te lo comes, o lo sirves en la mesa para tus invitados.
 
-Sobre "tener hambre": lo haría **ligero y sin castigo**. Un pequeño extra por
-comer (más energía para el turno de trabajo, por ejemplo) está bien; que te
-pase algo malo por no comer convierte el juego en una obligación.
+Sobre el hambre, José lo quiere realista, entre Club Penguin y Habbo: nadie se
+muere, pero hay que comer, y no comer no te impide hacer cosas. Estar bien
+comido da ventajas pequeñas; tener hambre se nota, pero nunca bloquea. El
+diseño, en `plan-piramide.md`.
 
 ## 5. Moda y caras (con calma)
 
@@ -175,23 +181,8 @@ de dos en dos, mirando cada uno en las 8 direcciones.
 - **Amigos y presencia:** amistades, solicitudes, ajustes de privacidad y el
   evento de "compartir ubicación".
 
-## 7. Plan por fases (lo que yo haría)
+## 7. El orden
 
-| Fase | Qué | Por qué en este orden |
-|---|---|---|
-| 7 | Tienda, inventario y **casa propia** (apareces en tu casa y la decoras) | Da sentido a las monedas y te da algo tuyo |
-| 8 | Salas como datos, **la primera calle** (tu edificio, tienda de ropa, café), direcciones y amigos | El primer "salir de casa" |
-| 9 | **Caras y rasgos**, accesorios y un primer estilo (urbano) en la tienda | La identidad, con calma |
-| 10 | **Trabajo** en el café y la economía equilibrada | Por qué salir cada día |
-| 11 | **Súper, cocina sencilla y cena en casa** | Cerrar el círculo del día |
-| 12 | **Transporte** (metro, taxi) y un segundo barrio con su estilo (rock) | Cuando ya hay dónde ir |
-
-## 8. Lo que tienes que decidir tú
-
-1. **¿Casa gratis para todos** al registrarse (un piso pequeño) y las mejoras
-   compradas, o hay que ganarse la casa?
-2. **Compartir ubicación: ¿sólo enseña el sitio** en el mapa (y vas tú), o
-   también permite ir directo pagando un taxi?
-3. **¿El hambre tiene consecuencias** o es sólo un extra?
-4. **¿Comercio entre jugadores** algún día?
-5. **¿Qué barrio primero y con qué estilo?**
+El orden por hitos (Mi primer piso → Salir a La Manzana → Vivir → Presumir →
+La cima), con los cimientos que necesita cada uno, está en
+`docs/plan-piramide.md`.

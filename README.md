@@ -72,14 +72,14 @@ Hecho:
 
 Siguiente:
 
-- [ ] Tienda e inventario (las tablas ya están; falta la interfaz)
-- [ ] Colocar muebles comprados en una sala
-- [ ] Salas como datos, para poder crear plazas y locales sin tocar código
-- [ ] Salas propias por cuenta
-- [ ] Trabajos y economía
+- [ ] **Mi primer piso**: llegar a la terminal, ganarse las llaves, decorar tu casa
+- [ ] **Salir a La Manzana**: el barrio, amigos y compartir ubicación
+- [ ] **Vivir**: trabajo, hambre y comida, vehículos propios
+- [ ] **Presumir**: caras, rasgos y moda por estilos; comercio seguro
+- [ ] **La cima**: eventos, tendencias, mascotas, más barrios
 
-El detalle de cada punto, y por qué en ese orden, en `docs/estado-actual.md`.
-Hacia dónde va el mundo (barrio, transporte, economía, moda y caras), en
+El plan, con los cimientos que necesita cada paso para no tener que volver
+atrás, en `docs/plan-piramide.md`. Las ideas de fondo, en
 `docs/vision-mundo.md`.
 
 ## Arquitectura
