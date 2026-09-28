@@ -1,6 +1,6 @@
 # Roomie 🏠
 
-![Dos jugadores en la plaza](docs/img/plaza-dos-jugadores.jpg)
+![Seis jugadores con caras y peinados distintos en la Plaza de la Llave](docs/img/roomie-portada.jpg)
 
 Mundo abierto 2D en pixel art con proyección isométrica, estilo Habbo.
 Juego web hecho con **Phaser 3 + TypeScript + Vite**, con **servidor Node + Socket.io**
