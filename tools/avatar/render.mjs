@@ -11,7 +11,6 @@
 // manga, sin reglas de "qué va encima de qué" por prenda.
 
 import { add, dot, mul, norm, smin, v3 } from "./sdf.mjs";
-import { MAT } from "../../src/state/look.ts";
 
 const ELEV = (30 * Math.PI) / 180;
 const S2 = Math.SQRT1_2;
@@ -47,6 +46,39 @@ function distGrupo(g, x, y, z) {
   if (g.subs) for (const s of g.subs) d = Math.max(d, -s.d(x, y, z));
   if (g.clips) for (const c of g.clips) d = Math.max(d, c(x, y, z));
   return d;
+}
+
+/** Distancia a la superficie de un grupo (negativa dentro) */
+export const distanciaGrupo = distGrupo;
+
+/** Normal de la superficie de un grupo en un punto (hacia fuera) */
+export function normalGrupo(g, p) {
+  const e = 0.04;
+  return norm(
+    v3(
+      distGrupo(g, p.x + e, p.y, p.z) - distGrupo(g, p.x - e, p.y, p.z),
+      distGrupo(g, p.x, p.y + e, p.z) - distGrupo(g, p.x, p.y - e, p.z),
+      distGrupo(g, p.x, p.y, p.z + e) - distGrupo(g, p.x, p.y, p.z - e),
+    ),
+  );
+}
+
+/**
+ * El punto de la superficie de un grupo que se alcanza saliendo de `desde`
+ * (que tiene que estar dentro) en la dirección `dir`. Por bisección: la
+ * cara tiene mofletes y barbilla, no es un elipsoide, y un rasgo tiene que
+ * caer en la piel de verdad.
+ */
+export function sobreSuperficie(g, desde, dir, hasta = 24) {
+  let a = 0;
+  let b = hasta;
+  for (let i = 0; i < 40; i++) {
+    const t = (a + b) / 2;
+    const q = add(desde, mul(dir, t));
+    if (distGrupo(g, q.x, q.y, q.z) < 0) a = t;
+    else b = t;
+  }
+  return add(desde, mul(dir, (a + b) / 2));
 }
 
 let ultimoGrupo = -1;
@@ -94,7 +126,10 @@ function banda(n, L, H, ocl, g) {
   // (como al principio), medio cuerpo bailaba entre dos bandas y salía a
   // manchas.
   let b = nl > 0.74 ? 0 : nl > 0.22 ? 1 : nl > -0.2 ? 2 : 3;
-  if (g.hair) {
+  if (g.hair && g.mate) {
+    // Pelo rizado: sin franja de brillo (con un brillo por rizo sale moteado)
+    if (b === 0) b = 1;
+  } else if (g.hair) {
     // Brillo del pelo: una franja especular, el "halo" típico del pixel art
     const spec = Math.max(0, dot(n, H)) ** 30;
     if (spec > 0.62) b = 0;
@@ -110,9 +145,16 @@ function banda(n, L, H, ocl, g) {
 
 /**
  * Traza un fotograma de una capa.
- * @returns {{mat: Uint8Array, shade: Uint8Array, depth: Float32Array}}
+ *
+ * `o.oclusores`: grupos que no se dibujan pero SÍ oscurecen lo que tienen
+ * cerca (la oclusión). La cabeza y el cuerpo van en capas distintas, pero la
+ * barbilla tiene que seguir haciendo sombra en el cuello, y al revés.
+ *
+ * Un grupo con `zonaFn` dice, en cada punto de su superficie, a qué zona
+ * pertenece (la barba, el bigote...): el navegador pinta ahí lo que toque.
+ * @returns {{mat: Uint8Array, shade: Uint8Array, zona: Uint8Array, depth: Float32Array}}
  */
-export function trazar(grupos, dir, W, H, ax, ay) {
+export function trazar(grupos, dir, W, H, ax, ay, o = {}) {
   const th = rumbo(dir);
   const c = Math.cos(th);
   const s = Math.sin(th);
@@ -125,9 +167,11 @@ export function trazar(grupos, dir, W, H, ax, ay) {
 
   const mat = new Uint8Array(W * H);
   const shade = new Uint8Array(W * H);
+  const zona = new Uint8Array(W * H);
   const depth = new Float32Array(W * H).fill(Infinity);
-  if (grupos.length === 0) return { mat, shade, depth };
+  if (grupos.length === 0) return { mat, shade, zona, depth };
   const env = envolvente(grupos);
+  const escenaOclusion = o.oclusores?.length ? [...grupos, ...o.oclusores] : grupos;
 
   for (let j = 0; j < H; j++) {
     for (let i = 0; i < W; i++) {
@@ -171,14 +215,15 @@ export function trazar(grupos, dir, W, H, ax, ay) {
         ),
       );
       const q = add(v3(px, py, pz), mul(n, 1.6));
-      const ocl = distEscena(grupos, q.x, q.y, q.z) / 1.6;
+      const ocl = distEscena(escenaOclusion, q.x, q.y, q.z) / 1.6;
       const k = j * W + i;
       mat[k] = g.matFn ? g.matFn(px, py, pz) : g.mat;
       shade[k] = banda(n, L, Hh, ocl, g);
+      if (g.zonaFn) zona[k] = g.zonaFn(px, py, pz);
       depth[k] = t - D;
     }
   }
-  return { mat, shade, depth };
+  return { mat, shade, zona, depth };
 }
 
 /** Proyecta un punto del modelo a píxel del fotograma (+ su profundidad) */
@@ -202,61 +247,4 @@ export function deFrente(n, dir) {
   const s = Math.sin(th);
   const w = v3(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
   return dot(w, CAM.view);
-}
-
-/**
- * Pinta los rasgos de la cara sobre el fotograma ya trazado del cuerpo.
- * Cada rasgo sólo aparece si mira a la cámara y no lo tapa nada (pelo, mano).
- */
-export function pintarCara(f, rasgos, dir, W, H, ax, ay) {
-  const put = (x, y, m, sh = 1) => {
-    if (x < 0 || y < 0 || x >= W || y >= H) return;
-    const k = y * W + x;
-    if (f.mat[k] !== MAT.PIEL) return; // sólo sobre piel visible
-    f.mat[k] = m;
-    f.shade[k] = sh;
-  };
-  const visible = (r, umbral) => {
-    const frente = deFrente(r.n, dir);
-    if (frente < umbral) return null;
-    const pr = proyectar(r.p, dir, ax, ay);
-    const x = Math.floor(pr.x);
-    const y = Math.floor(pr.y);
-    if (x < 0 || y < 0 || x >= W || y >= H) return null;
-    // Oculto si lo que se ve en ese píxel está bastante más cerca (una mano
-    // delante de la cara). El pelo no hace falta mirarlo: `put` sólo pinta
-    // sobre piel. Holgura de 3: los mofletes abultan sobre el elipsoide.
-    if (Math.abs(f.depth[y * W + x] - pr.t) > 3) return null;
-    return { x, y, frente };
-  };
-
-  for (const [ojo, lado] of [[rasgos.ojoL, 1], [rasgos.ojoR, -1]]) {
-    const v = visible(ojo, 0.18);
-    if (!v) continue;
-    const ancho = v.frente > 0.62 ? 2 : 1;
-    const x0 = ancho === 2 ? v.x - (lado > 0 ? 0 : 1) : v.x;
-    if (rasgos.parpado) {
-      for (let dx = 0; dx < ancho; dx++) put(x0 + dx, v.y + 1, MAT.OJO);
-      continue;
-    }
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = 0; dx < ancho; dx++) put(x0 + dx, v.y + dy, MAT.OJO);
-    }
-    // Brillo arriba, del lado de la luz
-    if (ancho === 2) put(x0 + 1, v.y - 1, MAT.BRILLO_OJO, 0);
-  }
-
-  for (const [ceja, lado] of [[rasgos.cejaL, 1], [rasgos.cejaR, -1]]) {
-    const v = visible(ceja, 0.3);
-    if (!v) continue;
-    const ancho = v.frente > 0.62 ? 2 : 1;
-    const x0 = ancho === 2 ? v.x - (lado > 0 ? 0 : 1) : v.x;
-    for (let dx = 0; dx < ancho; dx++) put(x0 + dx, v.y, MAT.CEJA);
-  }
-
-  const b = visible(rasgos.boca, 0.35);
-  if (b) {
-    const ancho = b.frente > 0.7 ? 2 : 1;
-    for (let dx = 0; dx < ancho; dx++) put(b.x - (ancho === 2 ? 1 : 0) + dx, b.y, MAT.BOCA);
-  }
 }

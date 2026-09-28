@@ -11,10 +11,11 @@
 // Combinar es quedarse, píxel a píxel, con lo más cercano; colorear es pasar
 // cada (material, banda) por la rampa del aspecto del jugador.
 
-import { rampaDe, type Look } from "../state/look.ts";
-import { combinar, sombraElipse, type Capa, type Region } from "./capas.ts";
+import { CARAS, ESTILOS, PARTES, rampaDe, type Look } from "../state/look.ts";
+import { colorear, fundir, sombraElipse, type Capa, type Region } from "./capas.ts";
+import { pintarCara, type DatosCara } from "./cara.ts";
 
-export type { Capa, Region };
+export type { Capa, Region, DatosCara };
 
 export const HOJA = {
   frameW: 48,
@@ -44,10 +45,28 @@ export function marco(anim: Anim, i: number, dir: number): { x: number; y: numbe
   return { x: (HOJA.anims[anim].desde + i) * HOJA.frameW, y: dir * HOJA.frameH };
 }
 
+/** Todas las capas que existen: el cuerpo, cada forma de cabeza y cada estilo de cada parte */
+export const TODAS_LAS_CAPAS: readonly string[] = [
+  "cuerpo",
+  ...Object.keys(CARAS).map((c) => `cabeza/${c}`),
+  ...PARTES.flatMap((p) => Object.keys(ESTILOS[p]).map((e) => `${p}/${e}`)),
+];
+
 /** Capas que necesita un aspecto. El orden desempata profundidades iguales. */
 export function capasDe(look: Look): string[] {
-  return ["cuerpo", `piernas/${look.piernas}`, `pies/${look.pies}`, `torso/${look.torso}`, `pelo/${look.pelo}`];
+  return [
+    "cuerpo",
+    `cabeza/${look.cara}`,
+    `piernas/${look.piernas}`,
+    `pies/${look.pies}`,
+    `torso/${look.torso}`,
+    `pelo/${look.pelo}`,
+  ];
 }
+
+/** ¿Es un fotograma de parpadeo? (el segundo de quieto y el segundo de sentado) */
+const esParpadeo = (columna: number): boolean =>
+  columna === HOJA.anims.idle.desde + 1 || columna === HOJA.anims.sit.desde + 1;
 
 /** Nombre de fichero de una capa (`torso/sudadera` → `torso-sudadera.png`) */
 export const ficheroCapa = (capa: string): string => `${capa.replace("/", "-")}.png`;
@@ -57,12 +76,15 @@ const SOMBRA_PIES = { rx: 10.5, ry: 4 } as const;
 
 /**
  * Combina y colorea las capas de un aspecto en una región de la hoja (por
- * defecto, la hoja entera), con la sombra del suelo en los fotogramas de pie
+ * defecto, la hoja entera), con la cara pintada encima (si hay anclas: ver
+ * `src/render/cara.ts`) y la sombra del suelo en los fotogramas de pie
  * (sentado, caería en el asiento). Devuelve RGBA listo para una textura.
  */
-export function componer(capas: Capa[], look: Look, region?: Region): Uint8ClampedArray {
+export function componer(capas: Capa[], look: Look, cara: DatosCara | null, region?: Region): Uint8ClampedArray {
   const rg = region ?? { x: 0, y: 0, w: ANCHO_HOJA, h: ALTO_HOJA };
-  const out = combinar(capas, (m) => rampaDe(look, m), rg);
+  const fundido = fundir(capas, rg);
+  if (cara) pintarCara(fundido, rg, cara, look, { frameW: HOJA.frameW, frameH: HOJA.frameH, parpadeo: esParpadeo });
+  const out = colorear(fundido, (m) => rampaDe(look, m));
 
   const { frameW, frameH, anclaX, anclaY } = HOJA;
   const sit = HOJA.anims.sit;

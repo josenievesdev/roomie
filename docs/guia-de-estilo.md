@@ -89,6 +89,26 @@ salía a manchas.
 mancha) y sin sombra dura por orientación (una barbilla en sombra profunda
 parece barba).
 
+**El pelo rizado va sin franja de brillo** (`mate` en el grupo): con un
+brillo por rizo, sale moteado.
+
+## 6b. La cara
+
+- **Los rasgos son sellos, no geometría.** Un ojo son 2×3 píxeles: modelado,
+  bailaría entre 1 y 3 según cayera. Cada estilo (ojos, cejas, nariz, boca,
+  pecas, rubor) es un dibujo de pocos píxeles con su variante de frente y de
+  perfil (`src/render/cara.ts`), estampado donde el generador dice que cae ese
+  rasgo en cada fotograma.
+- **Ojos y cejas se reflejan de un lado al otro; nariz y boca no.** El
+  brillo del ojo va arriba, del lado de fuera.
+- **Todo sobre la piel y con colores de rampa**: la nariz es la propia piel en
+  sombra o con brillo; el rubor y las pecas, la piel mezclada con rosa o con
+  marrón; las cejas y la barba, el pelo. Nunca un color suelto.
+- **La barba tiñe zonas de la piel** (mandíbula, bigote, perilla, patillas),
+  así que se adapta a la forma de la cara y conserva su luz.
+- **El cráneo es común**: una forma de cara nueva sólo cambia lo de abajo
+  (mofletes, mandíbula, barbilla), de uno o dos píxeles.
+
 ## 7. Sombra en el suelo
 
 Todo lo que se apoya en el suelo lleva una elipse de sombra debajo (violeta
@@ -167,8 +187,19 @@ Los paneles fijos a la cámara se hacen con objetos sueltos, nunca con un
 1. El estilo en `ESTILOS` (`src/state/look.ts`): así el servidor lo acepta.
 2. Su forma en `tools/avatar/model.mjs`. Es una "segunda piel" colgada de los
    mismos huesos que el cuerpo, un poco más gruesa (mira `TORSO` o `PELO`).
+   Un peinado se cuelga del cráneo (`peloBase`, `sobrePelo`); lo que cuelga
+   (colas, trenzas) va en su propio grupo, o la línea del pelo lo corta.
 3. `node tools/genavatar.mjs --solo=torso/nueva --preview=<carpeta>` y mirar
-   la vista previa en las 8 direcciones y las poses.
+   la vista previa en las 8 direcciones y las poses (los peinados, en
+   `peinados.png`).
+
+**Un rasgo de la cara** (ojos, cejas, nariz, boca, detalle): su id en el
+catálogo de `src/state/look.ts` y su sello en `src/render/cara.ts`. No hay que
+regenerar nada; `--preview` saca `rasgos-<parte>.png` para mirarlo.
+
+**Una forma de cara:** su id en `CARAS` (`src/state/look.ts`) y su parte de
+abajo en `CARAS` de `tools/avatar/model.mjs`, sin tocar el cráneo. Luego
+`node tools/genavatar.mjs` (rehace las anclas de `cara.json`).
 
 **Un mueble** (de suelo o de pared):
 1. Su entrada en `src/state/furniture-catalog.ts`: si estorba, si es un asiento

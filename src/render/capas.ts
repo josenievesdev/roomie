@@ -4,15 +4,20 @@
 // es exactamente lo que dibuja el juego.
 //
 // Cada capa es una imagen que en vez de colores guarda en cada píxel:
-//   R = material · G = banda de luz (0 brillo … 3 sombra)
+//   R = material · G = banda de luz (0 brillo … 3 sombra, bits 0-1) y zona
+//   de la piel (bits 2-7: sólo la cabeza, ver `ZONA` en src/state/look.ts)
 //   B = profundidad (menor = más cerca de la cámara) · A = 255 si hay algo
-// Combinar es quedarse, píxel a píxel, con lo más cercano; colorear es pasar
-// cada (material, banda) por su rampa.
+// Combinar es quedarse, píxel a píxel, con lo más cercano (`fundir`);
+// colorear es pasar cada (material, banda) por su rampa (`colorear`). Entre
+// los dos pasos se puede pintar encima: así se pinta la cara del avatar.
 
 import type { Rampa } from "../utils/color.ts";
 
 export type Capa = { width: number; height: number; data: Uint8Array | Uint8ClampedArray };
 export type Region = { x: number; y: number; w: number; h: number };
+
+/** Capas ya fundidas en una región: material, luz, zona y profundidad de lo que se ve */
+export type Fundido = { w: number; h: number; mat: Uint8Array; shade: Uint8Array; zona: Uint8Array; depth: Uint8Array };
 
 /** Salto de profundidad (en bytes, 3 = 1 unidad) a partir del cual se traza una línea interior */
 const BORDE = 10;
@@ -26,26 +31,15 @@ export type OpcionesCombinar = {
 };
 
 /**
- * Combina y colorea capas en una región. Devuelve RGBA listo para una textura.
- *
- *  1. Lo más cercano de todas las capas, píxel a píxel (a igual profundidad
- *     gana la capa que va después).
- *  2. Color por rampa, y línea interior donde algo tapa a otra cosa con un
- *     salto de profundidad (el brazo delante del pecho, el cojín sobre el
- *     sofá): del tono de contorno de lo que está DELANTE.
- *  3. Contorno exterior de 1 px, del tono más oscuro de lo que rodea (nunca
- *     negro: la regla de la guía de estilo).
+ * Funde capas en una región: lo más cercano de todas, píxel a píxel (a igual
+ * profundidad gana la capa que va después).
  */
-export function combinar(
-  capas: Capa[],
-  rampaDe: (mat: number) => Rampa,
-  rg: Region,
-  opciones: OpcionesCombinar = {},
-): Uint8ClampedArray {
+export function fundir(capas: Capa[], rg: Region): Fundido {
   const { w, h } = rg;
   const n = w * h;
   const mat = new Uint8Array(n);
   const shade = new Uint8Array(n);
+  const zona = new Uint8Array(n);
   const depth = new Uint8Array(n).fill(255);
 
   for (const capa of capas) {
@@ -59,12 +53,41 @@ export function combinar(
         const d = src[i + 2];
         if (d <= depth[k] || mat[k] === 0) {
           mat[k] = src[i];
-          shade[k] = src[i + 1];
+          shade[k] = src[i + 1] & 3;
+          zona[k] = src[i + 1] >> 2;
           depth[k] = d;
         }
       }
     }
   }
+  return { w, h, mat, shade, zona, depth };
+}
+
+/**
+ * Combina y colorea capas en una región. Devuelve RGBA listo para una textura.
+ * Es `fundir` y luego `colorear`.
+ */
+export function combinar(
+  capas: Capa[],
+  rampaDe: (mat: number) => Rampa,
+  rg: Region,
+  opciones: OpcionesCombinar = {},
+): Uint8ClampedArray {
+  return colorear(fundir(capas, rg), rampaDe, opciones);
+}
+
+/**
+ * Colorea lo fundido. Devuelve RGBA listo para una textura.
+ *
+ *  1. Color por rampa, y línea interior donde algo tapa a otra cosa con un
+ *     salto de profundidad (el brazo delante del pecho, el cojín sobre el
+ *     sofá): del tono de contorno de lo que está DELANTE.
+ *  2. Contorno exterior de 1 px, del tono más oscuro de lo que rodea (nunca
+ *     negro: la regla de la guía de estilo).
+ */
+export function colorear(f: Fundido, rampaDe: (mat: number) => Rampa, opciones: OpcionesCombinar = {}): Uint8ClampedArray {
+  const { w, h, mat, shade, depth } = f;
+  const n = w * h;
 
   const rampas: (Rampa | undefined)[] = [];
   const rampa = (m: number): Rampa => (rampas[m] ??= rampaDe(m));

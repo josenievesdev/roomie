@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server, type Socket } from "socket.io";
 import { AvatarState, FACING_SUR, isFacing, type Facing } from "../../src/state/avatarState.ts";
-import { sanitizeLook } from "../../src/state/look.ts";
+import { codificarLook, sanitizeLook } from "../../src/state/look.ts";
 import { toScreen } from "../../src/utils/iso.ts";
 import { findPath, type Cell } from "../../src/utils/pathfinding.ts";
 import {
@@ -16,6 +16,7 @@ import {
   necesitaConsentimiento,
   parsearNacimiento,
   puedeEntrarEnCasa,
+  puedeVerPerfil,
   type Franja,
 } from "../../src/state/normas.ts";
 import { filtrarChat, type MotivoBloqueo } from "../../src/state/filtroChat.ts";
@@ -105,6 +106,10 @@ type Player = {
   name: string;
   room: RoomId;
   look: Look;
+  /** El aspecto en código compacto: lo que viaja en las instantáneas (se rehace al cambiar `look`) */
+  lookCodigo: string;
+  /** Desde cuándo tiene la cuenta ("AAAA-MM"): lo único de la cuenta que sale en su perfil */
+  desde: string | null;
   world: RoomWorld;
   state: AvatarState;
   /** Ejes de teclado normalizados (-1..1) que llegaron del cliente */
@@ -373,7 +378,7 @@ function view(p: Player): PlayerView {
     facing: p.state.facing,
     sitting: p.state.sitting !== null,
     moving: p.moving && p.state.sitting === null,
-    look: p.look,
+    look: p.lookCodigo,
   };
 }
 
@@ -510,6 +515,7 @@ io.on("connection", (socket) => {
       necesitaNacimiento: franja === null,
       bloqueados: await nicknamesDe([...bloqueados]),
       casa: infoDeCasa(casa),
+      desde: s.account.desde ?? null,
     });
     if (premio !== null) aviso(`Premio del día: +${PREMIO_DIARIO} monedas. ¡Vuelve mañana a por otro!`);
   };
@@ -696,6 +702,8 @@ io.on("connection", (socket) => {
       name: desiredName,
       room,
       look: sanitizeLook(sesion.avatar.look),
+      lookCodigo: codificarLook(sanitizeLook(sesion.avatar.look)),
+      desde: sesion.account.desde ?? null,
       world,
       state: newState(socket.id, room, start, normalizeFacing(payload?.facing)),
       input: { mx: 0, my: 0 },
@@ -739,6 +747,7 @@ io.on("connection", (socket) => {
     if (!me) return;
     const limpio = sanitizeLook(look);
     me.look = limpio;
+    me.lookCodigo = codificarLook(limpio);
     // Y a la cuenta: si sólo viviera en memoria, al cerrar sesión volverías a
     // salir con los colores por defecto.
     const sesion = sesiones.get(socket.id);
@@ -748,6 +757,18 @@ io.on("connection", (socket) => {
         console.error("[roomie] guardar aspecto:", e),
       );
     }
+  });
+
+  // Ver el perfil de otro jugador: sólo de quien tienes delante, y nunca el
+  // de quien te ha bloqueado (`puedeVerPerfil` en src/state/normas.ts). Sale
+  // lo de `PerfilPublico`: nada de edad ni de dónde vive.
+  socket.on("perfil", (id: unknown) => {
+    if (!me || typeof id !== "string" || frenar()) return;
+    const otro = players.get(id);
+    if (!otro || otro.id === me.id) return;
+    const meTieneBloqueado = sesiones.get(otro.id)?.bloqueados.has(me.accountId) ?? false;
+    if (!puedeVerPerfil(otro.room === me.room, meTieneBloqueado)) return;
+    socket.emit("perfil", { id: otro.id, nombre: otro.name, look: otro.look, desde: otro.desde });
   });
 
   socket.on("room", async (p) => {

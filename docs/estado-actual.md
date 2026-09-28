@@ -37,7 +37,12 @@ vender por la mitad y poner, mover, girar y guardar muebles en tu casa con el
 servidor validando cada celda; y **el móvil al 100 %**: el lienzo mide lo que
 mide la pantalla, en vertical o en horizontal, con botones al alcance del
 pulgar, pellizco para el zoom y todos los paneles adaptables
-(`docs/fase10-economia-tienda-movil.md`).
+(`docs/fase10-economia-tienda-movil.md`). En la Fase 11, **caras y
+peinados**: cinco formas de cara con el mismo cráneo, nueve ojos con ocho
+colores, cejas, narices, bocas, pecas, rubor y barbas, doce tonos de piel,
+diecinueve peinados y diecisiete colores de pelo; el vestidor rehecho y una
+ficha de perfil de verdad, también para ver la de otros
+(`docs/fase11-caras-y-peinados.md`).
 Las reglas visuales que hacen que todo encaje están en
 `docs/guia-de-estilo.md`.
 
@@ -102,6 +107,9 @@ servidor ejecuten exactamente la misma física y las mismas reglas de colisión.
 | Tienda y mochila, con dos toques para comprar y vender | smoke test (7d) + navegador |
 | Poner, mover, girar y guardar muebles; el fantasma verde o rojo | smoke test (7d) + `prueba-normas` + navegador |
 | Pantalla de cualquier tamaño, en vertical y en horizontal | navegador (390×740, 844×390 y escritorio) |
+| Caras: 5 formas, ojos, cejas, nariz, boca, detalles, barba; 19 peinados | `prueba-avatar` + vistas previas del generador + navegador |
+| El aspecto viaja en código compacto (18 caracteres) | `prueba-avatar` + smoke test (3d) |
+| Ficha de perfil; ver el de otro sólo si está en tu sala y no te bloqueó | smoke test (4b) + `prueba-normas` + navegador |
 | Con el dedo: barra abajo, pellizco, chat arriba, paneles a lo ancho | navegador, con toques simulados |
 
 ## Las decisiones que no hay que deshacer
@@ -144,6 +152,15 @@ navegador las combina y colorea por jugador (`src/render/avatarSheet.ts`). Si
 alguien pinta a mano un PNG de colores y lo mete ahí, deja de combinar con el
 resto de prendas. Para cambiar el arte se toca `tools/avatar/model.mjs` y se
 regenera.
+
+**El cráneo es el mismo en todas las caras.** Las formas de cara cambian lo de
+abajo (mofletes, mandíbula, barbilla); peinados (y mañana gorras) se cuelgan
+del cráneo. Si una cara nueva cambiara el cráneo, habría que rehacer cada
+peinado.
+
+**La cara son sellos en anclas, y la barba, zonas** (`src/render/cara.ts`). El
+generador sólo calcula dónde cae cada rasgo (`cara.json`) y marca las zonas de
+la piel; el navegador pinta. Un rasgo nuevo no pide regenerar nada.
 
 **El aspecto es un catálogo, validado en el servidor.** Estilos y colores
 viven en `src/state/look.ts`, compartido; el servidor corrige campo a campo lo
@@ -236,8 +253,9 @@ contenido y la cima, subiendo por hitos jugables:
 2. **Salir a La Manzana.** Seis zonas alrededor de la Plaza de la Llave,
    amigos, compartir ubicación y una red que aguante 50 personas por zona.
 3. **Vivir.** Trabajo en el café, hambre y comida, vehículos propios.
-4. **Presumir.** Caras, rasgos y moda por estilos (con el avatar definitivo
-   ANTES de fabricar prendas), comercio seguro, créditos y Club.
+4. **Presumir.** Caras y rasgos (hecho, adelantado en la fase 11), moda por
+   estilos (con el resto del avatar definitivo ANTES de fabricar prendas:
+   complexión, ranuras y gorras), comercio seguro, créditos y Club.
 5. **La cima.** Eventos, tendencias, mercado, mascotas, más barrios.
 
 ## Deuda conocida
@@ -250,6 +268,10 @@ contenido y la cima, subiendo por hitos jugables:
   precios hay que medirla (C11).
 - **Cada avatar en pantalla ocupa 1,8 MB de GPU** (hoja de 672×672). Con
   decenas de jugadores por sala habrá que generar sólo las direcciones en uso.
+- **Las 35 capas del avatar (878 KB) se descargan todas al empezar**, aunque
+  cada uno use seis. Con la moda habrá que cargarlas según se necesiten.
+- **Las formas de cara se notan poco a tamaño real** (uno o dos píxeles, como
+  en Habbo): donde de verdad se ven es en el vestidor y en el perfil.
 - **El teclado atraviesa a la gente de pie**: con las flechas se puede pasar
   por encima de alguien (los asientos ocupados sí estorban). El clic sí está
   protegido.
@@ -297,6 +319,7 @@ contenido y la cima, subiendo por hitos jugables:
 | `fase8-plaza-de-la-llave.md` | La primera zona de La Manzana: la plaza al aire libre, con la Llave |
 | `fase9-mi-primer-piso.md` | Tu casa: la portería, las llaves, el piso recién mudado; casas como datos y muebles de varias celdas |
 | `fase10-economia-tienda-movil.md` | Dos monedas, premio del día, tienda, mochila y decorar; el móvil al 100 % (y el lienzo que no se redimensionaba al girar) |
+| `fase11-caras-y-peinados.md` | Caras (formas, rasgos, barbas), 19 peinados, más pieles y colores; el vestidor rehecho y la ficha de perfil |
 | `vision-mundo.md` | Ideas: barrio, ubicación, transporte, economía, cena, moda y caras |
 | `plan-piramide.md` | El plan: cimientos, sistemas, contenido y cima, por hitos jugables |
 | `guia-de-estilo.md` | Las reglas visuales: escala, cámara, luz, rampas de color, contorno |

@@ -7,7 +7,17 @@
 // imitan letras); los casos "pasar" son frases inocentes que un filtro torpe
 // se comería ("computadora" lleva dentro "puta", "pera" parece "perra").
 import { filtrarChat } from "../src/state/filtroChat.ts";
-import { edadEn, edadValida, franjaDe, modoChat, leeTextoLibre, parsearNacimiento, EDAD_MINIMA } from "../src/state/normas.ts";
+import {
+  edadEn,
+  edadValida,
+  franjaDe,
+  modoChat,
+  leeTextoLibre,
+  parsearNacimiento,
+  puedeEntrarEnCasa,
+  puedeVerPerfil,
+  EDAD_MINIMA,
+} from "../src/state/normas.ts";
 import { frasePorId, CATEGORIAS, GESTOS } from "../src/state/frases.ts";
 import { motivoNoCabe, pisoDe } from "../src/state/decorar.ts";
 
@@ -91,6 +101,12 @@ check(!edadValida(150), "150 años no es una edad");
 check(franjaDe(12) === "nino" && franjaDe(13) === "joven" && franjaDe(17) === "joven" && franjaDe(18) === "adulto", "franjas: 12 niño, 13-17 joven, 18 adulto");
 check(modoChat("nino") === "frases" && modoChat("joven") === "libre", "los niños hablan con frases");
 check(!leeTextoLibre("nino") && leeTextoLibre("adulto"), "los niños no leen texto libre");
+
+// ---------------------------------------------------------------- Casas y perfiles
+check(puedeEntrarEnCasa(true) && !puedeEntrarEnCasa(false), "en tu casa sólo entras tú (hasta que haya amigos)");
+check(puedeVerPerfil(true, false), "se ve el perfil de quien tienes delante");
+check(!puedeVerPerfil(false, false), "no el de alguien de otra sala: el perfil no sirve para buscar a nadie");
+check(!puedeVerPerfil(true, true), "ni el de quien te ha bloqueado");
 
 // ---------------------------------------------------------------- Frases
 const ids = [...CATEGORIAS.flatMap((c) => c.frases), ...GESTOS].map((f) => f.id);

@@ -7,6 +7,7 @@
 import { io } from "socket.io-client";
 import { loadWorld, mundoDesdeMapa } from "../server/src/world.ts";
 import { findPath } from "../src/utils/pathfinding.ts";
+import { decodificarLook, mismoLook } from "../src/state/look.ts";
 
 const URL = process.env.SERVER ?? "http://localhost:3001";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -150,6 +151,11 @@ check(
   typeof A.identidad.look?.piel === "string" && A.identidad.look.torsoColor === "morado",
   `el aspecto antiguo {shirt, hair} llega convertido (${JSON.stringify(A.identidad.look)})`,
 );
+check(
+  A.identidad.look?.cara === "redonda" && A.identidad.look?.ojos === "redondos",
+  "y con la cara de siempre, que no tenía",
+);
+check(/^\d{4}-\d{2}$/.test(A.identidad.desde ?? ""), `al entrar se sabe desde cuándo tienes la cuenta (${A.identidad.desde})`);
 await until(() => A.sock.connected && B.sock.connected, 3000);
 await join(A, "room1", spawn);
 await join(B, "room1", spawn); // la MISMA celda, como dos que cruzan la misma puerta
@@ -287,9 +293,17 @@ if (recta) {
 // podría pedir prendas que nadie sabe dibujar.
 {
   const nuevo = {
-    piel: "p5",
-    pelo: "coleta",
-    peloColor: "rosa",
+    piel: "p9",
+    cara: "corazon",
+    ojos: "grandes",
+    ojosColor: "verde",
+    cejas: "arqueadas",
+    nariz: "boton",
+    boca: "sonrisa",
+    detalle: "pecas",
+    barba: "ninguna",
+    pelo: "trenzas",
+    peloColor: "caoba",
     torso: "sudadera",
     torsoColor: "verde",
     piernas: "falda",
@@ -297,18 +311,19 @@ if (recta) {
     pies: "botas",
     piesColor: "negro",
   };
+  // En la instantánea el aspecto viaja en código compacto: se descodifica
+  const suyo = () => decodificarLook(view(B, A.id)?.look);
   A.sock.emit("look", nuevo);
-  check(
-    await until(() => JSON.stringify(view(B, A.id)?.look) === JSON.stringify(nuevo)),
-    "un aspecto válido llega a los demás tal cual",
-  );
-  A.sock.emit("look", { ...nuevo, torso: "armadura", pelo: 42 });
+  check(await until(() => mismoLook(suyo(), nuevo)), "un aspecto válido (cara incluida) llega a los demás tal cual");
+  const codigo = view(B, A.id)?.look;
+  check(typeof codigo === "string" && codigo.length <= 20, `y viaja en código compacto (${JSON.stringify(codigo)})`);
+  A.sock.emit("look", { ...nuevo, torso: "armadura", pelo: 42, ojos: "laser", cara: "triangular" });
   check(
     await until(() => {
-      const l = view(B, A.id)?.look;
-      return l?.torso === "camiseta" && l?.pelo === "corto" && l?.torsoColor === "verde" && l?.pies === "botas";
+      const l = suyo();
+      return l.torso === "camiseta" && l.pelo === "corto" && l.ojos === "redondos" && l.cara === "redonda" && l.torsoColor === "verde" && l.cejas === "arqueadas";
     }),
-    "un estilo inventado vuelve al de por defecto y el resto se respeta",
+    "un estilo o un rasgo inventado vuelve al de por defecto y el resto se respeta",
   );
 }
 
@@ -387,6 +402,31 @@ check(!said(A, "spam"), "segundo mensaje <400 ms descartado (anti-spam)");
   A.sock.emit("chat", "eres un idiota");
   check(await until(() => recibio(B, "eres un ★★★★★★", mb)), "las groserías llegan tapadas");
 
+  // Perfiles: el de quien tienes delante se ve, sin nada privado
+  await espera();
+  const pedirPerfil = (c, id, ms = 1500) =>
+    new Promise((r) => {
+      const f = (p) => {
+        clearTimeout(t);
+        r(p);
+      };
+      const t = setTimeout(() => {
+        c.sock.off("perfil", f);
+        r(null);
+      }, ms);
+      c.sock.once("perfil", f);
+      c.sock.emit("perfil", id);
+    });
+  const perfilB = await pedirPerfil(A, B.id);
+  check(
+    perfilB?.id === B.id && perfilB.nombre === B.identidad.nickname && /^\d{4}-\d{2}$/.test(perfilB.desde ?? "") && typeof perfilB.look?.cara === "string",
+    `se ve el perfil de quien tienes delante: nombre, aspecto y desde cuándo juega (${perfilB?.desde})`,
+  );
+  check(
+    perfilB && Object.keys(perfilB).sort().join() === "desde,id,look,nombre",
+    "y nada más: ni la edad, ni dónde vive, ni su cuenta",
+  );
+
   // B bloquea a A: ya no le llega nada suyo, ni texto ni frases
   B.sock.emit("bloquear", A.id);
   const bloqueado = await new Promise((r) => {
@@ -399,6 +439,7 @@ check(!said(A, "spam"), "segundo mensaje <400 ms descartado (anti-spam)");
   A.sock.emit("frase", "hola");
   await sleep(500);
   check(!B.chats.slice(mb).some((m) => m.from === A.id), "a quien bloqueó no le llega nada del bloqueado");
+  check((await pedirPerfil(A, B.id, 900)) === null, "y el bloqueado no puede ver el perfil de quien le bloqueó");
   B.sock.emit("desbloquear", A.id);
   await until(() => B.chats.slice(mb).some((m) => m.system && m.text.includes("desbloqueado")), 3000);
   await espera();

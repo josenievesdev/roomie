@@ -47,10 +47,13 @@ export type Account = {
   username: string;
   nacimiento: string | null;
   consentimiento: Consentimiento;
+  /** Desde cuándo existe la cuenta, "AAAA-MM" (se ve en el perfil) */
+  desde: string;
 };
 
-/** Columnas de `accounts` que forman una `Account` (la fecha, como texto: sin zonas horarias) */
-const columnasCuenta = () => sql`id, username, birth_date::text as nacimiento, consent as consentimiento`;
+/** Columnas de `accounts` que forman una `Account` (las fechas, como texto: sin zonas horarias) */
+const columnasCuenta = () =>
+  sql`id, username, birth_date::text as nacimiento, consent as consentimiento, to_char(created_at at time zone 'America/Bogota', 'YYYY-MM') as desde`;
 export type Avatar = { id: string; nickname: string; look: Record<string, string | number> };
 
 /** Saldo con el que empieza una cuenta nueva */
@@ -108,7 +111,13 @@ export async function autenticar(
     select id, nickname, look from avatars where account_id = ${fila.id} order by created_at limit 1
   `;
   return {
-    account: { id: fila.id, username: fila.username, nacimiento: fila.nacimiento, consentimiento: fila.consentimiento },
+    account: {
+      id: fila.id,
+      username: fila.username,
+      nacimiento: fila.nacimiento,
+      consentimiento: fila.consentimiento,
+      desde: fila.desde,
+    },
     avatar,
     saldo: await saldoDe(fila.id),
   };

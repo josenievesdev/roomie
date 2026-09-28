@@ -11,6 +11,7 @@
 
 import {
   add,
+  boxAxes,
   capsule,
   cappedCone,
   clamp,
@@ -24,7 +25,7 @@ import {
   sub,
   v3,
 } from "./sdf.mjs";
-import { MAT } from "../../src/state/look.ts";
+import { MAT, ZONA } from "../../src/state/look.ts";
 
 const RAD = Math.PI / 180;
 const { sin, cos } = Math;
@@ -238,23 +239,96 @@ function porEncima(J, y0, pendiente) {
 
 const grupo = (mat, k, shapes, extra = {}) => ({ mat, k, shapes, ...extra });
 
+// ---------------------------------------------------------------- Cabeza y cara
+//
+// La cabeza va en su propia capa, una por forma de cara. El CRÁNEO es el
+// mismo en todas (el elipsoide de `P.head`): de él se cuelgan los peinados,
+// y mañana las gorras, así que cualquier peinado vale para cualquier cara.
+// Lo que cambia es lo de abajo: mofletes, mandíbula y barbilla.
+
+/** El cráneo: igual en todas las caras */
+const craneo = (J) => elipCabeza(J, 0, 0, 0, P.head.rx, P.head.ry, P.head.rz);
+
+const orejas = (J) => [
+  elipCabeza(J, P.head.rx - 0.6, -0.9, -0.5, 1.5, 2.3, 1.6),
+  elipCabeza(J, -(P.head.rx - 0.6), -0.9, -0.5, 1.5, 2.3, 1.6),
+];
+
+/**
+ * Lo de abajo de cada forma de cara, en coordenadas de la cabeza. Las
+ * diferencias son de uno o dos píxeles, como en Habbo: a este tamaño, más
+ * sería otra cabeza (y el pelo dejaría de encajar).
+ */
+const CARAS = {
+  // Mofletes: la cara se ensancha abajo, como en los muñecos
+  redonda: (J) => [elipCabeza(J, 0, -3.2, 1.4, 9.5, 6.6, 8.6)],
+  // Más larga y más estrecha: la barbilla baja dos píxeles
+  ovalada: (J) => [elipCabeza(J, 0, -5.2, 1.0, 8.0, 8.4, 7.9)],
+  // Mandíbula ancha y barbilla plana: la caja manda abajo
+  cuadrada: (J) => [
+    elipCabeza(J, 0, -2.8, 1.4, 10.0, 5.6, 8.6),
+    boxAxes(enCabeza(J, 0, -6.4, 1.8), J.hax, J.hay, J.haz, v3(8.6, 2.2, 6.6), 1.8),
+  ],
+  // Pómulos anchos y altos, y barbilla fina, en pico
+  corazon: (J) => [elipCabeza(J, 0, -2.0, 1.4, 10.1, 5.0, 8.4), elipCabeza(J, 0, -7.6, 3.6, 2.4, 3.4, 4.2)],
+  // Carrillos llenos: más anchos abajo que el propio cráneo
+  mofletes: (J) => [elipCabeza(J, 0, -4.2, 2.2, 11.6, 7.4, 9.6)],
+};
+
+/**
+ * Zona de la cara de cada punto de la superficie (coordenadas de la cabeza:
+ * +x izquierda, +y arriba, +z delante). El navegador pinta la barba, el
+ * bigote y la perilla en su zona: así la barba se adapta a cada forma de
+ * cara y conserva la luz del modelo.
+ */
+const zonaCara = (J) => (x, y, z) => {
+  const q = local(J, x, y, z);
+  if (q.z < -3.6) return ZONA.NINGUNA; // la nuca
+  const ax = Math.abs(q.x);
+  if (ax > 9.4 && q.y > -3.4) return ZONA.NINGUNA; // las orejas
+  if (q.y > -3.0) {
+    // Patillas: delante de las orejas, a la altura de los ojos para abajo
+    return ax > 7.3 && q.y < 1.4 && q.z < 5.8 ? ZONA.PATILLA : ZONA.NINGUNA;
+  }
+  if (q.y > -4.3 && ax < 3.9 && q.z > 5.5) return ZONA.BIGOTE;
+  if (q.y < -5.5 && ax < 3.2 && q.z > 4.2) return ZONA.PERILLA;
+  return ZONA.MANDIBULA;
+};
+
+/** Constructor de la capa de cabeza de una forma de cara */
+const cabeza = (forma) => (J) => [
+  grupo(MAT.PIEL, 3.0, [craneo(J), ...CARAS[forma](J), ...orejas(J)], { suave: true, zonaFn: zonaCara(J) }),
+];
+
+export const CABEZAS = Object.fromEntries(Object.keys(CARAS).map((f) => [f, cabeza(f)]));
+
+/**
+ * Dónde van los rasgos de la cara, como [giro, altura] en grados sobre la
+ * cabeza (0, 0 = el centro de la cara). El generador busca el punto de la
+ * piel en esa dirección, lo fotografía y apunta dónde cae en cada
+ * fotograma: son las anclas en las que el navegador pinta ojos, cejas, nariz
+ * y boca (`src/render/cara.ts`).
+ */
+export const RASGOS = {
+  ojoL: [25, -2],
+  ojoR: [-25, -2],
+  cejaL: [26, 15],
+  cejaR: [-26, 15],
+  nariz: [0, -13],
+  boca: [0, -26],
+  mejillaL: [42, -15],
+  mejillaR: [-42, -15],
+};
+
+/** Dirección (en el modelo) de un rasgo, desde el centro de la cabeza */
+export function direccionRasgo(J, giro, altura) {
+  const d = v3(sin(giro * RAD) * cos(altura * RAD), sin(altura * RAD), cos(giro * RAD) * cos(altura * RAD));
+  return norm(add(add(mul(J.hax, d.x), mul(J.hay, d.y)), mul(J.haz, d.z)));
+}
+
 // ---------------------------------------------------------------- Cuerpo
 
 function cuerpo(J) {
-  const h = P.head;
-  const cabeza = grupo(
-    MAT.PIEL,
-    3.0,
-    [
-      elipCabeza(J, 0, 0, 0, h.rx, h.ry, h.rz),
-      // Mofletes: la cara se ensancha abajo, como en los muñecos
-      elipCabeza(J, 0, -3.2, 1.4, h.rx - 1.4, h.ry - 4.2, h.rz - 1.6),
-      // Orejas
-      elipCabeza(J, h.rx - 0.6, -0.9, -0.5, 1.5, 2.3, 1.6),
-      elipCabeza(J, -(h.rx - 0.6), -0.9, -0.5, 1.5, 2.3, 1.6),
-    ],
-    { suave: true },
-  );
   const tronco = grupo(
     MAT.PIEL,
     3.0,
@@ -289,32 +363,7 @@ function cuerpo(J) {
       ],
       { suave: true },
     );
-  return [cabeza, tronco, brazoGrupo(J.armL), brazoGrupo(J.armR), piernaGrupo(J.legL), piernaGrupo(J.legR)];
-}
-
-/**
- * Rasgos de la cara: se pintan DESPUÉS de trazar, como calcomanías en puntos
- * de la superficie de la cabeza. A este tamaño un ojo son 2×3 píxeles, y
- * trazarlo como geometría lo haría parpadear entre 1 y 3 según caiga.
- */
-export function rasgos(J) {
-  const h = P.head;
-  const sobreCabeza = (yaw, pitch) => {
-    const d = v3(sin(yaw * RAD) * cos(pitch * RAD), sin(pitch * RAD), cos(yaw * RAD) * cos(pitch * RAD));
-    const k = 1 / Math.hypot(d.x / h.rx, d.y / h.ry, d.z / h.rz);
-    const pl = mul(d, k); // en coordenadas de la cabeza
-    const nl = norm(v3(pl.x / (h.rx * h.rx), pl.y / (h.ry * h.ry), pl.z / (h.rz * h.rz)));
-    const aModelo = (q) => add(add(mul(J.hax, q.x), mul(J.hay, q.y)), mul(J.haz, q.z));
-    return { p: add(J.head, aModelo(pl)), n: norm(aModelo(nl)) };
-  };
-  return {
-    ojoL: sobreCabeza(25, -2),
-    ojoR: sobreCabeza(-25, -2),
-    cejaL: sobreCabeza(26, 15),
-    cejaR: sobreCabeza(-26, 15),
-    boca: sobreCabeza(0, -24),
-    parpado: J.pose.blink,
-  };
+  return [tronco, brazoGrupo(J.armL), brazoGrupo(J.armR), piernaGrupo(J.legL), piernaGrupo(J.legR)];
 }
 
 // ---------------------------------------------------------------- Pelo
@@ -334,6 +383,56 @@ const flequillo = (J) => [
 
 /** Línea del pelo: la frente queda despejada, la nuca cubierta */
 const lineaPelo = (J, y0 = 1.8, pend = 0.62) => porEncima(J, y0, pend);
+
+/** Dirección (giro, altura) en grados, en coordenadas de la cabeza */
+const dirCabeza = (giro, altura) =>
+  v3(sin(giro * RAD) * cos(altura * RAD), sin(altura * RAD), cos(giro * RAD) * cos(altura * RAD));
+
+/** Punto sobre el pelo base (el elipsoide algo mayor que el cráneo), `fuera` más o menos */
+function sobrePelo(giro, altura, fuera = 0) {
+  const d = dirCabeza(giro, altura);
+  const rx = P.head.rx + 1.6 + fuera;
+  const ry = P.head.ry + 1.8 + fuera;
+  const rz = P.head.rz + 1.7 + fuera;
+  const k = 1 / Math.hypot(d.x / rx, d.y / ry, d.z / rz);
+  return v3(d.x * k, d.y * k + 0.9, d.z * k - 0.3);
+}
+
+/**
+ * Bultos del pelo rizado: esferas pequeñas repartidas en anillos por el pelo
+ * base. Fundidas con poca suavidad, el contorno queda ondulado de píxel en
+ * píxel: a este tamaño, eso es un rizo.
+ */
+function bultos(J, anillos, r, fuera = -0.5) {
+  const piezas = [];
+  anillos.forEach(([altura, n, desfase = 0]) => {
+    for (let i = 0; i < n; i++) {
+      const q = sobrePelo((360 / n) * i + desfase, altura, fuera);
+      piezas.push(sphere(enCabeza(J, q.x, q.y, q.z), r));
+    }
+  });
+  return piezas;
+}
+
+/** Nada por delante de la cara (lo de los lados puede adelantarse, enmarcándola) */
+const detrasDeLaCara = (J, z0 = 3.2, abre = 0) => (x, y, z) => {
+  const q = local(J, x, y, z);
+  return q.z - (z0 + abre * Math.abs(q.x));
+};
+
+/** Hasta dónde baja una melena, medido desde el centro de la cabeza */
+const hastaAltura = (J, dy) => (x, y, z) => J.head.y + dy - y;
+
+/** Un mechón que cuelga: cadena de esferas de `desde` a `hasta` (coordenadas de la cabeza) */
+function cadena(J, desde, hasta, n, r0, r1) {
+  const piezas = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0 : i / (n - 1);
+    const q = v3(desde.x + (hasta.x - desde.x) * t, desde.y + (hasta.y - desde.y) * t, desde.z + (hasta.z - desde.z) * t);
+    piezas.push(sphere(enCabeza(J, q.x, q.y, q.z), r0 + (r1 - r0) * t));
+  }
+  return piezas;
+}
 
 const PELO = {
   corto: (J) => [grupo(MAT.PELO, 2.2, [peloBase(J), ...flequillo(J)], { clips: [lineaPelo(J)], hair: true })],
@@ -363,17 +462,12 @@ const PELO = {
     ),
   ],
   coleta: (J) => [
-    grupo(
-      MAT.PELO,
-      2.0,
-      [
-        peloBase(J),
-        ...flequillo(J),
-        sphere(enCabeza(J, 0, 2.6, -11.2), 2.4),
-        roundCone(enCabeza(J, 0, 1.4, -12.2), enCabeza(J, 0, -12.2, -13.6), 3.3, 1.6),
-      ],
-      { clips: [lineaPelo(J, 1.2, 0.7)], hair: true },
-    ),
+    grupo(MAT.PELO, 2.0, [peloBase(J), ...flequillo(J), sphere(enCabeza(J, 0, 2.6, -11.2), 2.4)], {
+      clips: [lineaPelo(J, 1.2, 0.7)],
+      hair: true,
+    }),
+    // La cola, aparte: la línea del pelo la cortaba a la altura de la nuca
+    grupo(MAT.PELO, 1.0, [roundCone(enCabeza(J, 0, 1.4, -12.2), enCabeza(J, 0, -12.8, -13.8), 3.3, 1.6)], { hair: true }),
   ],
   mono: (J) => [
     // El moño va atrás y algo bajo: arriba del todo, de frente, parecía un
@@ -393,6 +487,210 @@ const PELO = {
       clips: [(x, y, z) => -8.6 - local(J, x, y, z).y],
       hair: true,
     }),
+  ],
+
+  // Sin pelo: la capa existe, pero vacía (las cejas siguen siendo del color del pelo)
+  calvo: () => [],
+
+  // Corto y rizado: el pelo base cubierto de bultos pequeños
+  rizado: (J) => [
+    grupo(
+      MAT.PELO,
+      0.7,
+      [
+        peloBase(J, -0.4),
+        ...bultos(
+          J,
+          [
+            [6, 12, 0],
+            [26, 11, 15],
+            [48, 9, 5],
+            [70, 5, 30],
+            [88, 1],
+          ],
+          2.4,
+          -0.3,
+        ),
+      ],
+      { clips: [lineaPelo(J, 2.6, 0.62)], hair: true, mate: true },
+    ),
+  ],
+
+  // Tupé: los lados cortos y un volumen hacia delante y arriba sobre la frente
+  tupe: (J) => [
+    grupo(
+      MAT.PELO,
+      2.2,
+      [
+        elipCabeza(J, 0, 0.5, -0.4, P.head.rx + 1.0, P.head.ry + 1.2, P.head.rz + 1.0),
+        elipCabeza(J, 0.8, 9.6, 5.0, 7.4, 4.6, 6.6),
+        elipCabeza(J, 1.2, 11.2, 2.0, 6.2, 3.4, 5.2),
+      ],
+      { clips: [lineaPelo(J, 3.2, 0.5)], hair: true },
+    ),
+  ],
+
+  // Peinado hacia atrás: liso, sin flequillo, la frente despejada
+  atras: (J) => [
+    grupo(
+      MAT.PELO,
+      2.0,
+      [peloBase(J, -0.2), elipCabeza(J, 0, 5.2, -7.4, 8.8, 7.0, 5.0)],
+      { clips: [lineaPelo(J, 3.8, 0.52)], hair: true },
+    ),
+  ],
+
+  // Cresta: los lados rapados (la piel oscurecida por el pelo cortito, como
+  // la barba de tres días) y una fila de pelo de la frente a la nuca
+  cresta: (J) => [
+    grupo(MAT.SOMBRA_BARBA, 1, [elipCabeza(J, 0, 0.3, -0.2, P.head.rx + 0.4, P.head.ry + 0.5, P.head.rz + 0.4)], {
+      clips: [lineaPelo(J, 2.8, 0.45)],
+      suave: true,
+    }),
+    grupo(
+      MAT.PELO,
+      1.6,
+      [
+        ...cadena(J, v3(0, 10.2, 6.2), v3(0, 13.4, -1.6), 5, 2.5, 3.0),
+        ...cadena(J, v3(0, 13.0, -3.2), v3(0, 7.2, -10.8), 4, 2.9, 2.4),
+      ],
+      { hair: true },
+    ),
+  ],
+
+  // Melena lisa con flequillo recto que llega a las cejas
+  flequillo: (J) => [
+    grupo(
+      MAT.PELO,
+      1.6,
+      [peloBase(J), elipCabeza(J, 0, 6.4, 8.2, 9.8, 4.4, 3.6)],
+      { clips: [lineaPelo(J, 0.6, 0.3), (x, y, z) => 3.4 - local(J, x, y, z).y], hair: true },
+    ),
+    grupo(
+      MAT.PELO,
+      2.6,
+      [
+        elipCabeza(J, 0, -5.2, -3.4, 11.9, 12.8, 8.2),
+        capsule(enCabeza(J, 9.9, 2.0, 3.0), enCabeza(J, 9.3, -12.0, 1.8), 2.5),
+        capsule(enCabeza(J, -9.9, 2.0, 3.0), enCabeza(J, -9.3, -12.0, 1.8), 2.5),
+      ],
+      { clips: [detrasDeLaCara(J, 3.2), hastaAltura(J, -16)], hair: true },
+    ),
+  ],
+
+  // Bob: liso hasta la mandíbula, con la cara enmarcada y el borde recto
+  bob: (J) => [
+    grupo(MAT.PELO, 2.2, [peloBase(J), ...flequillo(J)], { clips: [lineaPelo(J)], hair: true }),
+    grupo(MAT.PELO, 2.4, [elipCabeza(J, 0, -1.6, -1.4, 12.4, 12.0, 11.6)], {
+      clips: [detrasDeLaCara(J, 2.0, 0.3), (x, y, z) => -7.0 - local(J, x, y, z).y],
+      hair: true,
+    }),
+  ],
+
+  // Rizos largos: mucho volumen por detrás y a los lados, hasta los hombros
+  rizos: (J) => [
+    grupo(
+      MAT.PELO,
+      0.8,
+      [
+        peloBase(J, -0.2),
+        ...bultos(
+          J,
+          [
+            [8, 12, 0],
+            [30, 10, 18],
+            [54, 8, 0],
+            [76, 4, 45],
+          ],
+          2.5,
+          -0.2,
+        ),
+      ],
+      { clips: [lineaPelo(J, 1.8, 0.62)], hair: true, mate: true },
+    ),
+    grupo(
+      MAT.PELO,
+      1.2,
+      [
+        elipCabeza(J, 0, -5.4, -3.6, 12.4, 11.6, 8.4),
+        ...[-4, -9, -14].flatMap((y, fila) =>
+          [60, 95, 130, 165, 195, 230, 265, 300].map((giro) => {
+            const a = (giro + fila * 17) * RAD;
+            return sphere(enCabeza(J, sin(a) * 11.8, y, cos(a) * 8.0 - 3.4), 3.1);
+          }),
+        ),
+      ],
+      { clips: [detrasDeLaCara(J, 3.0, 0.1), hastaAltura(J, -18.5)], hair: true, mate: true },
+    ),
+  ],
+
+  // Dos coletas a los lados, atadas por detrás de las orejas. Lo que cuelga
+  // va en su propio grupo: la línea del pelo lo cortaría a la altura de la nuca
+  coletas: (J) => [
+    grupo(
+      MAT.PELO,
+      2.0,
+      [peloBase(J), ...flequillo(J), ...[1, -1].map((l) => sphere(enCabeza(J, l * 10.0, 1.6, -5.2), 2.6))],
+      { clips: [lineaPelo(J, 1.2, 0.7)], hair: true },
+    ),
+    grupo(
+      MAT.PELO,
+      0.8,
+      [1, -1].map((l) => roundCone(enCabeza(J, l * 11.2, 0.8, -5.6), enCabeza(J, l * 12.6, -13.4, -6.2), 2.8, 1.5)),
+      { hair: true },
+    ),
+  ],
+
+  // Moño alto, arriba y un poco atrás
+  monoAlto: (J) => [
+    grupo(
+      MAT.PELO,
+      1.6,
+      [peloBase(J, -0.2), sphere(enCabeza(J, 0, 12.4, -4.2), 4.1), sphere(enCabeza(J, 0, 10.6, -3.4), 2.6)],
+      { clips: [lineaPelo(J, 2.6, 0.55)], hair: true },
+    ),
+  ],
+
+  // Dos moños arriba, uno a cada lado: separados del pelo, para que se lean
+  // como dos bolas y no como un gorro
+  monos: (J) => [
+    grupo(MAT.PELO, 1.8, [peloBase(J), ...flequillo(J)], { clips: [lineaPelo(J)], hair: true }),
+    grupo(MAT.PELO, 0.6, [sphere(enCabeza(J, 7.8, 10.6, -1.8), 4.2), sphere(enCabeza(J, -7.8, 10.6, -1.8), 4.2)], {
+      hair: true,
+    }),
+  ],
+
+  // Dos trenzas que caen por delante de los hombros (en su propio grupo: la
+  // línea del pelo las cortaría)
+  trenzas: (J) => [
+    grupo(MAT.PELO, 1.8, [peloBase(J), ...flequillo(J)], { clips: [lineaPelo(J, 1.2, 0.68)], hair: true }),
+    grupo(
+      MAT.PELO,
+      0.5,
+      [1, -1].flatMap((l) => cadena(J, v3(l * 9.8, -1.0, -1.8), v3(l * 10.2, -17.2, 1.2), 7, 2.3, 1.7)),
+      { hair: true },
+    ),
+  ],
+
+  // Rastas: mechones gruesos que cuelgan alrededor, hasta los hombros
+  rastas: (J) => [
+    grupo(MAT.PELO, 1.6, [peloBase(J, 0.3)], { clips: [lineaPelo(J, 2.2, 0.62)], hair: true }),
+    grupo(
+      MAT.PELO,
+      0.4,
+      // Alrededor de la cabeza menos por delante de la cara: de 60° a 300°
+      [...Array(11).keys()].map((i) => 60 + i * 24).map((giro) => {
+        const arriba = sobrePelo(giro, -6, 0.2);
+        const a = giro * RAD;
+        return roundCone(
+          enCabeza(J, arriba.x, arriba.y, arriba.z),
+          enCabeza(J, sin(a) * 12.4, -14.2, cos(a) * 9.2 - 1.6),
+          1.9,
+          1.5,
+        );
+      }),
+      { clips: [detrasDeLaCara(J, 2.6, 0.3)], hair: true },
+    ),
   ],
 };
 
@@ -550,6 +848,7 @@ const PIES = {
  */
 export const CAPAS = {
   cuerpo: cuerpo,
+  ...Object.fromEntries(Object.entries(CABEZAS).map(([k, f]) => [`cabeza/${k}`, f])),
   ...Object.fromEntries(Object.entries(PELO).map(([k, f]) => [`pelo/${k}`, f])),
   ...Object.fromEntries(Object.entries(TORSO).map(([k, f]) => [`torso/${k}`, f])),
   ...Object.fromEntries(Object.entries(PIERNAS).map(([k, f]) => [`piernas/${k}`, f])),

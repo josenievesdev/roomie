@@ -75,6 +75,7 @@ Hecho:
 - [x] **Tu casa**: la portería da las llaves de un piso recién mudado; al volver, apareces en él
 - [x] **Economía y decorar**: dos monedas, premio del día, tienda, mochila, vender; poner, mover, girar y guardar muebles
 - [x] **El móvil al 100 %**: pantalla de cualquier tamaño, botones al alcance del pulgar, pellizco para el zoom
+- [x] **Caras y peinados**: 5 formas de cara, ojos, cejas, narices, bocas, pecas, barbas, 12 pieles, 19 peinados; vestidor por secciones y ficha de perfil
 
 Siguiente:
 

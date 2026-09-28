@@ -28,13 +28,14 @@ import {
   type Facing,
   type SitTarget,
 } from "../state/avatarState";
-import { DEFAULT_LOOK, mismoLook, sanitizeLook } from "../state/look";
+import { DEFAULT_LOOK, decodificarLook, mismoLook, sanitizeLook } from "../state/look";
 import { frasePorId, GESTOS, GESTO_SALUDO } from "../state/frases";
 import { parsearNacimiento } from "../state/normas";
 import { Vestidor } from "../ui/vestidor";
 import { MenuFrases } from "../ui/menuFrases";
 import { Tienda } from "../ui/tienda";
 import { Mochila } from "../ui/mochila";
+import { FichaPerfil, type OpcionesPerfil } from "../ui/perfil";
 import { medidas } from "../ui/pantalla";
 import { motivoNoCabe, planoDesdeMapa, type Plano } from "../state/decorar";
 import { Hud } from "../ui/hud";
@@ -80,6 +81,7 @@ import {
   type CategoriaTienda,
   type ChatPayload,
   type MuebleColocado,
+  type PerfilPublico,
   type Saldos,
   type SalaDatosPayload,
   type JoinErrorPayload,
@@ -198,7 +200,7 @@ const ALTO_FACHADA = 152;
  * Los modos del modal de cuenta. "nacimiento" es para las cuentas de antes,
  * que aún no dijeron su fecha de nacimiento: sin ella no se entra.
  */
-type AuthModalMode = "login" | "register" | "profile" | "nacimiento";
+type AuthModalMode = "login" | "register" | "nacimiento";
 type CampoClave = "username" | "password" | "nickname" | "dia" | "mes" | "anio";
 
 /** Un campo de texto del modal: lo dibuja Phaser, lo escribe un <input> real */
@@ -339,6 +341,8 @@ type Peer = {
   row: number;
   textureKey: string;
   look: Look;
+  /** El aspecto tal cual llega en la instantánea (código compacto): si no cambia, no se toca nada */
+  lookCodigo: string;
 };
 
 /**
@@ -451,6 +455,13 @@ export class MainScene extends Phaser.Scene {
     barraY: 508,
     barraH: 24,
   };
+
+  // Perfiles
+  /** La ficha de un perfil abierta (la tuya o la de otro), y con qué se abrió (para rehacerla al girar el móvil) */
+  private ficha: FichaPerfil | null = null;
+  private opcionesFicha: OpcionesPerfil | null = null;
+  /** El perfil que se pidió al servidor y aún no ha llegado */
+  private perfilPedido: string | null = null;
 
   // Tienda, mochila y decorar
   private tienda: Tienda | null = null;
@@ -566,6 +577,9 @@ export class MainScene extends Phaser.Scene {
     this.arrastre = null;
     this.pidiendoCasa = false;
     this.porteria = [];
+    this.ficha = null;
+    this.opcionesFicha = null;
+    this.perfilPedido = null;
     this.tienda = null;
     this.mochila = null;
     this.decorando = false;
@@ -645,7 +659,7 @@ export class MainScene extends Phaser.Scene {
       {
         chat: () => this.alternarChat(),
         vestidor: () => this.abrirVestidor(),
-        perfil: () => this.showAuthModal(net.autenticado ? "profile" : "login"),
+        perfil: () => (net.autenticado ? this.abrirPerfil() : this.showAuthModal("login")),
         casa: () => (this.enMiCasa() ? this.alternarDecorar() : this.irACasa()),
         tienda: () => this.abrirTienda(),
         mochila: () => this.abrirMochila(),
@@ -728,6 +742,10 @@ export class MainScene extends Phaser.Scene {
         }
         if (key === "Escape" && this.porteria.length > 0) {
           this.cerrarPorteria();
+          return;
+        }
+        if (this.ficha) {
+          if (key === "Escape") this.cerrarFicha();
           return;
         }
         // Decorando, Esc deshace de uno en uno: el panel, lo que colocabas,
@@ -921,7 +939,7 @@ export class MainScene extends Phaser.Scene {
     this.input.on(
       "wheel",
       (pointer: Phaser.Input.Pointer, _sobre: unknown, _dx: number, dy: number) => {
-        if (this.authModalOpen || this.vestidor || this.tienda || this.mochila) return;
+        if (this.authModalOpen || this.vestidor || this.tienda || this.mochila || this.ficha) return;
         // Cambiar de sentido empieza la cuenta de cero
         if (Math.sign(dy) !== Math.sign(this.ruedaAcum)) this.ruedaAcum = 0;
         this.ruedaAcum += dy;
@@ -963,6 +981,9 @@ export class MainScene extends Phaser.Scene {
       this.vestidor = null;
       this.menuFrases?.destroy();
       this.menuFrases = null;
+      // La textura del retrato es del gestor global: se va con la ficha
+      this.ficha?.destroy();
+      this.ficha = null;
     });
   }
 
@@ -979,7 +1000,7 @@ export class MainScene extends Phaser.Scene {
     // Entrada -> estado (el estado decide qué hacer)
     let dx = 0;
     let dy = 0;
-    if (!this.chatOpen && !this.vestidor && !this.tienda && !this.mochila) {
+    if (!this.chatOpen && !this.vestidor && !this.tienda && !this.mochila && !this.ficha) {
       if (this.cursors?.left.isDown || this.wasd?.A.isDown) dx -= 1;
       if (this.cursors?.right.isDown || this.wasd?.D.isDown) dx += 1;
       if (this.cursors?.up.isDown || this.wasd?.W.isDown) dy -= 1;
@@ -1108,6 +1129,7 @@ export class MainScene extends Phaser.Scene {
       this.abrirMochila();
     }
     this.vestidor?.recolocar();
+    if (this.ficha && this.opcionesFicha) this.mostrarFicha(this.opcionesFicha);
     if (this.authModalOpen) this.rehacerAuthModal();
   }
 
@@ -1396,13 +1418,69 @@ export class MainScene extends Phaser.Scene {
     return articulos.find((a) => a.code === code)?.nombre ?? (isFurniture(code) ? FURNITURE[code].nombre : code);
   }
 
-  /** Cierra lo pasajero que estorba a un panel: el chat, los menús, la portería */
+  /** Cierra lo pasajero que estorba a un panel: el chat, los menús, la portería, una ficha de perfil */
   private despejar(): void {
     this.closeChat();
     this.cerrarFrases();
     this.closePeerMenu();
     this.cerrarPorteria();
     this.cerrarMenuMueble();
+    this.cerrarFicha();
+  }
+
+  // ---------- Perfiles ----------
+
+  /** Tu perfil: tu retrato, desde cuándo juegas, tu casa, tu dinero, y cambiar de aspecto o cerrar sesión */
+  private abrirPerfil(): void {
+    const yo = net.identidad;
+    if (!yo || this.authModalOpen || this.vestidor) return;
+    this.despejar();
+    this.cerrarTienda();
+    this.cerrarMochila();
+    this.mostrarFicha({
+      datos: {
+        nombre: yo.nickname,
+        look: this.look,
+        desde: yo.desde,
+        propio: { usuario: yo.username, monedas: yo.saldo, creditos: yo.creditos, tieneCasa: yo.casa !== null },
+      },
+      alCerrar: () => this.cerrarFicha(),
+      alVestidor: () => {
+        this.cerrarFicha();
+        this.abrirVestidor();
+      },
+      alCerrarSesion: () => {
+        this.cerrarFicha();
+        this.cerrarSesion();
+      },
+    });
+  }
+
+  /** El perfil de otro jugador de la sala: se pide al servidor (que mira las normas) y se abre al llegar */
+  private verPerfil(id: string): void {
+    this.closePeerMenu();
+    this.perfilPedido = id;
+    net.perfil(id);
+  }
+
+  private onPerfil(p: PerfilPublico): void {
+    if (p.id !== this.perfilPedido) return;
+    this.perfilPedido = null;
+    if (this.authModalOpen || this.vestidor) return;
+    this.despejar();
+    this.mostrarFicha({ datos: { nombre: p.nombre, look: sanitizeLook(p.look), desde: p.desde }, alCerrar: () => this.cerrarFicha() });
+  }
+
+  private mostrarFicha(o: OpcionesPerfil): void {
+    this.ficha?.destroy();
+    this.opcionesFicha = o;
+    this.ficha = new FichaPerfil(this, o);
+  }
+
+  private cerrarFicha(): void {
+    this.ficha?.destroy();
+    this.ficha = null;
+    this.opcionesFicha = null;
   }
 
   /** La tienda (T). Si el catálogo aún no ha llegado, se pide y se abre al llegar */
@@ -2269,6 +2347,9 @@ export class MainScene extends Phaser.Scene {
         mueblesDeCasas.set(sala, muebles);
         if (this.alive && sala === this.roomId) this.rehacerMueblesCasa();
       },
+      onPerfil: (p) => {
+        if (this.alive) this.onPerfil(p);
+      },
       onResultado: (r) => {
         if (!this.alive) return;
         avisoFlotante(this, r.texto, r.ok);
@@ -2473,9 +2554,11 @@ export class MainScene extends Phaser.Scene {
   // ---------- Modal de cuenta ----------
   //
   // Tres modos sobre el mismo panel:
-  //   login    — usuario + contraseña
-  //   register — usuario + contraseña + nombre en el juego + aspecto
-  //   profile  — ya dentro: sólo aspecto y cerrar sesión
+  //   login      — usuario + contraseña
+  //   register   — usuario + contraseña + nombre en el juego + fecha de nacimiento
+  //   nacimiento — cuentas de antes: sólo la fecha de nacimiento
+  //
+  // Ya dentro, tu perfil es otra cosa: la ficha de `src/ui/perfil.ts`.
   //
   // El nombre del jugador YA NO se elige aquí cada vez: pertenece a la cuenta
   // y vive en la base de datos. Antes el cliente decía cómo se llamaba y el
@@ -2496,7 +2579,6 @@ export class MainScene extends Phaser.Scene {
     this.setGameKeyboard(false);
 
     const registro = modo === "register";
-    const perfil = modo === "profile";
     const nacimiento = modo === "nacimiento";
     const tactil = medidas().tactil;
     const SW = this.scale.width;
@@ -2509,26 +2591,24 @@ export class MainScene extends Phaser.Scene {
     // Puesta a mano, el botón acababa montado encima de lo de arriba.
     //
     // El aspecto ya no se elige aquí: tiene su vestidor, que se abre solo al
-    // crear la cuenta y desde el botón del perfil.
+    // crear la cuenta y desde tu perfil.
     const PAD = apretado ? 10 : 16;
     const TITULO = 16 + 12; // rombo y título + hueco
     const ALTO_CAMPO = tactil ? 28 : 24;
     const CAMPO = 15 + 3 + ALTO_CAMPO + (apretado ? 4 : 10); // etiqueta + caja + hueco
     const MENSAJE = apretado ? 32 : 36; // hasta dos líneas
-    const INFO = 44; // datos de la cuenta en el perfil
     const ALTO_BOTON = tactil ? 30 : 26;
     const BOTONES = ALTO_BOTON + 8 + ALTO_BOTON;
     // Filas de campos: usuario, contraseña, nombre y fecha de nacimiento
-    const nCampos = perfil ? 0 : nacimiento ? 1 : registro ? 4 : 2;
+    const nCampos = nacimiento ? 1 : registro ? 4 : 2;
     const EXPLICA = nacimiento ? 40 : 0; // por qué se pide la fecha
     const W = Math.min(300, SW - 16);
-    const H = PAD + TITULO + EXPLICA + nCampos * CAMPO + MENSAJE + (perfil ? INFO : 0) + BOTONES + PAD;
-    // Encima del panel, el nombre del juego (no en el perfil: ya estás dentro;
-    // ni si no cabe)
-    const LOGO = perfil || SH < H + 64 + 16 ? 0 : 64;
+    const H = PAD + TITULO + EXPLICA + nCampos * CAMPO + MENSAJE + BOTONES + PAD;
+    // Encima del panel, el nombre del juego (si cabe)
+    const LOGO = SH < H + 64 + 16 ? 0 : 64;
     const X = cx - Math.round(W / 2);
     // Con el dedo, arriba: el teclado del móvil sale por abajo y taparía los campos
-    const Y = tactil && !perfil ? 8 + LOGO : Math.max(8, Math.round((SH - LOGO - H) / 2)) + LOGO;
+    const Y = tactil ? 8 + LOGO : Math.max(8, Math.round((SH - LOGO - H) / 2)) + LOGO;
     const colX = X + 16;
     const anchoCampo = W - 32;
     this.authDesplazado = 0;
@@ -2543,7 +2623,7 @@ export class MainScene extends Phaser.Scene {
     };
 
     // Velo: la sala se intuye detrás, oscurecida; se come todos los clics
-    this.authVelo = add(this.add.rectangle(SW / 2, SH / 2, SW, SH, UI_HEX.velo, perfil ? 0.7 : 0.82).setInteractive(), 0);
+    this.authVelo = add(this.add.rectangle(SW / 2, SH / 2, SW, SH, UI_HEX.velo, 0.82).setInteractive(), 0);
 
     if (LOGO > 0) {
       // El logo es lo único a 24 px: la casa y la palabra, a la par
@@ -2560,7 +2640,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     add(pieza(this, "panel", X, Y, W, H).setInteractive(), 1);
-    const titulo = perfil ? "Tu perfil" : registro ? "Crear cuenta" : nacimiento ? "Un último paso" : "Entrar";
+    const titulo = registro ? "Crear cuenta" : nacimiento ? "Un último paso" : "Entrar";
     const tituloTxt = texto(this, 0, yCentrada(Y + PAD, 16), titulo, { color: UI.titulo });
     const rombo = icono(this, "rombo", 0, 0);
     const anchoTitulo = rombo.width + 6 + tituloTxt.width;
@@ -2645,7 +2725,7 @@ export class MainScene extends Phaser.Scene {
       cursorY += CAMPO;
     };
 
-    if (!perfil && !nacimiento) {
+    if (!nacimiento) {
       campo("username", "Usuario", false, "username");
       campo("password", "Contraseña", true, registro ? "new-password" : "current-password");
     }
@@ -2658,35 +2738,9 @@ export class MainScene extends Phaser.Scene {
     this.authError.setData("y0", cursorY + 4);
     cursorY += MENSAJE;
 
-    // ---------- Datos de la cuenta (perfil) ----------
-    if (perfil) {
-      const yo = net.identidad;
-      if (yo) {
-        const quien = texto(this, 0, cursorY, `${yo.nickname}  ·  @${yo.username}`);
-        quien.setX(Math.round(cx - quien.width / 2));
-        add(quien, 2);
-        const creditos = yo.creditos > 0 ? `  ·  ◆ ${yo.creditos}` : "";
-        const saldo = texto(this, 0, cursorY + 19, `${yo.saldo} monedas${creditos}`, { color: UI.titulo });
-        const moneda = icono(this, "moneda", 0, cursorY + 22);
-        const ancho = moneda.width + 6 + saldo.width;
-        moneda.setX(Math.round(cx - ancho / 2));
-        saldo.setX(moneda.x + moneda.width + 6);
-        add(moneda, 2);
-        add(saldo, 2);
-      }
-      cursorY += INFO;
-      // Sin campos de texto no hay Esc que valga: el perfil se cierra aquí
-      const lado = tactil ? 28 : 20;
-      const cerrar = boton(this, X + W - 8 - lado, Y + 8, lado, lado, "", () => this.closeAuthModal(), {
-        icono: "cerrar",
-        capa: LAYER.UI_MODAL + 3,
-      });
-      this.authUI.push(...cerrar.objetos);
-    }
-
     // ---------- Botones ----------
     // Los botones cuelgan del final del contenido, no de una altura fija
-    const principal = perfil ? "Vestidor" : registro ? "Crear cuenta y entrar" : nacimiento ? "Seguir" : "Entrar";
+    const principal = registro ? "Crear cuenta y entrar" : nacimiento ? "Seguir" : "Entrar";
     const b1 = boton(
       this,
       colX,
@@ -2694,14 +2748,10 @@ export class MainScene extends Phaser.Scene {
       anchoCampo,
       ALTO_BOTON,
       principal,
-      () => {
-        if (!perfil) return this.submitAuth();
-        this.closeAuthModal();
-        this.abrirVestidor();
-      },
-      { primario: true, icono: perfil ? "camiseta" : undefined, capa: LAYER.UI_MODAL + 2 },
+      () => this.submitAuth(),
+      { primario: true, capa: LAYER.UI_MODAL + 2 },
     );
-    const segundo = perfil || nacimiento ? "Cerrar sesión" : registro ? "Ya tengo cuenta" : "Crear una cuenta nueva";
+    const segundo = nacimiento ? "Cerrar sesión" : registro ? "Ya tengo cuenta" : "Crear una cuenta nueva";
     const b2 = boton(
       this,
       colX,
@@ -2710,7 +2760,7 @@ export class MainScene extends Phaser.Scene {
       ALTO_BOTON,
       segundo,
       () => {
-        if (perfil || nacimiento) return this.cerrarSesion();
+        if (nacimiento) return this.cerrarSesion();
         this.closeAuthModal();
         this.showAuthModal(registro ? "login" : "register");
       },
@@ -2819,7 +2869,6 @@ export class MainScene extends Phaser.Scene {
   }
 
   private submitAuth(): void {
-    if (this.authMode === "profile") return; // el perfil no envía nada
     if (this.authMode === "nacimiento") return this.submitNacimiento();
 
     const username = this.valorCampo("username").trim();
@@ -2907,7 +2956,7 @@ export class MainScene extends Phaser.Scene {
     if (existing) return existing;
 
     const textureKey = `avatar:${v.id}`;
-    const look = sanitizeLook(v.look);
+    const look = decodificarLook(v.look);
     createAvatarTexture(this, look, textureKey);
     const sprite = this.add.sprite(0, 0, textureKey, frameInicial(v.facing)).setOrigin(ORIGEN.x, ORIGEN.y);
     // Zona de toque: el cuerpo entero y un poco más (coordenadas del
@@ -2927,6 +2976,7 @@ export class MainScene extends Phaser.Scene {
       row: v.row,
       textureKey,
       look,
+      lookCodigo: v.look,
     };
     this.peers.set(v.id, peer);
     return peer;
@@ -3016,12 +3066,16 @@ export class MainScene extends Phaser.Scene {
       const peer = this.ensurePeer(v);
       peer.view = v;
 
-      // Cambió el aspecto del remoto → regenerar SU textura (no la mía)
-      const look = sanitizeLook(v.look);
-      if (!mismoLook(peer.look, look)) {
-        peer.look = look;
-        createAvatarTexture(this, look, peer.textureKey);
-        peer.sprite.setTexture(peer.textureKey, frameInicial(v.facing));
+      // Cambió el aspecto del remoto → regenerar SU textura (no la mía). Se
+      // compara el código tal cual llega: sólo se descodifica si cambió.
+      if (v.look !== peer.lookCodigo) {
+        peer.lookCodigo = v.look;
+        const look = decodificarLook(v.look);
+        if (!mismoLook(peer.look, look)) {
+          peer.look = look;
+          createAvatarTexture(this, look, peer.textureKey);
+          peer.sprite.setTexture(peer.textureKey, frameInicial(v.facing));
+        }
       }
 
       peer.col = v.col;
@@ -3178,15 +3232,16 @@ export class MainScene extends Phaser.Scene {
       m.add(this.add.text(0, 0, gesto.texto, { fontSize: "13px" }).setOrigin(0.5), dx + g / 2, 28 + g / 2, LAYER.UI_PANEL + 1);
     });
 
-    // Hablarle: con texto propio, o con frases si hablas con frases
+    // Su perfil, y hablarle: con texto propio, o con frases si hablas con frases
+    const mitad = Math.floor((W - 16 - 4) / 2);
+    m.boton("Ver perfil", 8, yHablar, mitad, g, () => this.verPerfil(peer.view.id));
     if (net.hablaConFrases) {
-      m.boton("Decir algo", 8, yHablar, W - 16, g, () => this.abrirFrases(), true);
+      m.boton("Decir algo", 8 + mitad + 4, yHablar, mitad, g, () => this.abrirFrases(), true);
     } else {
-      m.boton(`Escribir a ${peer.view.name}`, 8, yHablar, W - 16, g, () => this.chatTo(peer.view.name), true);
+      m.boton("Escribirle", 8 + mitad + 4, yHablar, mitad, g, () => this.chatTo(peer.view.name), true);
     }
 
     const bloqueado = net.tieneBloqueado(peer.view.name);
-    const mitad = Math.floor((W - 16 - 4) / 2);
     m.boton(bloqueado ? "Desbloquear" : "Bloquear", 8, yBloquear, mitad, f - 2, () => {
       this.closePeerMenu();
       net.bloquear(peer.view.id, !bloqueado);

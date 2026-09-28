@@ -166,9 +166,10 @@ las medidas del cuerpo. Si se hacen 50 prendas para un cuerpo y luego se
 añade otro, hay que rehacer las 50. Por eso, **antes de hacer más ropa o
 peinados**:
 
-- **Cráneo común, cara variable.** Las formas de cara cambian mandíbula,
-  mofletes, mentón, nariz y ojos, pero no el cráneo. Así cada peinado y cada
-  gorra valen para todas las caras sin retocarlos.
+- **Cráneo común, cara variable (hecho, fase 11).** Las formas de cara cambian
+  mandíbula, mofletes y mentón, pero no el cráneo; los ojos, cejas, nariz y
+  boca son sellos en anclas, y la barba, zonas de la piel. Así cada peinado y
+  cada gorra valen para todas las caras sin retocarlos.
 - **Un solo juego de medidas del cuerpo**, que lean la piel y la ropa. La
   complexión (delgada, media, ancha) pasa a ser un parámetro y la ropa se
   ajusta sola.
@@ -290,6 +291,15 @@ los *puffles* de Club Penguin); más barrios y metro entre ellos.
 Antes que nada, el cimiento C0: edades privadas, frases para los niños,
 filtro, bloquear y reportar. Con 61 comprobaciones del smoke test y 52 del
 filtro, que no pueden fallar nunca.
+
+### Adelanto — Caras y peinados (hecho, fase 11)
+José quiere que la moda sea el centro del juego, así que la mitad del C7 que
+no depende de la ropa se hizo ya: cinco formas de cara con el mismo cráneo,
+los rasgos como sellos, las barbas por zonas, diecinueve peinados, más
+pieles, colores de ojos y de pelo, el vestidor por secciones y la ficha de
+perfil (la de otros, sólo de quien tienes delante y nunca de quien te
+bloqueó). Falta del C7, antes de la primera prenda: complexión, ranuras y
+peinados "bajo la gorra".
 
 ### Adelanto — la Plaza de la Llave (hecha, fase 8)
 José quería ver ya la ciudad, así que la primera zona de La Manzana llegó

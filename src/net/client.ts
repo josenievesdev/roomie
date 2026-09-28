@@ -15,6 +15,7 @@ import type {
   Look,
   MotivoReporte,
   MuebleColocado,
+  PerfilPublico,
   PlayerView,
   ResultadoPayload,
   RoomId,
@@ -54,6 +55,8 @@ export type NetHandlers = {
   onMuebles?: (sala: RoomId, muebles: MuebleColocado[]) => void;
   /** Cómo salió lo último que pediste */
   onResultado?: (r: ResultadoPayload) => void;
+  /** El perfil de otro jugador que pediste */
+  onPerfil?: (p: PerfilPublico) => void;
 };
 
 /**
@@ -187,6 +190,7 @@ class NetClient {
     });
     socket.on("muebles", (p) => this.handlers.onMuebles?.(p.sala, p.muebles));
     socket.on("resultado", (p) => this.handlers.onResultado?.(p));
+    socket.on("perfil", (p) => this.handlers.onPerfil?.(p));
     socket.on("bloqueos", (p) => {
       if (this.identidad) this.identidad = { ...this.identidad, bloqueados: p.bloqueados };
       this.handlers.onBloqueos?.(p.bloqueados);
@@ -315,6 +319,11 @@ class NetClient {
 
   recoger(item: string): void {
     if (this.online) this.socket?.emit("recoger", item);
+  }
+
+  /** Pide el perfil de otro jugador de la sala (llega por `onPerfil`, si las normas lo dejan) */
+  perfil(jugador: string): void {
+    if (this.online) this.socket?.emit("perfil", jugador);
   }
 
   /** ¿Tienes bloqueado a alguien con ese nombre? */

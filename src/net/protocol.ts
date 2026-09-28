@@ -74,7 +74,12 @@ export type PlayerView = {
   facing: Facing;
   sitting: boolean;
   moving: boolean;
-  look: Look;
+  /**
+   * El aspecto, en código compacto (`codificarLook` en src/state/look.ts):
+   * viaja en cada instantánea, 20 veces por segundo por jugador, y como
+   * objeto eran unos 400 bytes. Se lee con `decodificarLook`.
+   */
+  look: string;
 };
 
 // ---------------------------------------------------------------- Identidad
@@ -121,10 +126,20 @@ export type AuthOkPayload = {
   bloqueados: string[];
   /** Tu casa, o null si aún no te han dado las llaves */
   casa: CasaInfo | null;
+  /** Desde cuándo tienes la cuenta, "AAAA-MM" (sale en tu perfil) */
+  desde: string | null;
 };
 
 /** Tu casa: su sala y cómo se llama */
 export type CasaInfo = { id: CasaId; nombre: string };
+
+/**
+ * Lo que se ve en el perfil de otro jugador. Poco, a propósito: el nombre y
+ * el aspecto (que ya se ven en la sala) y desde cuándo juega. Nunca la edad,
+ * ni dónde vive, ni con quién habla. Quién puede verlo lo decide
+ * `puedeVerPerfil` en src/state/normas.ts.
+ */
+export type PerfilPublico = { id: string; nombre: string; look: Look; desde: string | null };
 
 // ---------------------------------------------------------------- Economía
 //
@@ -249,6 +264,8 @@ export interface ClientEvents {
   colocar: (p: ColocarPayload) => void;
   /** Guardar en la mochila un objeto puesto en tu casa */
   recoger: (item: string) => void;
+  /** Ver el perfil de otro jugador de tu sala (contesta `perfil`, si las normas lo dejan) */
+  perfil: (jugador: string) => void;
 }
 
 /** Eventos que el servidor emite y el cliente escucha */
@@ -281,4 +298,6 @@ export interface ServerEvents {
   muebles: (p: { sala: RoomId; muebles: MuebleColocado[] }) => void;
   /** Cómo salió lo último que pediste (compra, venta, colocar) */
   resultado: (p: ResultadoPayload) => void;
+  /** El perfil que pediste */
+  perfil: (p: PerfilPublico) => void;
 }

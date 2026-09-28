@@ -97,3 +97,16 @@ export function leeTextoLibre(f: Franja): boolean {
 export function puedeEntrarEnCasa(esDueno: boolean): boolean {
   return esDueno;
 }
+
+// ---------------------------------------------------------------- Los perfiles
+
+/**
+ * ¿Puede alguien ver el perfil de otro? Sólo de quien tiene delante (en su
+ * misma sala): el perfil no sirve para buscar a nadie. Y nunca el de quien le
+ * ha bloqueado: si alguien no quiere saber nada de ti, tampoco le curioseas.
+ * Lo que se ve está en `PerfilPublico` (src/net/protocol.ts): nunca la edad
+ * ni dónde vive.
+ */
+export function puedeVerPerfil(mismaSala: boolean, meTieneBloqueado: boolean): boolean {
+  return mismaSala && !meTieneBloqueado;
+}

@@ -4,6 +4,7 @@ import {
   ANCHO_HOJA,
   ANIMS,
   HOJA,
+  TODAS_LAS_CAPAS,
   capasDe,
   componer,
   ficheroCapa,
@@ -12,19 +13,25 @@ import {
   type Capa,
 } from "../render/avatarSheet";
 import { pixelesDe, texturaDesde } from "../render/texturas";
+import { leerDatosCara, type DatosCara } from "../render/cara";
 import type { Facing } from "../state/avatarState";
-import { DEFAULT_LOOK, ESTILOS, PARTES, type Look } from "../state/look";
+import { DEFAULT_LOOK, type Look } from "../state/look";
 
-// Avatar: capas generadas por `tools/genavatar.mjs` (cuerpo, peinados,
-// prendas), combinadas y coloreadas en el navegador según el aspecto de cada
-// jugador. Una textura por avatar: "avatar" para el propio y `avatar:<id>`
-// para cada remoto. Las animaciones se registran con prefijo `${key}:`.
+// Avatar: capas generadas por `tools/genavatar.mjs` (cuerpo, cabezas,
+// peinados, prendas), combinadas y coloreadas en el navegador según el
+// aspecto de cada jugador, con la cara pintada encima (`src/render/cara.ts`).
+// Una textura por avatar: "avatar" para el propio y `avatar:<id>` para cada
+// remoto. Las animaciones se registran con prefijo `${key}:`.
 
-/** Todas las capas que existen: el cuerpo y cada estilo de cada parte */
-export const TODAS_LAS_CAPAS: readonly string[] = [
-  "cuerpo",
-  ...PARTES.flatMap((p) => Object.keys(ESTILOS[p]).map((e) => `${p}/${e}`)),
-];
+/** Las anclas de la cara (dónde cae cada rasgo en cada fotograma), en la caché de JSON */
+const CLAVE_CARA = "avatar:cara";
+let datosCara: DatosCara | null = null;
+
+/** Las anclas de la cara, leídas una vez (null si aún no han llegado: se dibuja sin cara) */
+function cara(scene: Phaser.Scene): DatosCara | null {
+  if (!datosCara && scene.cache.json.exists(CLAVE_CARA)) datosCara = leerDatosCara(scene.cache.json.get(CLAVE_CARA));
+  return datosCara;
+}
 
 /** Origen del sprite: los pies (el punto del suelo sobre el que está) */
 export const ORIGEN = { x: HOJA.anclaX / HOJA.frameW, y: HOJA.anclaY / HOJA.frameH };
@@ -48,13 +55,14 @@ const nombreFrame = (anim: Anim, dir: number, i: number): string => `${anim}-${d
 /** Fotograma de reposo en una dirección (para `add.sprite` y `setTexture`) */
 export const frameInicial = (dir: Facing): string => nombreFrame("idle", dir, 0);
 
-/** Encola la descarga de las capas (una vez: sobreviven al reinicio de escena) */
+/** Encola la descarga de las capas y las anclas de la cara (una vez: sobreviven al reinicio de escena) */
 export function preloadAvatar(scene: Phaser.Scene): void {
   for (const nombre of TODAS_LAS_CAPAS) {
     if (!scene.textures.exists(texCapa(nombre))) {
       scene.load.image(texCapa(nombre), `assets/avatar/${ficheroCapa(nombre)}`);
     }
   }
+  if (!scene.cache.json.exists(CLAVE_CARA)) scene.load.json(CLAVE_CARA, "assets/avatar/cara.json");
 }
 
 /** Píxeles de una capa del avatar (material, luz y profundidad) */
@@ -78,6 +86,7 @@ export function createAvatarTexture(scene: Phaser.Scene, look: Look = DEFAULT_LO
   const rgba = componer(
     capasDe(look).map((n) => capa(scene, n)),
     look,
+    cara(scene),
   );
   const tex = texturaDesde(scene, key, rgba, ANCHO_HOJA, ALTO_HOJA);
 
@@ -141,8 +150,9 @@ export function destroyAvatarAssets(scene: Phaser.Scene, textureKey: string): vo
 }
 
 /**
- * Miniatura: un trozo de un fotograma quieto, para los botones del vestidor.
- * Sólo se combina ese trozo, así que cuesta poco rehacerla a cada cambio.
+ * Miniatura: un trozo de un fotograma quieto, para los botones del vestidor
+ * y el retrato del perfil. Sólo se combina ese trozo, así que cuesta poco
+ * rehacerla a cada cambio.
  */
 export function crearMiniatura(
   scene: Phaser.Scene,
@@ -156,7 +166,18 @@ export function crearMiniatura(
   const rgba = componer(
     capasDe(look).map((n) => capa(scene, n)),
     look,
+    cara(scene),
     region,
   );
   texturaDesde(scene, key, rgba, recorte.w, recorte.h);
 }
+
+/** Recortes de un fotograma de pie (48×84, los pies en 24,77) para miniaturas y retratos */
+export const RECORTE = {
+  /** La cabeza entera, con la barbilla y algo de hombros */
+  cabeza: { x: 8, y: 10, w: 32, h: 34 },
+  /** La cara de cerca */
+  cara: { x: 11, y: 18, w: 26, h: 24 },
+  /** Busto: cabeza y hombros (el retrato del perfil) */
+  busto: { x: 4, y: 6, w: 40, h: 46 },
+} as const;

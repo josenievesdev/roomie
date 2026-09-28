@@ -27,6 +27,7 @@ obligatoria y no hay modo sin base de datos.
 npm run typecheck                  # cliente + servidor
 npm run build
 node tools/prueba-normas.mjs       # filtro del chat y edades, sin servidor
+node tools/prueba-avatar.mjs       # cada estilo tiene su capa, su sello y sus anclas
 node tools/smoke-multiplayer.mjs   # E2E: registra cuentas reales y juega
 npm --prefix server run db:check   # ejerce los invariantes de la base
 ```
@@ -52,7 +53,8 @@ perdería el modelo anti-trampas.
   `src/state/normas.ts`, y la aplica el servidor. Nunca una regla de edad
   suelta en otro sitio.
 - **La edad es privada:** no viaja a ningún otro cliente, ni en `PlayerView`
-  ni en ningún evento.
+  ni en ningún evento. Del perfil de otro sólo sale `PerfilPublico` (nombre,
+  aspecto y desde cuándo juega), y sólo si `puedeVerPerfil` lo deja.
 - **Una casa es una sala de la base** (`casa:<uuid>`): su mapa y sus muebles
   los manda el servidor (`salaDatos`), y quién entra lo decide
   `puedeEntrarEnCasa` en `src/state/normas.ts`, en `join` Y en `room`.
@@ -88,8 +90,19 @@ móvil en `alRedimensionar()` de `MainScene`.
 **El avatar se genera, no se dibuja.** `public/assets/avatar/*.png` no son
 colores: cada píxel es material + banda de luz + profundidad, y el navegador
 combina y colorea las capas por jugador (`src/render/avatarSheet.ts`). Prenda
-nueva: estilo en `src/state/look.ts` + forma en `tools/avatar/model.mjs` +
-`node tools/genavatar.mjs --preview=<dir>` (y MIRAR las imágenes).
+o peinado nuevo: estilo en `src/state/look.ts` + forma en
+`tools/avatar/model.mjs` + `node tools/genavatar.mjs --preview=<dir>` (y
+MIRAR las imágenes: `peinados.png`, `caras.png`, `rasgos-*.png`).
+- **La cabeza va en su capa, una por forma de cara, con el cráneo común**: los
+  peinados (y las gorras) se cuelgan del cráneo. Una cara nueva sólo cambia lo
+  de abajo.
+- **La cara son sellos en anclas** (`src/render/cara.ts`): el generador dice
+  dónde cae cada rasgo (`cara.json`) y el navegador lo pinta. Rasgo nuevo: su
+  id en `look.ts` y su sello en `cara.ts`, sin regenerar nada. La barba tiñe
+  las zonas de la piel que marca el generador.
+- **El aspecto viaja en código compacto** (`codificarLook`, 18 caracteres) en
+  cada instantánea; en la base, el objeto entero. Un campo nuevo es una línea
+  en `CATALOGOS` de `look.ts` (de ahí salen el tipo, la validación y el código).
 
 **Los muebles también se generan.** Modelo en `tools/muebles/modelos.mjs` +
 entrada en el catálogo + `node tools/genmuebles.mjs` + su fila en la tienda
@@ -163,6 +176,7 @@ tres mapas** (plaza, room1, room2) y la plantilla del piso (`piso.json`).
 Si editas una sala en Tiled y luego lo ejecutas, la pierdes. Para retocar sólo
 el arte: `--solo=paredes` o `--solo=suelos` (los mapas no se tocan).
 
-`node tools/genavatar.mjs` regenera las 17 capas del avatar (~8 s);
+`node tools/genavatar.mjs` regenera las 35 capas del avatar y las anclas de la
+cara (~25 s);
 `node tools/genmuebles.mjs`, las 51 variantes del mobiliario (~1 s);
 `node tools/genfuente.mjs`, la fuente pixel.
